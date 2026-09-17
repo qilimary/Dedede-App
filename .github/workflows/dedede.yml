@@ -1187,8 +1187,8 @@ jobs:
 
                     <RelativeLayout android:layout_width="match_parent" android:layout_height="140dp" android:layout_marginBottom="10dp">
                         <EditText android:id="@+id/inputText" android:layout_width="match_parent" android:layout_height="match_parent" android:hint="输入或粘贴文本..." android:textColorHint="@color/text_secondary" android:textColor="@color/text_primary" android:gravity="top|start" android:background="@color/card_bg" android:padding="12dp" android:paddingEnd="42dp" android:paddingBottom="24dp" android:textSize="15sp" android:scrollbars="vertical"/>
-                        <Button android:id="@+id/btnInputExpand" android:layout_width="32dp" android:layout_height="32dp" android:layout_alignParentTop="true" android:layout_alignParentEnd="true" android:layout_marginTop="0dp" android:layout_marginEnd="0dp" android:text="⛶" android:textSize="16sp" android:textColor="#7B8CA4" android:background="?android:attr/selectableItemBackgroundBorderless" android:padding="0dp" android:insetTop="0dp" android:insetBottom="0dp" android:contentDescription="展开输入框"/>
-                        <TextView android:id="@+id/tvWordCount" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_alignParentBottom="true" android:layout_alignParentEnd="true" android:layout_marginEnd="8dp" android:layout_marginBottom="6dp" android:text="0 字" android:textColor="#9E9E9E" android:textSize="11sp"/>
+                        <Button android:id="@+id/btnInputExpand" android:layout_width="32dp" android:layout_height="32dp" android:layout_alignParentTop="true" android:layout_alignParentEnd="true" android:layout_marginTop="0dp" android:layout_marginEnd="0dp" android:translationX="2dp" android:translationY="-2dp" android:text="⛶" android:textSize="16sp" android:textColor="#7B8CA4" android:background="?android:attr/selectableItemBackgroundBorderless" android:padding="0dp" android:insetTop="0dp" android:insetBottom="0dp" android:contentDescription="展开输入框"/>
+                        <TextView android:id="@+id/tvWordCount" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_alignParentBottom="true" android:layout_alignParentEnd="true" android:layout_marginEnd="8dp" android:layout_marginBottom="3dp" android:text="0 字" android:textColor="#9E9E9E" android:textSize="11sp"/>
                     </RelativeLayout>
 
                     <Button android:id="@+id/btnCheck" android:layout_width="match_parent" android:layout_height="52dp" android:text="开始纠错" android:textSize="16sp" android:layout_marginTop="2dp" android:layout_marginBottom="6dp" android:backgroundTint="#2196F3"/>
@@ -4991,16 +4991,22 @@ jobs:
                 });
             }
         
+            private static boolean isActiveCorrection(TextBlock block) {
+                if (block == null || !block.isMutable) return false;
+                if (!block.current.equals(block.original)) return true;
+                return !block.userModified && block.exp != null && !block.exp.isEmpty();
+            }
+        
             private void appendLiveErrors(List<TextBlock> sentence, StringBuilder html, int[] errorCount) {
                 boolean hasError = false;
-                for (TextBlock block : sentence) if (block.isMutable && (!block.current.equals(block.original) || block.userModified || !block.exp.isEmpty())) { hasError = true; break; }
+                for (TextBlock block : sentence) if (isActiveCorrection(block)) { hasError = true; break; }
                 if (!hasError) return;
                 for (List<TextBlock> group : buildErrorGroups(sentence)) {
-                    List<TextBlock> errors = new ArrayList<>(); for (TextBlock block : group) if (block.isMutable && (!block.current.equals(block.original) || block.userModified || !block.exp.isEmpty())) errors.add(block); if (errors.isEmpty()) continue;
+                    List<TextBlock> errors = new ArrayList<>(); for (TextBlock block : group) if (isActiveCorrection(block)) errors.add(block); if (errors.isEmpty()) continue;
                     html.append("<font color='#2196F3'><b>["); for (int i = 0; i < errors.size(); i++) { html.append(errorCount[0] + i + 1); if (i < errors.size() - 1) html.append(','); } html.append("]</b></font> ");
                     for (TextBlock block : group) {
                         String original = escapeHtmlQuick(block.original), current = escapeHtmlQuick(block.current);
-                        if (block.isMutable && (!block.current.equals(block.original) || block.userModified || !block.exp.isEmpty())) {
+                        if (isActiveCorrection(block)) {
                             errorCount[0]++; String note = block.type == 1 ? " (置信度:" + String.format(Locale.getDefault(), "%.2f", block.conf) + ")" : (block.type == 4 ? " (自定义)" : ""); if (block.exp != null && !block.exp.isEmpty()) note += " (" + block.exp + ")"; String oldColor = block.type == 6 ? "#E53935" : "#9E9E9E";
                             if (block.current.equals(block.original)) html.append("<font color='#E53935'><b>").append(original).append("</b></font><font color='#9E9E9E'><small>").append(note).append("</small></font>");
                             else html.append("<font color='").append(oldColor).append("'><s>").append(original).append("</s></font> <font color='#E53935'><b>").append(current).append("</b></font><font color='#9E9E9E'><small>").append(note).append("</small></font>");
@@ -5023,7 +5029,7 @@ jobs:
                 if (!clause.isEmpty()) clauses.add(clause);
                 List<List<TextBlock>> groups = new ArrayList<>(); List<TextBlock> current = new ArrayList<>();
                 for (List<TextBlock> item : clauses) {
-                    boolean hasError = false; for (TextBlock block : item) if (block.isMutable && (!block.current.equals(block.original) || block.userModified || !block.exp.isEmpty())) { hasError = true; break; }
+                    boolean hasError = false; for (TextBlock block : item) if (isActiveCorrection(block)) { hasError = true; break; }
                     if (hasError) current.addAll(item); else if (!current.isEmpty()) { groups.add(current); current = new ArrayList<>(); }
                 }
                 if (!current.isEmpty()) groups.add(current); return groups;
@@ -5086,8 +5092,9 @@ jobs:
                     String[] options = {"采用修改 (" + block.modelCorrected + ")", "还原 (" + block.original + ")", "错改？点击这里加入白名单"};
                     AlertDialog dialog = buildEditChoiceDialog(block, options, 2, (d, which) -> {
                         if (which == 2) { jumpToWhitelistFromCorrection(); return; }
-                        String choice = which == 0 ? block.modelCorrected : block.original;
-                        block.userModified = !choice.equals(block.modelCorrected); block.current = choice; renderFinalBlocks(); HistoryStore.saveBlocks(this, lastSavedHistoryFileId, allSentencesBlocks);
+                        if (which == 0) { block.current = block.modelCorrected; block.userModified = false; }
+                        else { block.current = block.original; block.userModified = true; }
+                        renderFinalBlocks(); HistoryStore.saveBlocks(this, lastSavedHistoryFileId, allSentencesBlocks);
                     });
                     dialog.show();
                 }
@@ -5111,7 +5118,7 @@ jobs:
 
             private void renderFinalBlocks() {
                 currentClauseLinks.clear();
-                int currentErrors = 0; for (List<TextBlock> sentence : allSentencesBlocks) for (TextBlock block : sentence) if (block.isMutable && (!block.current.equals(block.original) || !block.exp.isEmpty())) currentErrors++;
+                int currentErrors = 0; for (List<TextBlock> sentence : allSentencesBlocks) for (TextBlock block : sentence) if (isActiveCorrection(block)) currentErrors++;
                 resolveJumpHintForFreshResult(currentErrors);
                 Map<TextBlock, Integer> relativeOffsets = new HashMap<>(); Map<TextBlock, TargetSpan> editorTargets = new HashMap<>();
                 SpannableStringBuilder fullMain = new SpannableStringBuilder(), fullEditor = new SpannableStringBuilder();
@@ -5120,7 +5127,7 @@ jobs:
                 for (List<TextBlock> sentence : allSentencesBlocks) {
                     for (TextBlock block : sentence) {
                         if (pendingMarker && documentIndex == 1) { appendDocumentMarker(fullMain, documentIndex); appendDocumentMarker(fullEditor, documentIndex); documentIndex++; pendingMarker = false; }
-                        boolean error = block.isMutable && (!block.current.equals(block.original) || !block.exp.isEmpty());
+                        boolean error = isActiveCorrection(block);
                         int mainStart = fullMain.length(); fullMain.append(block.current); int[] mainRange = normalizedRange(mainStart, fullMain.length());
                         if (error) relativeOffsets.put(block, mainRange[0]);
                         if (block.isMutable) fullMain.setSpan(createEditSpan(block), mainRange[0], mainRange[1], mainRange[2]);
@@ -5144,16 +5151,16 @@ jobs:
                     int errorIndex = 0;
                     for (List<TextBlock> sentence : allSentencesBlocks) {
                         for (List<TextBlock> group : buildErrorGroups(sentence)) {
-                            List<TextBlock> errors = new ArrayList<>(); for (TextBlock block : group) if (block.isMutable && (!block.current.equals(block.original) || !block.exp.isEmpty())) errors.add(block); if (errors.isEmpty()) continue;
+                            List<TextBlock> errors = new ArrayList<>(); for (TextBlock block : group) if (isActiveCorrection(block)) errors.add(block); if (errors.isEmpty()) continue;
                             int markerStart = main.length(); appendNumbers(main, errorIndex, errors.size());
                             JumpSpan jump = new JumpSpan() {
-                                @Override public int getTargetOffset(Spanned text) { for (TextBlock block : group) { Integer offset = relativeOffsets.get(block); if (offset != null && block.isMutable && (!block.current.equals(block.original) || !block.exp.isEmpty())) return baseOffset[0] + offset; } return -1; }
+                                @Override public int getTargetOffset(Spanned text) { for (TextBlock block : group) { Integer offset = relativeOffsets.get(block); if (offset != null && isActiveCorrection(block)) return baseOffset[0] + offset; } return -1; }
                                 @Override public void onClick(View view) { jumpAndFlash((TextView) view, getTargetOffset((Spanned) ((TextView) view).getText()), scrollView); }
                                 @Override public void updateDrawState(TextPaint paint) { paint.setColor(0xFF2196F3); paint.setUnderlineText(true); paint.setTypeface(android.graphics.Typeface.create("sans-serif-medium", 0)); }
                             };
                             main.setSpan(jump, markerStart, main.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
                             for (TextBlock block : group) {
-                                if (block.isMutable && (!block.current.equals(block.original) || !block.exp.isEmpty())) { appendCorrection(main, block, true); errorIndex++; }
+                                if (isActiveCorrection(block)) { appendCorrection(main, block, true); errorIndex++; }
                                 else main.append(block.current);
                             }
                             main.append('\n');
@@ -5171,7 +5178,7 @@ jobs:
                             };
                             editor.setSpan(editorJump, editorMarkerStart, editorMarkerEnd, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
                             for (TextBlock block : group) {
-                                if (block.isMutable && (!block.current.equals(block.original) || !block.exp.isEmpty())) appendCorrection(editor, block, false); else editor.append(block.current);
+                                if (isActiveCorrection(block)) appendCorrection(editor, block, false); else editor.append(block.current);
                             }
                             editor.append('\n');
                             for (TextBlock block : errors) { TargetSpan target = editorTargets.get(block); if (target != null) link.targetSpans.add(target); }
@@ -5211,7 +5218,7 @@ jobs:
                     @Override public void updateDrawState(TextPaint paint) {
                         paint.setUnderlineText(true);
                         paint.setTypeface(android.graphics.Typeface.create("sans-serif", android.graphics.Typeface.NORMAL));
-                        if (!block.current.equals(block.original) || !block.exp.isEmpty()) paint.setColor(block.userModified && !block.current.equals(block.original) ? 0xFF4CAF50 : 0xFFE53935);
+                        if (isActiveCorrection(block)) paint.setColor(block.userModified && !block.current.equals(block.original) ? 0xFF4CAF50 : 0xFFE53935);
                         else paint.setColor(0xFF2196F3);
                     }
                 };
