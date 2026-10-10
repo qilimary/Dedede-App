@@ -1130,10 +1130,10 @@ public class FloatingService extends Service {
         }
         final float temperature = fast ? 1f : storedTemperature;
         // 极速模式不使用模型；专业模式会在输入变动时预热，纠错结束后按使用间隔自适应保留30～120秒再释放。
-        float tDe = MainActivity.parseFloatSafe(sp.getString("pro_th1", "0.68"), Float.NaN);
-        float tDi = MainActivity.parseFloatSafe(sp.getString("pro_th2", "0.68"), Float.NaN);
-        float tDe3 = MainActivity.parseFloatSafe(sp.getString("pro_th3", "0.74"), Float.NaN);
-        float tZuo=MainActivity.parseFloatSafe(sp.getString("pro_th4","0.74"),Float.NaN),tZuo4=MainActivity.parseFloatSafe(sp.getString("pro_th5","0.74"),Float.NaN);
+        float tDe = MainActivity.parseFloatSafe(sp.getString("pro_th1", "0.7"), Float.NaN);
+        float tDi = MainActivity.parseFloatSafe(sp.getString("pro_th2", "0.7"), Float.NaN);
+        float tDe3 = MainActivity.parseFloatSafe(sp.getString("pro_th3", "0.75"), Float.NaN);
+        float tZuo=MainActivity.parseFloatSafe(sp.getString("pro_th4","0.75"),Float.NaN),tZuo4=MainActivity.parseFloatSafe(sp.getString("pro_th5","0.75"),Float.NaN);
         if (!fast) MainActivity.noteProCorrectionStart(this);
         lastCorrectedText = "";
         MainActivity.hasNewFloatResult = false;
@@ -3160,9 +3160,9 @@ public class MainActivity extends AppCompatActivity {
         if (tvInputEditorWordCount != null) tvInputEditorWordCount.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 15 + ui);
         for (EditText field : new EditText[]{editTemp, editThreshDe1, editThreshDe2, editThreshDe3, editThreshZuo, editThreshZuo4}) if (field != null) field.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 13 + ui);
         for (int id : new int[]{R.id.labelDe, R.id.labelDi, R.id.labelDe3, R.id.labelZuo, R.id.labelZuo4}) {
-            TextView label = findViewById(id); if (label != null) label.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 16 + ui);
+            TextView label = findViewById(id); if (label != null) label.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 15 + ui);
         }
-        TextView tempLabel = findViewById(R.id.labelTemp); if (tempLabel != null) tempLabel.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 11 + ui);
+        TextView tempLabel = findViewById(R.id.labelTemp); if (tempLabel != null) tempLabel.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 12.5f + ui);
     }
 
     private android.graphics.drawable.GradientDrawable solidSkinDrawable(int color, float radiusDp) {
@@ -3388,6 +3388,15 @@ public class MainActivity extends AppCompatActivity {
             if("1.0".equals(sp.getString("pro_temp","1.0"))&&"0.68".equals(sp.getString("pro_th1","0.68"))&&"0.68".equals(sp.getString("pro_th2","0.68"))&&"0.72".equals(sp.getString("pro_th3","0.72")))migration.putString("pro_th3","0.74");
             migration.apply();
         }
+        if(!sp.getBoolean("hcam_thresholds_20261011",false)) {
+            SharedPreferences.Editor defaults=sp.edit().putBoolean("hcam_thresholds_20261011",true);
+            String[] keys={"pro_th1","pro_th2","pro_th3","pro_th4","pro_th5"};
+            for(int i=0;i<keys.length;i++) {
+                String old=i<2?"0.68":"0.74", next=i<2?"0.7":"0.75";
+                if(old.equals(sp.getString(keys[i],old))) defaults.putString(keys[i],next);
+            }
+            defaults.apply();
+        }
         String temperature = sp.getString("pro_temp", "1.0");
         if (!isTemperatureValid(parseFloatSafe(temperature, Float.NaN))) {
             temperature = "1.0";
@@ -3396,10 +3405,10 @@ public class MainActivity extends AppCompatActivity {
         }
         // 两种模式显示同一组专业参数；极速模式只禁用并置灰，不再换成另一套数字。
         editTemp.setText(temperature);
-        editThreshDe1.setText(sp.getString("pro_th1", "0.68"));
-        editThreshDe2.setText(sp.getString("pro_th2", "0.68"));
-        editThreshDe3.setText(sp.getString("pro_th3", "0.74"));
-        editThreshZuo.setText(sp.getString("pro_th4", "0.74")); editThreshZuo4.setText(sp.getString("pro_th5", "0.74"));
+        editThreshDe1.setText(sp.getString("pro_th1", "0.7"));
+        editThreshDe2.setText(sp.getString("pro_th2", "0.7"));
+        editThreshDe3.setText(sp.getString("pro_th3", "0.75"));
+        editThreshZuo.setText(sp.getString("pro_th4", "0.75")); editThreshZuo4.setText(sp.getString("pro_th5", "0.75"));
         boolean professional = !fast;
         for (EditText field : new EditText[]{editTemp, editThreshDe1, editThreshDe2, editThreshDe3, editThreshZuo, editThreshZuo4}) {
             field.setEnabled(professional);
@@ -4015,7 +4024,7 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void showHelp() {
-        String text = "【模式介绍】\n极速：不调用神经网络检查“的/地/得/做/作”；仅运行系统内置的错词库和规则。速度最快（毫秒级），适合只想快速检查错别字与语病的场景。\n\n专业：比极速模式额外纠错“的地得做作”使用，速度较快（秒级）。\nHCAM模型是本作者自己设计，并从零训练＋微调的中文掩码模型。该模型会额外纠错“的地得”和“做作”。\n通常建议始终使用专业模式，除非你对“的地得做作”运用得如火纯青。\n\n注：不同手机的速度会有差异；模型也可能出现极少量误判，这是神经网络的通病，在所难免。\n\n单次纠错不建议超过30万字，可能会出现卡顿或闪退。\n\n【温度参数（仅专业模式）】\n控制AI判断的自信（果断）程度。\n• 允许范围：0.5～2.0；推荐默认值1.0。\n• 温度值越高，概率分布越平缓，模型更保守，给出的置信度变低，修改量可能下降。\n• 值越低（如0.5）：概率分布越尖锐，模型更激进，给出的置信度更高，修改量可能上升。\n• 值越高（如2.0）：概率分布越平缓，模型更保守，修改量可能下降。\n举例：0.8会给出更高的置信度，更不容易被阈值拦截。1.2会更保守，更容易被阈值拦截。\n• 温度不得低于0.5或高于2.0。\n\n【置信度拦截阈值（仅专业模式）】\n只有AI的置信度 ≥ 阈值时才修改，否则保留原字，防止过度纠错。\n• 推荐默认值：的0.68、地0.68、得0.74、做0.74、作0.74。阈值按模型预测的目标字应用，范围0～1。\n举例：设置为0.9时，模型修改的置信度超过0.9才会被保留并显示，否则忽略。\n\n【交互与拓展功能】\n• 手动修改：检查后，点击带下划线的字词即可手动修改或还原。\n• 纠错过程中修改原文会中断检查。\n• 输入框展开：点击输入框右上角的展开按钮，可进入全屏输入编辑，支持可拖动滚动条、撤销、还原和首行缩进；完成后内容会自动同步回主输入框。\n• 便签模式：长按底部纠错结果区域，即可展开便签编辑器进行全局修改，完成后支持直接导出。绿色的波浪线为系统或你修改过的文本（原在输出框中呈现红色）。\n• 字体大小与皮肤：点击标题栏“A”进入字体设置，可调节字体大小。底部彩色衣服可切换不同的界面皮肤。\n• 快速跳转：点击纠错清单中的序号 [1]，可以自动滚动定位至全文对应段落。\n• 一键粘贴：点击按钮快速读取剪贴板内容。（不建议一次性粘贴超过20万字，可能导致闪退）\n• 导入文件：支持txt、md、docx、pdf及图片格式(支持直接OCR识图)。\n  不建议一次导入多个过大的文件，可能导致使用卡顿。也不建议导入带有特定格式和排版（如表格类）的文件，会破坏原有排版。\n\n• 系统分享：在其他App中选中文本，点击分享并选择本App，即可跳转至系统进行纠错。\n• 历史记录：最多保存近50条。\n\n 【错词库】\n  手动定义规则，这些规则会在纠错中自动应用。\n  使用方法：\n1.白名单：\n在“原始文本”框输入例如“慢慢的”或“张三”，直接提交。等效于白名单，系统在遇到该词后不会再修改。\n  2.改错：在“修改后”里再添加文本（如：慢慢地），纠错时原始文本就会被自动修改。\n• 自定义规则优先级高于本系统。\n\n【悬浮窗】\n开启后支持后台随时随地纠错。长按悬浮球或点击面板右上角可同步至应用内继续操作。点击面板外可自动收起。\n\n【标点清理：】\n  当检测到包含复制残留的垃圾标点时会触发弹窗，允许自由清理提纯文本。\n\n• 其他：本App和内置模型均由 奇 制作与训练，非其他开源模型，无版权风险。本著作权归奇（qi）所有。想与作者私聊？公众号搜索：Li的信箱";
+        String text = "【模式介绍】\n极速：不调用神经网络检查“的/地/得/做/作”；仅运行系统内置的错词库和规则。速度最快（毫秒级），适合只想快速检查错别字与语病的场景。\n\n专业：比极速模式额外纠错“的地得做作”使用，速度较快（秒级）。\nHCAM模型是本作者自己设计，并从零训练＋微调的中文掩码模型。该模型会额外纠错“的地得”和“做作”。\n通常建议始终使用专业模式，除非你对“的地得做作”运用得如火纯青。\n\n注：不同手机的速度会有差异；模型也可能出现极少量误判，这是神经网络的通病，在所难免。\n\n单次纠错不建议超过30万字，可能会出现卡顿或闪退。\n\n【温度参数（仅专业模式）】\n控制AI判断的自信（果断）程度。\n• 允许范围：0.5～2.0；推荐默认值1.0。\n• 温度值越高，概率分布越平缓，模型更保守，给出的置信度变低，修改量可能下降。\n• 值越低（如0.5）：概率分布越尖锐，模型更激进，给出的置信度更高，修改量可能上升。\n• 值越高（如2.0）：概率分布越平缓，模型更保守，修改量可能下降。\n举例：0.8会给出更高的置信度，更不容易被阈值拦截。1.2会更保守，更容易被阈值拦截。\n• 温度不得低于0.5或高于2.0。\n\n【置信度拦截阈值（仅专业模式）】\n只有AI的置信度 ≥ 阈值时才修改，否则保留原字，防止过度纠错。\n• 推荐默认值：的0.7、地0.7、得0.75、做0.75、作0.75。阈值按模型预测的目标字应用，范围0～1。\n举例：设置为0.9时，模型修改的置信度超过0.9才会被保留并显示，否则忽略。\n\n【交互与拓展功能】\n• 手动修改：检查后，点击带下划线的字词即可手动修改或还原。\n• 纠错过程中修改原文会中断检查。\n• 输入框展开：点击输入框右上角的展开按钮，可进入全屏输入编辑，支持可拖动滚动条、撤销、还原和首行缩进；完成后内容会自动同步回主输入框。\n• 便签模式：长按底部纠错结果区域，即可展开便签编辑器进行全局修改，完成后支持直接导出。绿色的波浪线为系统或你修改过的文本（原在输出框中呈现红色）。\n• 字体大小与皮肤：点击标题栏“A”进入字体设置，可调节字体大小。底部彩色衣服可切换不同的界面皮肤。\n• 快速跳转：点击纠错清单中的序号 [1]，可以自动滚动定位至全文对应段落。\n• 一键粘贴：点击按钮快速读取剪贴板内容。（不建议一次性粘贴超过20万字，可能导致闪退）\n• 导入文件：支持txt、md、docx、pdf及图片格式(支持直接OCR识图)。\n  不建议一次导入多个过大的文件，可能导致使用卡顿。也不建议导入带有特定格式和排版（如表格类）的文件，会破坏原有排版。\n\n• 系统分享：在其他App中选中文本，点击分享并选择本App，即可跳转至系统进行纠错。\n• 历史记录：最多保存近50条。\n\n 【错词库】\n  手动定义规则，这些规则会在纠错中自动应用。\n  使用方法：\n1.白名单：\n在“原始文本”框输入例如“慢慢的”或“张三”，直接提交。等效于白名单，系统在遇到该词后不会再修改。\n  2.改错：在“修改后”里再添加文本（如：慢慢地），纠错时原始文本就会被自动修改。\n• 自定义规则优先级高于本系统。\n\n【悬浮窗】\n开启后支持后台随时随地纠错。长按悬浮球或点击面板右上角可同步至应用内继续操作。点击面板外可自动收起。\n\n【标点清理：】\n  当检测到包含复制残留的垃圾标点时会触发弹窗，允许自由清理提纯文本。\n\n• 其他：本App和内置模型均由 奇 制作与训练，非其他开源模型，无版权风险。本著作权归奇（qi）所有。想与作者私聊？公众号搜索：Li的信箱";
         int ui = Math.max(-2, Math.min(2, sp.getInt("font_offset_sys", 0))); TextView view = new TextView(this); view.setText(text); view.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 14 + ui); view.setTextColor(0xFF333333); view.setLineSpacing(0, 1.2f); int padding = (int) (20 * getResources().getDisplayMetrics().density); view.setPadding(padding, padding / 2, padding, 0); ScrollView scroll = new ScrollView(this); scroll.addView(view); new AlertDialog.Builder(this).setTitle("使用说明").setView(scroll).setPositiveButton("知道了", null).show();
     }
 
@@ -5231,34 +5240,34 @@ cat > "app/src/main/res/layout/activity_main.xml" <<'DEDEDE_SOURCE_EOF'
             <LinearLayout android:id="@+id/modeBar" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:gravity="center_vertical" android:layout_marginBottom="8dp">
                 <RadioGroup android:id="@+id/rgMode" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:orientation="horizontal" android:gravity="center_vertical">
                     <RadioButton android:id="@+id/rbFast" android:layout_width="0dp" android:layout_height="48dp" android:layout_weight="1" android:minWidth="0dp" android:paddingStart="0dp" android:paddingEnd="0dp" android:text="极速" android:textColor="@color/text_primary" android:textSize="14sp"/>
-                    <RadioButton android:id="@+id/rbPro" android:layout_width="0dp" android:layout_height="48dp" android:layout_weight="1.8" android:minWidth="0dp" android:paddingStart="0dp" android:paddingEnd="0dp" android:text="专业（HCAM）" android:checked="true" android:textColor="@color/text_primary" android:textSize="14sp"/>
+                    <RadioButton android:id="@+id/rbPro" android:layout_width="0dp" android:layout_height="48dp" android:layout_weight="1.8" android:layout_marginStart="4dp" android:minWidth="0dp" android:paddingStart="0dp" android:paddingEnd="0dp" android:text="专业（HCAM）" android:checked="true" android:textColor="@color/text_primary" android:textSize="14sp"/>
                 </RadioGroup>
-                <LinearLayout android:id="@+id/paramTemp" android:layout_width="wrap_content" android:layout_height="48dp" android:orientation="horizontal" android:gravity="center_vertical" android:layout_marginStart="4dp">
-                    <TextView android:id="@+id/labelTemp" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="温度" android:textSize="11sp" android:textColor="@color/text_secondary"/>
+                <LinearLayout android:id="@+id/paramTemp" android:layout_width="wrap_content" android:layout_height="48dp" android:orientation="horizontal" android:gravity="center_vertical" android:layout_marginStart="4dp" android:layout_marginEnd="4dp">
+                    <TextView android:id="@+id/labelTemp" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="温度" android:textSize="12.5sp" android:textColor="@color/text_secondary"/>
                     <EditText android:id="@+id/editTemp" android:layout_width="42dp" android:layout_height="48dp" android:minWidth="0dp" android:padding="0dp" android:text="1.0" android:contentDescription="温度" android:textColor="@color/text_primary" android:textSize="13sp" android:inputType="numberDecimal" android:maxLength="5" android:singleLine="true" android:gravity="center" android:background="@null"/>
                 </LinearLayout>
             </LinearLayout>
 
             <LinearLayout android:id="@+id/paramsCard" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:gravity="center_vertical" android:baselineAligned="false" android:background="@color/card_bg" android:padding="6dp" android:layout_marginBottom="10dp">
                 <LinearLayout android:id="@+id/paramDe" android:layout_width="0dp" android:layout_height="48dp" android:layout_weight="1" android:orientation="horizontal" android:gravity="center_vertical">
-                    <TextView android:id="@+id/labelDe" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="的" android:textSize="16sp" android:textStyle="bold" android:textColor="@color/text_primary"/>
-                    <EditText android:id="@+id/editThreshDe1" android:layout_width="0dp" android:layout_weight="1" android:layout_height="48dp" android:minWidth="0dp" android:padding="0dp" android:text="0.68" android:contentDescription="的字阈值" android:textColor="@color/text_primary" android:textSize="13sp" android:inputType="numberDecimal" android:maxLength="5" android:singleLine="true" android:gravity="center" android:background="@null"/>
+                    <TextView android:id="@+id/labelDe" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="的" android:textSize="15sp" android:textStyle="bold" android:textColor="@color/text_primary"/>
+                    <EditText android:id="@+id/editThreshDe1" android:layout_width="0dp" android:layout_weight="1" android:layout_height="48dp" android:minWidth="0dp" android:padding="0dp" android:text="0.7" android:contentDescription="的字阈值" android:textColor="@color/text_primary" android:textSize="13sp" android:inputType="numberDecimal" android:maxLength="5" android:singleLine="true" android:gravity="center" android:background="@null"/>
                 </LinearLayout>
                 <LinearLayout android:id="@+id/paramDi" android:layout_width="0dp" android:layout_height="48dp" android:layout_weight="1" android:orientation="horizontal" android:gravity="center_vertical">
-                    <TextView android:id="@+id/labelDi" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="地" android:textSize="16sp" android:textStyle="bold" android:textColor="@color/text_primary"/>
-                    <EditText android:id="@+id/editThreshDe2" android:layout_width="0dp" android:layout_weight="1" android:layout_height="48dp" android:minWidth="0dp" android:padding="0dp" android:text="0.68" android:contentDescription="地字阈值" android:textColor="@color/text_primary" android:textSize="13sp" android:inputType="numberDecimal" android:maxLength="5" android:singleLine="true" android:gravity="center" android:background="@null"/>
+                    <TextView android:id="@+id/labelDi" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="地" android:textSize="15sp" android:textStyle="bold" android:textColor="@color/text_primary"/>
+                    <EditText android:id="@+id/editThreshDe2" android:layout_width="0dp" android:layout_weight="1" android:layout_height="48dp" android:minWidth="0dp" android:padding="0dp" android:text="0.7" android:contentDescription="地字阈值" android:textColor="@color/text_primary" android:textSize="13sp" android:inputType="numberDecimal" android:maxLength="5" android:singleLine="true" android:gravity="center" android:background="@null"/>
                 </LinearLayout>
                 <LinearLayout android:id="@+id/paramDe3" android:layout_width="0dp" android:layout_height="48dp" android:layout_weight="1" android:orientation="horizontal" android:gravity="center_vertical">
-                    <TextView android:id="@+id/labelDe3" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="得" android:textSize="16sp" android:textStyle="bold" android:textColor="@color/text_primary"/>
-                    <EditText android:id="@+id/editThreshDe3" android:layout_width="0dp" android:layout_weight="1" android:layout_height="48dp" android:minWidth="0dp" android:padding="0dp" android:text="0.74" android:contentDescription="得字阈值" android:textColor="@color/text_primary" android:textSize="13sp" android:inputType="numberDecimal" android:maxLength="5" android:singleLine="true" android:gravity="center" android:background="@null"/>
+                    <TextView android:id="@+id/labelDe3" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="得" android:textSize="15sp" android:textStyle="bold" android:textColor="@color/text_primary"/>
+                    <EditText android:id="@+id/editThreshDe3" android:layout_width="0dp" android:layout_weight="1" android:layout_height="48dp" android:minWidth="0dp" android:padding="0dp" android:text="0.75" android:contentDescription="得字阈值" android:textColor="@color/text_primary" android:textSize="13sp" android:inputType="numberDecimal" android:maxLength="5" android:singleLine="true" android:gravity="center" android:background="@null"/>
                 </LinearLayout>
                 <LinearLayout android:id="@+id/paramZuo" android:layout_width="0dp" android:layout_height="48dp" android:layout_weight="1" android:orientation="horizontal" android:gravity="center_vertical">
-                    <TextView android:id="@+id/labelZuo" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="做" android:textSize="16sp" android:textStyle="bold" android:textColor="@color/text_primary"/>
-                    <EditText android:id="@+id/editThreshZuo" android:layout_width="0dp" android:layout_weight="1" android:layout_height="48dp" android:minWidth="0dp" android:padding="0dp" android:text="0.74" android:contentDescription="做字阈值" android:textColor="@color/text_primary" android:textSize="13sp" android:inputType="numberDecimal" android:maxLength="5" android:singleLine="true" android:gravity="center" android:background="@null"/>
+                    <TextView android:id="@+id/labelZuo" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="做" android:textSize="15sp" android:textStyle="bold" android:textColor="@color/text_primary"/>
+                    <EditText android:id="@+id/editThreshZuo" android:layout_width="0dp" android:layout_weight="1" android:layout_height="48dp" android:minWidth="0dp" android:padding="0dp" android:text="0.75" android:contentDescription="做字阈值" android:textColor="@color/text_primary" android:textSize="13sp" android:inputType="numberDecimal" android:maxLength="5" android:singleLine="true" android:gravity="center" android:background="@null"/>
                 </LinearLayout>
                 <LinearLayout android:id="@+id/paramZuo4" android:layout_width="0dp" android:layout_height="48dp" android:layout_weight="1" android:orientation="horizontal" android:gravity="center_vertical">
-                    <TextView android:id="@+id/labelZuo4" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="作" android:textSize="16sp" android:textStyle="bold" android:textColor="@color/text_primary"/>
-                    <EditText android:id="@+id/editThreshZuo4" android:layout_width="0dp" android:layout_weight="1" android:layout_height="48dp" android:minWidth="0dp" android:padding="0dp" android:text="0.74" android:contentDescription="作字阈值" android:textColor="@color/text_primary" android:textSize="13sp" android:inputType="numberDecimal" android:maxLength="5" android:singleLine="true" android:gravity="center" android:background="@null"/>
+                    <TextView android:id="@+id/labelZuo4" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="作" android:textSize="15sp" android:textStyle="bold" android:textColor="@color/text_primary"/>
+                    <EditText android:id="@+id/editThreshZuo4" android:layout_width="0dp" android:layout_weight="1" android:layout_height="48dp" android:minWidth="0dp" android:padding="0dp" android:text="0.75" android:contentDescription="作字阈值" android:textColor="@color/text_primary" android:textSize="13sp" android:inputType="numberDecimal" android:maxLength="5" android:singleLine="true" android:gravity="center" android:background="@null"/>
                 </LinearLayout>
             </LinearLayout>
 
@@ -5268,7 +5277,7 @@ cat > "app/src/main/res/layout/activity_main.xml" <<'DEDEDE_SOURCE_EOF'
                 <TextView android:id="@+id/tvWordCount" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_alignParentBottom="true" android:layout_alignParentEnd="true" android:layout_marginEnd="8dp" android:layout_marginBottom="3dp" android:text="0 字" android:textColor="#9E9E9E" android:textSize="11sp"/>
             </RelativeLayout>
 
-            <Button android:id="@+id/btnCheck" android:layout_width="match_parent" android:layout_height="52dp" android:text="开始纠错" android:textSize="16sp" android:layout_marginTop="2dp" android:layout_marginBottom="6dp" android:backgroundTint="#2196F3"/>
+            <Button android:id="@+id/btnCheck" android:layout_width="match_parent" android:layout_height="52dp" android:text="开始纠错" android:textSize="16sp" android:textColor="#FFFFFF" android:layout_marginTop="2dp" android:layout_marginBottom="6dp" android:backgroundTint="#2196F3"/>
             <ProgressBar android:id="@+id/progressBar" style="?android:attr/progressBarStyleHorizontal" android:layout_width="match_parent" android:layout_height="4dp" android:progressTint="#81C784" android:max="100" android:progress="0" android:layout_marginTop="-4dp" android:layout_marginBottom="6dp" android:visibility="invisible"/>
 
             <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:layout_marginBottom="10dp">
