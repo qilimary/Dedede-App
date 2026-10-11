@@ -5185,6 +5185,28 @@ cat > "app/src/main/res/drawable/circle_btn_bg.xml" <<'DEDEDE_SOURCE_EOF'
 DEDEDE_SOURCE_EOF
 
 mkdir -p "app/src/main/res/drawable"
+cat > "app/src/main/res/drawable/bg_check_gradient.xml" <<'DEDEDE_SOURCE_EOF'
+<?xml version="1.0" encoding="utf-8"?>
+<ripple xmlns:android="http://schemas.android.com/apk/res/android" android:color="#22FFFFFF">
+    <item>
+        <inset android:insetLeft="4dp" android:insetRight="4dp" android:insetTop="6dp" android:insetBottom="6dp">
+            <shape><corners android:radius="12dp"/><gradient android:angle="0" android:startColor="#2589D8" android:endColor="#4497E3"/><stroke android:width="1dp" android:color="#88C0C4CC"/></shape>
+        </inset>
+    </item>
+</ripple>
+DEDEDE_SOURCE_EOF
+
+mkdir -p "app/src/main/res/drawable"
+cat > "app/src/main/res/drawable/bg_temp_outline.xml" <<'DEDEDE_SOURCE_EOF'
+<?xml version="1.0" encoding="utf-8"?>
+<shape xmlns:android="http://schemas.android.com/apk/res/android">
+    <solid android:color="#10FFFFFF"/>
+    <stroke android:width="1dp" android:color="#22000000"/>
+    <corners android:radius="9dp"/>
+</shape>
+DEDEDE_SOURCE_EOF
+
+mkdir -p "app/src/main/res/drawable"
 cat > "app/src/main/res/drawable/ic_dedede_fg.xml" <<'DEDEDE_SOURCE_EOF'
 <vector xmlns:android="http://schemas.android.com/apk/res/android" android:width="28dp" android:height="28dp" android:viewportWidth="24" android:viewportHeight="24">
     <path android:fillColor="#FFFFFF" android:strokeColor="#FFFFFF" android:strokeWidth="1.2" android:pathData="M9,16.17L4.83,12l-1.42,1.41L9,19 21,7l-1.41,-1.41z"/>
@@ -5242,32 +5264,35 @@ cat > "app/src/main/res/layout/activity_main.xml" <<'DEDEDE_SOURCE_EOF'
                     <RadioButton android:id="@+id/rbFast" android:layout_width="0dp" android:layout_height="48dp" android:layout_weight="1" android:minWidth="0dp" android:paddingStart="0dp" android:paddingEnd="0dp" android:text="极速" android:textColor="@color/text_primary" android:textSize="14sp"/>
                     <RadioButton android:id="@+id/rbPro" android:layout_width="0dp" android:layout_height="48dp" android:layout_weight="1.8" android:layout_marginStart="4dp" android:minWidth="0dp" android:paddingStart="0dp" android:paddingEnd="0dp" android:text="专业（HCAM）" android:checked="true" android:textColor="@color/text_primary" android:textSize="14sp"/>
                 </RadioGroup>
-                <LinearLayout android:id="@+id/paramTemp" android:layout_width="wrap_content" android:layout_height="48dp" android:orientation="horizontal" android:gravity="center_vertical" android:layout_marginStart="4dp" android:layout_marginEnd="4dp">
+                <LinearLayout android:id="@+id/paramTemp" android:layout_width="wrap_content" android:layout_height="42dp" android:orientation="horizontal" android:gravity="center_vertical" android:layout_marginStart="4dp" android:layout_marginEnd="4dp" android:paddingStart="8dp" android:paddingEnd="4dp" android:background="@drawable/bg_temp_outline">
                     <TextView android:id="@+id/labelTemp" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="温度" android:textSize="12.5sp" android:textColor="@color/text_secondary"/>
-                    <EditText android:id="@+id/editTemp" android:layout_width="42dp" android:layout_height="48dp" android:minWidth="0dp" android:padding="0dp" android:text="1.0" android:contentDescription="温度" android:textColor="@color/text_primary" android:textSize="13sp" android:inputType="numberDecimal" android:maxLength="5" android:singleLine="true" android:gravity="center" android:background="@null"/>
+                    <EditText android:id="@+id/editTemp" android:layout_width="42dp" android:layout_height="40dp" android:minWidth="0dp" android:padding="0dp" android:text="1.0" android:contentDescription="温度" android:textColor="@color/text_primary" android:textSize="13sp" android:inputType="numberDecimal" android:maxLength="5" android:singleLine="true" android:gravity="center" android:background="@null"/>
                 </LinearLayout>
             </LinearLayout>
 
-            <LinearLayout android:id="@+id/paramsCard" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:gravity="center_vertical" android:baselineAligned="false" android:background="@color/card_bg" android:padding="6dp" android:layout_marginBottom="10dp">
-                <LinearLayout android:id="@+id/paramDe" android:layout_width="0dp" android:layout_height="48dp" android:layout_weight="1" android:orientation="horizontal" android:gravity="center_vertical">
+            <LinearLayout android:id="@+id/paramsCard" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:background="@color/card_bg" android:paddingStart="6dp" android:paddingEnd="6dp" android:paddingTop="5dp" android:paddingBottom="5dp" android:layout_marginBottom="10dp">
+                <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginStart="6dp" android:layout_marginBottom="1dp" android:text="修改阈值" android:textSize="10sp" android:textColor="@color/text_secondary"/>
+                <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:gravity="center_vertical" android:baselineAligned="false">
+                <LinearLayout android:id="@+id/paramDe" android:layout_width="0dp" android:layout_height="42dp" android:layout_weight="1" android:orientation="horizontal" android:gravity="center_vertical">
                     <TextView android:id="@+id/labelDe" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="的" android:textSize="15sp" android:textStyle="bold" android:textColor="@color/text_primary"/>
-                    <EditText android:id="@+id/editThreshDe1" android:layout_width="0dp" android:layout_weight="1" android:layout_height="48dp" android:minWidth="0dp" android:padding="0dp" android:text="0.7" android:contentDescription="的字阈值" android:textColor="@color/text_primary" android:textSize="13sp" android:inputType="numberDecimal" android:maxLength="5" android:singleLine="true" android:gravity="center" android:background="@null"/>
+                    <EditText android:id="@+id/editThreshDe1" android:layout_width="0dp" android:layout_weight="1" android:layout_height="42dp" android:minWidth="0dp" android:padding="0dp" android:text="0.7" android:contentDescription="的字阈值" android:textColor="@color/text_primary" android:textSize="13sp" android:inputType="numberDecimal" android:maxLength="5" android:singleLine="true" android:gravity="center" android:background="@null"/>
                 </LinearLayout>
-                <LinearLayout android:id="@+id/paramDi" android:layout_width="0dp" android:layout_height="48dp" android:layout_weight="1" android:orientation="horizontal" android:gravity="center_vertical">
+                <LinearLayout android:id="@+id/paramDi" android:layout_width="0dp" android:layout_height="42dp" android:layout_weight="1" android:orientation="horizontal" android:gravity="center_vertical">
                     <TextView android:id="@+id/labelDi" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="地" android:textSize="15sp" android:textStyle="bold" android:textColor="@color/text_primary"/>
-                    <EditText android:id="@+id/editThreshDe2" android:layout_width="0dp" android:layout_weight="1" android:layout_height="48dp" android:minWidth="0dp" android:padding="0dp" android:text="0.7" android:contentDescription="地字阈值" android:textColor="@color/text_primary" android:textSize="13sp" android:inputType="numberDecimal" android:maxLength="5" android:singleLine="true" android:gravity="center" android:background="@null"/>
+                    <EditText android:id="@+id/editThreshDe2" android:layout_width="0dp" android:layout_weight="1" android:layout_height="42dp" android:minWidth="0dp" android:padding="0dp" android:text="0.7" android:contentDescription="地字阈值" android:textColor="@color/text_primary" android:textSize="13sp" android:inputType="numberDecimal" android:maxLength="5" android:singleLine="true" android:gravity="center" android:background="@null"/>
                 </LinearLayout>
-                <LinearLayout android:id="@+id/paramDe3" android:layout_width="0dp" android:layout_height="48dp" android:layout_weight="1" android:orientation="horizontal" android:gravity="center_vertical">
+                <LinearLayout android:id="@+id/paramDe3" android:layout_width="0dp" android:layout_height="42dp" android:layout_weight="1" android:orientation="horizontal" android:gravity="center_vertical">
                     <TextView android:id="@+id/labelDe3" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="得" android:textSize="15sp" android:textStyle="bold" android:textColor="@color/text_primary"/>
-                    <EditText android:id="@+id/editThreshDe3" android:layout_width="0dp" android:layout_weight="1" android:layout_height="48dp" android:minWidth="0dp" android:padding="0dp" android:text="0.75" android:contentDescription="得字阈值" android:textColor="@color/text_primary" android:textSize="13sp" android:inputType="numberDecimal" android:maxLength="5" android:singleLine="true" android:gravity="center" android:background="@null"/>
+                    <EditText android:id="@+id/editThreshDe3" android:layout_width="0dp" android:layout_weight="1" android:layout_height="42dp" android:minWidth="0dp" android:padding="0dp" android:text="0.75" android:contentDescription="得字阈值" android:textColor="@color/text_primary" android:textSize="13sp" android:inputType="numberDecimal" android:maxLength="5" android:singleLine="true" android:gravity="center" android:background="@null"/>
                 </LinearLayout>
-                <LinearLayout android:id="@+id/paramZuo" android:layout_width="0dp" android:layout_height="48dp" android:layout_weight="1" android:orientation="horizontal" android:gravity="center_vertical">
+                <LinearLayout android:id="@+id/paramZuo" android:layout_width="0dp" android:layout_height="42dp" android:layout_weight="1" android:orientation="horizontal" android:gravity="center_vertical">
                     <TextView android:id="@+id/labelZuo" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="做" android:textSize="15sp" android:textStyle="bold" android:textColor="@color/text_primary"/>
-                    <EditText android:id="@+id/editThreshZuo" android:layout_width="0dp" android:layout_weight="1" android:layout_height="48dp" android:minWidth="0dp" android:padding="0dp" android:text="0.75" android:contentDescription="做字阈值" android:textColor="@color/text_primary" android:textSize="13sp" android:inputType="numberDecimal" android:maxLength="5" android:singleLine="true" android:gravity="center" android:background="@null"/>
+                    <EditText android:id="@+id/editThreshZuo" android:layout_width="0dp" android:layout_weight="1" android:layout_height="42dp" android:minWidth="0dp" android:padding="0dp" android:text="0.75" android:contentDescription="做字阈值" android:textColor="@color/text_primary" android:textSize="13sp" android:inputType="numberDecimal" android:maxLength="5" android:singleLine="true" android:gravity="center" android:background="@null"/>
                 </LinearLayout>
-                <LinearLayout android:id="@+id/paramZuo4" android:layout_width="0dp" android:layout_height="48dp" android:layout_weight="1" android:orientation="horizontal" android:gravity="center_vertical">
+                <LinearLayout android:id="@+id/paramZuo4" android:layout_width="0dp" android:layout_height="42dp" android:layout_weight="1" android:orientation="horizontal" android:gravity="center_vertical">
                     <TextView android:id="@+id/labelZuo4" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="作" android:textSize="15sp" android:textStyle="bold" android:textColor="@color/text_primary"/>
-                    <EditText android:id="@+id/editThreshZuo4" android:layout_width="0dp" android:layout_weight="1" android:layout_height="48dp" android:minWidth="0dp" android:padding="0dp" android:text="0.75" android:contentDescription="作字阈值" android:textColor="@color/text_primary" android:textSize="13sp" android:inputType="numberDecimal" android:maxLength="5" android:singleLine="true" android:gravity="center" android:background="@null"/>
+                    <EditText android:id="@+id/editThreshZuo4" android:layout_width="0dp" android:layout_weight="1" android:layout_height="42dp" android:minWidth="0dp" android:padding="0dp" android:text="0.75" android:contentDescription="作字阈值" android:textColor="@color/text_primary" android:textSize="13sp" android:inputType="numberDecimal" android:maxLength="5" android:singleLine="true" android:gravity="center" android:background="@null"/>
+                </LinearLayout>
                 </LinearLayout>
             </LinearLayout>
 
@@ -5277,7 +5302,7 @@ cat > "app/src/main/res/layout/activity_main.xml" <<'DEDEDE_SOURCE_EOF'
                 <TextView android:id="@+id/tvWordCount" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_alignParentBottom="true" android:layout_alignParentEnd="true" android:layout_marginEnd="8dp" android:layout_marginBottom="3dp" android:text="0 字" android:textColor="#9E9E9E" android:textSize="11sp"/>
             </RelativeLayout>
 
-            <Button android:id="@+id/btnCheck" android:layout_width="match_parent" android:layout_height="52dp" android:text="开始纠错" android:textSize="16sp" android:textColor="#FFFFFF" android:layout_marginTop="2dp" android:layout_marginBottom="6dp" android:backgroundTint="#2196F3"/>
+            <Button android:id="@+id/btnCheck" android:layout_width="match_parent" android:layout_height="52dp" android:text="开始纠错" android:textSize="16sp" android:letterSpacing="0.075" android:textColor="#FFFFFF" android:layout_marginTop="2dp" android:layout_marginBottom="6dp" android:background="@drawable/bg_check_gradient" android:backgroundTint="@null"/>
             <ProgressBar android:id="@+id/progressBar" style="?android:attr/progressBarStyleHorizontal" android:layout_width="match_parent" android:layout_height="4dp" android:progressTint="#81C784" android:max="100" android:progress="0" android:layout_marginTop="-4dp" android:layout_marginBottom="6dp" android:visibility="invisible"/>
 
             <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:layout_marginBottom="10dp">
