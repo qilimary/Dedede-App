@@ -2115,8 +2115,6 @@ public class MainActivity extends AppCompatActivity {
             addProtectedTargetPattern("(?:打|玩|开|刷|排|试|选|挑)[ 　]*(?:自由|休闲|经典|普通|简单|困难)(的)(?=[ 　]*(?:来(?:练级|打怪|刷图|探索|体验|做任务)|就(?:好|行|可以)|也(?:好|行)))");
             // 明确的定语名词搭配，不扩大到“自由的选择/行动/探索”等动词歧义。
             addProtectedTargetPattern("自由(的)(?=[ 　]*(?:模式|副本|关卡|地图|玩法|世界|灵魂|思想|权利|意志|空间|天空))");
-            // “换做/换作别人”属常见并存表达；只在特定假设句中保留原字。
-            addProtectedTargetPattern("换([做作])(?=(?:别人|其他人|是(?:我|你|他|她|别人)|(?:我|你|他|她)(?=[，,。！？!?；;：:\\n”’\"]|$|也|就|都|还|可能|应该)))");
 
             // 纠错 Pro 扩大五字回归：只保护实测合法的原字，限定后续词义/句式边界。
             addProtectedTargetPattern("(?:工作|任务|活儿|作业)(得)(?=分(?:[两三四五六几]|[2-9])天(?:做|完成|处理))");
@@ -3155,7 +3153,7 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void updateFontSize(int textOffset, int systemOffset) {
-        float inputSize = 15f + textOffset, outputSize = 15.5f + textOffset; int ui = Math.max(-2, Math.min(2, systemOffset));
+        float inputSize = 15f + textOffset, outputSize = 15.5f + textOffset; int ui = Math.max(-3, Math.min(3, systemOffset));
         if (inputText != null) inputText.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, inputSize);
         if (outputText != null) outputText.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, outputSize);
         if (expandedEditText != null) expandedEditText.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, outputSize);
@@ -3173,6 +3171,22 @@ public class MainActivity extends AppCompatActivity {
             TextView label = findViewById(id); if (label != null) label.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 15 + ui);
         }
         TextView tempLabel = findViewById(R.id.labelTemp); if (tempLabel != null) tempLabel.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 12.5f + ui);
+        // “系统字号”也覆盖阈值提示和抽屉里的固定文字；动态列表在渲染时按保存的偏移量设置。
+        for (int id : new int[]{R.id.tvThresholdHint, R.id.tvWhitelistJumpHint}) {
+            TextView label = findViewById(id); if (label != null) label.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, (id == R.id.tvThresholdHint ? 10f : 11f) + ui);
+        }
+        for (int id : new int[]{R.id.tvCustomTyposTitle, R.id.tvRecentHistoryTitle}) {
+            TextView label = findViewById(id); if (label != null) label.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 16f + ui);
+        }
+        for (int id : new int[]{R.id.etOriginal, R.id.etCorrected}) {
+            EditText field = findViewById(id); if (field != null) field.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 13f + ui);
+        }
+        for (int id : new int[]{R.id.btnExpandTypos, R.id.btnAddTypo}) {
+            Button button = findViewById(id); if (button != null) button.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 12f + ui);
+        }
+        for (int id : new int[]{R.id.btnClearHistory, R.id.tvCustomTyposArrow}) {
+            TextView label = findViewById(id); if (label != null) label.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 14f + ui);
+        }
     }
 
     private android.graphics.drawable.GradientDrawable solidSkinDrawable(int color, float radiusDp) {
@@ -3322,9 +3336,9 @@ public class MainActivity extends AppCompatActivity {
         TextView textLabel = new TextView(this); textLabel.setText("正文字号 (输入/输出/便签): " + (15 + textOffset)); textLabel.setTextSize(14f); textLabel.setTextColor(0xFF666666); textLabel.setPadding(0, (int) (18 * density), 0, (int) (4 * density));
         android.widget.SeekBar textSeek = new android.widget.SeekBar(this); textSeek.setMax(14); textSeek.setProgress(textOffset + 4); textSeek.setPadding((int) (8 * density), 0, (int) (8 * density), (int) (10 * density));
         TextView systemLabel = new TextView(this); systemLabel.setText("系统字号 (按钮/标题等): " + (systemOffset > 0 ? "+" + systemOffset : systemOffset)); systemLabel.setTextSize(14f); systemLabel.setTextColor(0xFF666666); systemLabel.setPadding(0, (int) (6 * density), 0, (int) (4 * density));
-        android.widget.SeekBar systemSeek = new android.widget.SeekBar(this); systemSeek.setMax(4); systemSeek.setProgress(systemOffset + 2); systemSeek.setPadding((int) (8 * density), 0, (int) (8 * density), (int) (10 * density));
-        textSeek.setOnSeekBarChangeListener(new SimpleSeekListener() { @Override public void onProgressChanged(android.widget.SeekBar seekBar, int progress, boolean fromUser) { int offset = progress - 4; textLabel.setText("正文字号 (输入/输出等): " + (15 + offset)); updateFontSize(offset, systemSeek.getProgress() - 2); } });
-        systemSeek.setOnSeekBarChangeListener(new SimpleSeekListener() { @Override public void onProgressChanged(android.widget.SeekBar seekBar, int progress, boolean fromUser) { int offset = progress - 2; systemLabel.setText("系统字号 (按钮/标题等): " + (offset > 0 ? "+" + offset : offset)); updateFontSize(textSeek.getProgress() - 4, offset); } });
+        android.widget.SeekBar systemSeek = new android.widget.SeekBar(this); systemSeek.setMax(6); systemSeek.setProgress(Math.max(0, Math.min(6, systemOffset + 3))); systemSeek.setPadding((int) (8 * density), 0, (int) (8 * density), (int) (10 * density));
+        textSeek.setOnSeekBarChangeListener(new SimpleSeekListener() { @Override public void onProgressChanged(android.widget.SeekBar seekBar, int progress, boolean fromUser) { int offset = progress - 4; textLabel.setText("正文字号 (输入/输出等): " + (15 + offset)); updateFontSize(offset, systemSeek.getProgress() - 3); } });
+        systemSeek.setOnSeekBarChangeListener(new SimpleSeekListener() { @Override public void onProgressChanged(android.widget.SeekBar seekBar, int progress, boolean fromUser) { int offset = progress - 3; systemLabel.setText("系统字号 (按钮/标题等): " + (offset > 0 ? "+" + offset : offset)); updateFontSize(textSeek.getProgress() - 4, offset); } });
 
         LinearLayout skinRow = new LinearLayout(this); skinRow.setOrientation(LinearLayout.HORIZONTAL); skinRow.setGravity(android.view.Gravity.CENTER); skinRow.setPadding(0, (int) (6 * density), 0, (int) (2 * density));
         TextView depthLabel = new TextView(this); depthLabel.setText("界面深浅"); depthLabel.setTextSize(13f); depthLabel.setTextColor(0xFF777777); depthLabel.setPadding(0, (int) (8 * density), 0, 0);
@@ -3363,9 +3377,19 @@ public class MainActivity extends AppCompatActivity {
         });
 
         Button done = new Button(this); done.setText("完成"); done.setTextColor(0xFF2196F3); done.setBackgroundColor(Color.TRANSPARENT); LinearLayout.LayoutParams doneParams = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT); doneParams.gravity = android.view.Gravity.END; doneParams.rightMargin = (int) (1 * density); done.setLayoutParams(doneParams);
-        layout.addView(title); layout.addView(textLabel); layout.addView(textSeek); layout.addView(systemLabel); layout.addView(systemSeek); layout.addView(skinRow); layout.addView(depthLabel); layout.addView(depthSeek); layout.addView(done); refreshDepthVisibility.run();
+        Button reset = new Button(this); reset.setText("恢复默认"); reset.setTextColor(0xFF777777); reset.setBackgroundColor(Color.TRANSPARENT);
+        LinearLayout actions = new LinearLayout(this); actions.setOrientation(LinearLayout.HORIZONTAL); actions.setGravity(android.view.Gravity.END | android.view.Gravity.CENTER_VERTICAL); actions.addView(reset); actions.addView(done);
+        layout.addView(title); layout.addView(textLabel); layout.addView(textSeek); layout.addView(systemLabel); layout.addView(systemSeek); layout.addView(skinRow); layout.addView(depthLabel); layout.addView(depthSeek); layout.addView(actions); refreshDepthVisibility.run();
         android.app.AlertDialog dialog = new android.app.AlertDialog.Builder(this).setView(layout).create();
-        Runnable persist = () -> sp.edit().putInt("font_offset_text", textSeek.getProgress() - 4).putInt("font_offset_sys", systemSeek.getProgress() - 2).putInt("skin_depth", depthSeek.getProgress()).apply();
+        Runnable persist = () -> sp.edit().putInt("font_offset_text", textSeek.getProgress() - 4).putInt("font_offset_sys", systemSeek.getProgress() - 3).putInt("skin_depth", depthSeek.getProgress()).apply();
+        reset.setOnClickListener(v -> {
+            android.content.SharedPreferences.Editor editor = sp.edit().putInt("font_offset_text", 0).putInt("font_offset_sys", 0).putString("ui_skin", "default").putInt("skin_depth", 50).remove("skin_gradient_count");
+            for (int i = 1; i <= 5; i++) editor.remove("skin_gradient_" + i);
+            editor.apply();
+            textSeek.setProgress(4); systemSeek.setProgress(3); depthSeek.setProgress(50);
+            textLabel.setText("正文字号 (输入/输出/便签): 15"); systemLabel.setText("系统字号 (按钮/标题等): 0");
+            updateFontSize(0, 0); applySkin("default"); refreshSkinSelection.run(); refreshDepthVisibility.run();
+        });
         done.setOnClickListener(v -> { persist.run(); dialog.dismiss(); }); dialog.setOnCancelListener(d -> persist.run()); dialog.show();
         WindowManager.LayoutParams params = new WindowManager.LayoutParams(); params.copyFrom(dialog.getWindow().getAttributes()); params.dimAmount = Math.max(0f, Math.min(1f, params.dimAmount * .9f)); params.width = (int) (getResources().getDisplayMetrics().widthPixels * 0.86f); params.gravity = android.view.Gravity.TOP | android.view.Gravity.CENTER_HORIZONTAL; params.y = (int) (getResources().getDisplayMetrics().heightPixels * 0.12f); dialog.getWindow().setAttributes(params);
         android.graphics.drawable.GradientDrawable background = new android.graphics.drawable.GradientDrawable(); background.setColor(Color.WHITE); background.setCornerRadius(16f); dialog.getWindow().setBackgroundDrawable(background);
@@ -4035,7 +4059,7 @@ public class MainActivity extends AppCompatActivity {
 
     private void showHelp() {
         String text = "【模式介绍】\n极速：不调用神经网络检查“的/地/得/做/作”；仅运行系统内置的错词库和规则。速度最快（毫秒级），适合只想快速检查错别字与语病的场景。\n\n专业：比极速模式额外纠错“的地得做作”使用，速度较快（秒级）。\nHCAM模型是本作者自己设计，并从零训练＋微调的中文掩码模型。该模型会额外纠错“的地得”和“做作”。\n通常建议始终使用专业模式，除非你对“的地得做作”运用得如火纯青。\n\n注：不同手机的速度会有差异；模型也可能出现极少量误判，这是神经网络的通病，在所难免。\n\n单次纠错不建议超过30万字，可能会出现卡顿或闪退。\n\n【温度参数（仅专业模式）】\n控制AI判断的自信（果断）程度。\n• 允许范围：0.5～2.0；推荐默认值1.0。\n• 温度值越高，概率分布越平缓，模型更保守，给出的置信度变低，修改量可能下降。\n• 值越低（如0.5）：概率分布越尖锐，模型更激进，给出的置信度更高，修改量可能上升。\n• 值越高（如2.0）：概率分布越平缓，模型更保守，修改量可能下降。\n举例：0.8会给出更高的置信度，更不容易被阈值拦截。1.2会更保守，更容易被阈值拦截。\n• 温度不得低于0.5或高于2.0。\n\n【置信度拦截阈值（仅专业模式）】\n只有AI的置信度 ≥ 阈值时才修改，否则保留原字，防止过度纠错。\n• 推荐默认值：的0.7、地0.7、得0.75、做0.75、作0.75。阈值按模型预测的目标字应用，范围0～1。\n举例：设置为0.9时，模型修改的置信度超过0.9才会被保留并显示，否则忽略。\n\n【交互与拓展功能】\n• 手动修改：检查后，点击带下划线的字词即可手动修改或还原。\n• 纠错过程中修改原文会中断检查。\n• 输入框展开：点击输入框右上角的展开按钮，可进入全屏输入编辑，支持可拖动滚动条、撤销、还原和首行缩进；完成后内容会自动同步回主输入框。\n• 便签模式：长按底部纠错结果区域，即可展开便签编辑器进行全局修改，完成后支持直接导出。绿色的波浪线为系统或你修改过的文本（原在输出框中呈现红色）。\n• 字体大小与皮肤：点击标题栏“A”进入字体设置，可调节字体大小。底部彩色衣服可切换不同的界面皮肤。\n• 快速跳转：点击纠错清单中的序号 [1]，可以自动滚动定位至全文对应段落。\n• 一键粘贴：点击按钮快速读取剪贴板内容。（不建议一次性粘贴超过20万字，可能导致闪退）\n• 导入文件：支持txt、md、docx、pdf及图片格式(支持直接OCR识图)。\n  不建议一次导入多个过大的文件，可能导致使用卡顿。也不建议导入带有特定格式和排版（如表格类）的文件，会破坏原有排版。\n\n• 系统分享：在其他App中选中文本，点击分享并选择本App，即可跳转至系统进行纠错。\n• 历史记录：最多保存近50条。\n\n 【错词库】\n  手动定义规则，这些规则会在纠错中自动应用。\n  使用方法：\n1.白名单：\n在“原始文本”框输入例如“慢慢的”或“张三”，直接提交。等效于白名单，系统在遇到该词后不会再修改。\n  2.改错：在“修改后”里再添加文本（如：慢慢地），纠错时原始文本就会被自动修改。\n• 自定义规则优先级高于本系统。\n\n【悬浮窗】\n开启后支持后台随时随地纠错。长按悬浮球或点击面板右上角可同步至应用内继续操作。点击面板外可自动收起。\n\n【标点清理：】\n  当检测到包含复制残留的垃圾标点时会触发弹窗，允许自由清理提纯文本。\n\n• 其他：本App和内置模型均由 奇 制作与训练，非其他开源模型，无版权风险。本著作权归奇（qi）所有。想与作者私聊？公众号搜索：Li的信箱";
-        int ui = Math.max(-2, Math.min(2, sp.getInt("font_offset_sys", 0))); TextView view = new TextView(this); view.setText(text); view.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 14 + ui); view.setTextColor(0xFF333333); view.setLineSpacing(0, 1.2f); int padding = (int) (20 * getResources().getDisplayMetrics().density); view.setPadding(padding, padding / 2, padding, 0); ScrollView scroll = new ScrollView(this); scroll.addView(view); new AlertDialog.Builder(this).setTitle("使用说明").setView(scroll).setPositiveButton("知道了", null).show();
+        int ui = Math.max(-3, Math.min(3, sp.getInt("font_offset_sys", 0))); TextView view = new TextView(this); view.setText(text); view.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 14 + ui); view.setTextColor(0xFF333333); view.setLineSpacing(0, 1.2f); int padding = (int) (20 * getResources().getDisplayMetrics().density); view.setPadding(padding, padding / 2, padding, 0); ScrollView scroll = new ScrollView(this); scroll.addView(view); new AlertDialog.Builder(this).setTitle("使用说明").setView(scroll).setPositiveButton("知道了", null).show();
     }
 
     private void setupMainButtons() {
@@ -4135,7 +4159,7 @@ public class MainActivity extends AppCompatActivity {
             JSONObject object = new JSONObject(sp.getString("custom_typos", "{}")); Iterator<String> keys = object.keys(); List<String[]> items = new ArrayList<>(); while (keys.hasNext()) { String key = keys.next(); items.add(new String[]{key, object.getString(key)}); }
             int count = isTyposExpanded ? items.size() : Math.min(items.size(), 15);
             for (int i = 0; i < count; i++) {
-                String[] item = items.get(i); TextView view = new TextView(this); view.setText(item[0].equals(item[1]) ? item[0] : item[0] + " → " + item[1]); view.setPadding(16, 16, 16, 16); view.setTextSize(14f); view.setTextColor(0xFF4CAF50); view.setBackgroundResource(R.drawable.item_bg_selector); view.setClickable(true);
+                String[] item = items.get(i); TextView view = new TextView(this); view.setText(item[0].equals(item[1]) ? item[0] : item[0] + " → " + item[1]); view.setPadding(16, 16, 16, 16); view.setTextSize(14f + Math.max(-3, Math.min(3, sp.getInt("font_offset_sys", 0)))); view.setTextColor(0xFF4CAF50); view.setBackgroundResource(R.drawable.item_bg_selector); view.setClickable(true);
                 view.setOnClickListener(v -> new AlertDialog.Builder(this).setTitle("操作错词").setMessage(item[0].equals(item[1]) ? "白名单：" + item[0] : "原始：" + item[0] + "\n修改后：" + item[1]).setPositiveButton("删除", (d, w) -> { object.remove(item[0]); sp.edit().putString("custom_typos", object.toString()).apply(); reloadTypoMapAsync(this); renderCustomTyposUI(); }).setNeutralButton("编辑", (d, w) -> { editingTypoKey = item[0]; original.setText(item[0]); corrected.setText(item[0].equals(item[1]) ? "" : item[1]); add.setText("完成"); }).setNegativeButton("取消", null).show());
                 container.addView(view);
             }
@@ -4152,7 +4176,7 @@ public class MainActivity extends AppCompatActivity {
                 if (preview.isEmpty() && record.has("text")) { String raw = record.optString("text", ""); preview = raw.length() > 16 ? raw.substring(0, 16).replace("\n", " ") + "..." : raw.replace("\n", " "); }
                 if (preview.length() > 16) preview = preview.substring(0, 16) + "...";
                 LinearLayout item = new LinearLayout(this); item.setOrientation(LinearLayout.VERTICAL); item.setPadding(0, 24, 0, 24); item.setBackgroundResource(R.drawable.item_bg_selector); item.setClickable(true);
-                TextView timeView = new TextView(this); timeView.setText(time); timeView.setTextSize(12f); timeView.setTextColor(0xFF9E9E9E); TextView previewView = new TextView(this); previewView.setText(preview); previewView.setTextSize(14f); item.addView(timeView); item.addView(previewView);
+                TextView timeView = new TextView(this); timeView.setText(time); timeView.setTextSize(12f + Math.max(-3, Math.min(3, sp.getInt("font_offset_sys", 0)))); timeView.setTextColor(0xFF9E9E9E); TextView previewView = new TextView(this); previewView.setText(preview); previewView.setTextSize(14f + Math.max(-3, Math.min(3, sp.getInt("font_offset_sys", 0)))); item.addView(timeView); item.addView(previewView);
                 item.setOnClickListener(v -> restoreHistory(record, fileId)); int index = i;
                 item.setOnLongClickListener(v -> { new AlertDialog.Builder(this).setMessage("确认删除这条历史记录吗？").setPositiveButton("删除", (d, w) -> deleteHistoryRecord(records, index, fileId)).setNegativeButton("取消", null).show(); return true; });
                 container.addView(item);
@@ -5269,7 +5293,7 @@ cat > "app/src/main/res/layout/activity_main.xml" <<'DEDEDE_SOURCE_EOF'
                 </LinearLayout>
             </RelativeLayout>
 
-            <LinearLayout android:id="@+id/modeBar" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:gravity="center_vertical" android:layout_marginBottom="7dp">
+            <LinearLayout android:id="@+id/modeBar" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:gravity="center_vertical" android:layout_marginBottom="5dp">
                 <RadioGroup android:id="@+id/rgMode" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:orientation="horizontal" android:gravity="center_vertical">
                     <RadioButton android:id="@+id/rbFast" android:layout_width="0dp" android:layout_height="48dp" android:layout_weight="1" android:minWidth="0dp" android:paddingStart="0dp" android:paddingEnd="0dp" android:text="极速" android:textColor="@color/text_primary" android:textSize="14sp"/>
                     <RadioButton android:id="@+id/rbPro" android:layout_width="0dp" android:layout_height="48dp" android:layout_weight="1.8" android:layout_marginStart="12dp" android:minWidth="0dp" android:paddingStart="0dp" android:paddingEnd="0dp" android:text="专业（HCAM）" android:checked="true" android:textColor="@color/text_primary" android:textSize="14sp"/>
@@ -5280,7 +5304,7 @@ cat > "app/src/main/res/layout/activity_main.xml" <<'DEDEDE_SOURCE_EOF'
                 </LinearLayout>
             </LinearLayout>
 
-            <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginStart="6dp" android:layout_marginBottom="2dp" android:text="修改阈值" android:textSize="10sp" android:textColor="@color/text_secondary"/>
+            <TextView android:id="@+id/tvThresholdHint" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginStart="6dp" android:layout_marginBottom="2dp" android:text="修改阈值" android:textSize="10sp" android:textColor="@color/text_secondary"/>
             <LinearLayout android:id="@+id/paramsCard" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:background="@color/card_bg" android:paddingStart="6dp" android:paddingEnd="6dp" android:paddingTop="3dp" android:paddingBottom="4dp" android:layout_marginBottom="9dp">
                 <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:gravity="center_vertical" android:baselineAligned="false">
                 <LinearLayout android:id="@+id/paramDe" android:layout_width="0dp" android:layout_height="42dp" android:layout_weight="1" android:orientation="horizontal" android:gravity="center_vertical">
@@ -5306,14 +5330,14 @@ cat > "app/src/main/res/layout/activity_main.xml" <<'DEDEDE_SOURCE_EOF'
                 </LinearLayout>
             </LinearLayout>
 
-            <RelativeLayout android:layout_width="match_parent" android:layout_height="140dp" android:layout_marginBottom="10dp">
+            <RelativeLayout android:layout_width="match_parent" android:layout_height="142dp" android:layout_marginBottom="10dp">
                 <EditText android:id="@+id/inputText" android:layout_width="match_parent" android:layout_height="match_parent" android:hint="输入或粘贴文本..." android:textColorHint="@color/text_secondary" android:textColor="@color/text_primary" android:gravity="top|start" android:background="@color/card_bg" android:padding="12dp" android:paddingEnd="42dp" android:paddingBottom="24dp" android:textSize="15sp" android:scrollbars="vertical"/>
                 <Button android:id="@+id/btnInputExpand" android:layout_width="32dp" android:layout_height="32dp" android:layout_alignParentTop="true" android:layout_alignParentEnd="true" android:layout_marginTop="0dp" android:layout_marginEnd="0dp" android:translationX="2dp" android:translationY="-2dp" android:text="⛶" android:textSize="16sp" android:textColor="#7B8CA4" android:background="?android:attr/selectableItemBackgroundBorderless" android:padding="0dp" android:insetTop="0dp" android:insetBottom="0dp" android:contentDescription="展开输入框"/>
                 <TextView android:id="@+id/tvWordCount" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_alignParentBottom="true" android:layout_alignParentEnd="true" android:layout_marginEnd="8dp" android:layout_marginBottom="3dp" android:text="0 字" android:textColor="#9E9E9E" android:textSize="11sp"/>
             </RelativeLayout>
 
             <Button android:id="@+id/btnCheck" android:layout_width="match_parent" android:layout_height="52dp" android:text="开始纠错" android:textSize="16sp" android:letterSpacing="0.075" android:textColor="#ECF5FF" android:layout_marginTop="2dp" android:layout_marginBottom="6dp" android:background="@drawable/bg_check_gradient" android:backgroundTint="@null"/>
-            <ProgressBar android:id="@+id/progressBar" style="?android:attr/progressBarStyleHorizontal" android:layout_width="match_parent" android:layout_height="4dp" android:progressTint="#81C784" android:max="100" android:progress="0" android:layout_marginTop="-4dp" android:layout_marginBottom="6dp" android:visibility="invisible"/>
+            <ProgressBar android:id="@+id/progressBar" style="?android:attr/progressBarStyleHorizontal" android:layout_width="match_parent" android:layout_height="4dp" android:progressTint="#81C784" android:max="100" android:progress="0" android:layout_marginTop="-4dp" android:layout_marginBottom="4dp" android:visibility="invisible"/>
 
             <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:layout_marginBottom="10dp">
                 <Button android:id="@+id/btnImport" android:layout_width="0dp" android:layout_height="48dp" android:layout_weight="1" android:text="导入" android:textSize="13sp" android:backgroundTint="@color/btn_light_green_bg" android:textColor="@color/btn_light_green_text" android:layout_marginRight="4dp"/>
@@ -5371,19 +5395,19 @@ cat > "app/src/main/res/layout/activity_main.xml" <<'DEDEDE_SOURCE_EOF'
     <LinearLayout android:id="@+id/drawerContent" android:layout_width="315dp" android:layout_height="match_parent" android:layout_gravity="end" android:background="@color/bg_color" android:orientation="vertical" android:clickable="true" android:focusable="true">
         <ScrollView android:layout_width="match_parent" android:layout_height="match_parent" android:padding="16dp">
             <LinearLayout android:orientation="vertical" android:layout_width="match_parent" android:layout_height="wrap_content">
-                <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="自定义错词库" android:textSize="16sp" android:textStyle="bold" android:textColor="@color/text_primary" android:layout_marginBottom="8dp"/>
+                <TextView android:id="@+id/tvCustomTyposTitle" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="自定义错词库" android:textSize="16sp" android:textStyle="bold" android:textColor="@color/text_primary" android:layout_marginBottom="8dp"/>
                 <com.app.dedede.FlowLayout android:id="@+id/llCustomTypos" android:layout_width="match_parent" android:layout_height="wrap_content"/>
                 <Button android:id="@+id/btnExpandTypos" android:layout_width="match_parent" android:layout_height="36dp" android:text="展开更多" android:textSize="12sp" android:backgroundTint="#E0E0E0" android:textColor="@color/text_primary" android:visibility="gone" android:layout_marginTop="8dp" android:layout_marginBottom="8dp" android:insetTop="0dp" android:insetBottom="0dp"/>
                 <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:gravity="center_vertical" android:layout_marginTop="8dp">
                     <EditText android:id="@+id/etOriginal" android:layout_width="0dp" android:layout_weight="1" android:layout_height="40dp" android:maxLength="5" android:hint="原始文本" android:textColorHint="#BDBDBD" android:background="@color/card_bg" android:padding="8dp" android:textSize="13sp" android:textColor="@color/text_primary"/>
-                    <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text=" → " android:textColor="@color/text_primary"/>
+                    <TextView android:id="@+id/tvCustomTyposArrow" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text=" → " android:textColor="@color/text_primary"/>
                     <EditText android:id="@+id/etCorrected" android:layout_width="0dp" android:layout_weight="1" android:layout_height="40dp" android:maxLength="5" android:hint="修改后" android:textColorHint="#BDBDBD" android:background="@color/card_bg" android:padding="8dp" android:textSize="13sp" android:textColor="@color/text_primary"/>
                     <Button android:id="@+id/btnAddTypo" android:layout_width="60dp" android:layout_height="40dp" android:text="添加" android:textSize="12sp" android:backgroundTint="#81C784" android:layout_marginStart="4dp" android:padding="0dp" android:insetTop="0dp" android:insetBottom="0dp"/>
                 </LinearLayout>
                 <TextView android:id="@+id/tvWhitelistJumpHint" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="↑仅在此卡片内输入需保护的词，再点击添加即可。" android:textSize="11sp" android:textColor="#9E9E9E" android:paddingTop="3dp" android:paddingLeft="2dp" android:layout_marginBottom="16dp" android:visibility="gone"/>
                 <View android:layout_width="match_parent" android:layout_height="1dp" android:background="#E0E0E0" android:layout_marginBottom="16dp"/>
                 <RelativeLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginBottom="8dp">
-                    <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="最近50条纠错历史" android:textSize="16sp" android:textStyle="bold" android:textColor="@color/text_primary" android:layout_centerVertical="true"/>
+                    <TextView android:id="@+id/tvRecentHistoryTitle" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="最近50条纠错历史" android:textSize="16sp" android:textStyle="bold" android:textColor="@color/text_primary" android:layout_centerVertical="true"/>
                     <TextView android:id="@+id/btnClearHistory" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="清空" android:textSize="14sp" android:textColor="#2196F3" android:layout_alignParentEnd="true" android:layout_centerVertical="true" android:padding="4dp" android:background="?android:attr/selectableItemBackground"/>
                 </RelativeLayout>
                 <LinearLayout android:id="@+id/llHistory" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical"/>
