@@ -88,11 +88,19 @@ jobs:
       - name: Build, core tests, Windows runtime smoke test
         shell: pwsh
         run: |
-          ./windows/build.ps1
+          # build.ps1 会将当前目录切换到 windows/，结束后不会自动切回。
+          # 工作流后续路径以仓库根目录为基准，因此显式恢复工作目录。
+          $repoRoot = $env:GITHUB_WORKSPACE
+          & (Join-Path $repoRoot 'windows/build.ps1')
           if ($LASTEXITCODE -ne 0) { throw 'Windows 构建或测试失败' }
-          if (-not (Test-Path 'windows/dist/Dedede-Windows-x64/Dedede.exe')) {
-            throw '未生成 Windows EXE'
+          Set-Location -LiteralPath $repoRoot
+          $exe = Join-Path $repoRoot 'windows/dist/Dedede-Windows-x64/Dedede.exe'
+          if (-not (Test-Path -LiteralPath $exe -PathType Leaf)) {
+            Write-Host 'Publish directory contents:'
+            Get-ChildItem -LiteralPath (Join-Path $repoRoot 'windows/dist/Dedede-Windows-x64') -ErrorAction SilentlyContinue | Select-Object -First 30 Name
+            throw 'Windows EXE missing from publish directory'
           }
+          Write-Host ('Windows EXE verified: ' + $exe)
 
       - name: Install Inno Setup compiler
         shell: pwsh
