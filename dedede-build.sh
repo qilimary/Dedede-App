@@ -5207,15 +5207,6 @@ cat > "app/src/main/res/drawable/bg_temp_outline.xml" <<'DEDEDE_SOURCE_EOF'
 DEDEDE_SOURCE_EOF
 
 mkdir -p "app/src/main/res/drawable"
-cat > "app/src/main/res/drawable/bg_light_green_button.xml" <<'DEDEDE_SOURCE_EOF'
-<?xml version="1.0" encoding="utf-8"?>
-<shape xmlns:android="http://schemas.android.com/apk/res/android">
-    <solid android:color="@color/btn_light_green_bg"/>
-    <corners android:radius="7dp"/>
-</shape>
-DEDEDE_SOURCE_EOF
-
-mkdir -p "app/src/main/res/drawable"
 cat > "app/src/main/res/drawable/ic_dedede_fg.xml" <<'DEDEDE_SOURCE_EOF'
 <vector xmlns:android="http://schemas.android.com/apk/res/android" android:width="28dp" android:height="28dp" android:viewportWidth="24" android:viewportHeight="24">
     <path android:fillColor="#FFFFFF" android:strokeColor="#FFFFFF" android:strokeWidth="1.2" android:pathData="M9,16.17L4.83,12l-1.42,1.41L9,19 21,7l-1.41,-1.41z"/>
@@ -5315,11 +5306,11 @@ cat > "app/src/main/res/layout/activity_main.xml" <<'DEDEDE_SOURCE_EOF'
             <ProgressBar android:id="@+id/progressBar" style="?android:attr/progressBarStyleHorizontal" android:layout_width="match_parent" android:layout_height="4dp" android:progressTint="#81C784" android:max="100" android:progress="0" android:layout_marginTop="-4dp" android:layout_marginBottom="6dp" android:visibility="invisible"/>
 
             <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:layout_marginBottom="10dp">
-                <Button android:id="@+id/btnImport" android:layout_width="0dp" android:layout_height="48dp" android:layout_weight="1" android:text="导入" android:textSize="13sp" android:background="@drawable/bg_light_green_button" android:backgroundTint="@null" android:textColor="@color/btn_light_green_text" android:layout_marginRight="4dp"/>
-                <Button android:id="@+id/btnPaste" android:layout_width="0dp" android:layout_height="48dp" android:layout_weight="1" android:text="粘贴" android:textSize="13sp" android:background="@drawable/bg_light_green_button" android:backgroundTint="@null" android:textColor="@color/btn_light_green_text" android:layout_marginRight="4dp"/>
-                <Button android:id="@+id/btnClear" android:layout_width="0dp" android:layout_height="48dp" android:layout_weight="1" android:text="清空" android:textSize="13sp" android:background="@drawable/bg_light_green_button" android:backgroundTint="@null" android:textColor="@color/btn_light_green_text" android:layout_marginRight="4dp"/>
-                <Button android:id="@+id/btnCopy" android:layout_width="0dp" android:layout_height="48dp" android:layout_weight="1" android:text="复制" android:textSize="13sp" android:background="@drawable/bg_light_green_button" android:backgroundTint="@null" android:textColor="@color/btn_light_green_text" android:layout_marginRight="4dp" android:enabled="false"/>
-                <Button android:id="@+id/btnSaveTxt" android:layout_width="0dp" android:layout_height="48dp" android:layout_weight="1" android:text="保存" android:textSize="13sp" android:background="@drawable/bg_light_green_button" android:backgroundTint="@null" android:textColor="@color/btn_light_green_text"/>
+                <Button android:id="@+id/btnImport" android:layout_width="0dp" android:layout_height="48dp" android:layout_weight="1" android:text="导入" android:textSize="13sp" android:backgroundTint="@color/btn_light_green_bg" android:textColor="@color/btn_light_green_text" android:layout_marginRight="4dp"/>
+                <Button android:id="@+id/btnPaste" android:layout_width="0dp" android:layout_height="48dp" android:layout_weight="1" android:text="粘贴" android:textSize="13sp" android:backgroundTint="@color/btn_light_green_bg" android:textColor="@color/btn_light_green_text" android:layout_marginRight="4dp"/>
+                <Button android:id="@+id/btnClear" android:layout_width="0dp" android:layout_height="48dp" android:layout_weight="1" android:text="清空" android:textSize="13sp" android:backgroundTint="@color/btn_light_green_bg" android:textColor="@color/btn_light_green_text" android:layout_marginRight="4dp"/>
+                <Button android:id="@+id/btnCopy" android:layout_width="0dp" android:layout_height="48dp" android:layout_weight="1" android:text="复制" android:textSize="13sp" android:backgroundTint="@color/btn_light_green_bg" android:textColor="@color/btn_light_green_text" android:layout_marginRight="4dp" android:enabled="false"/>
+                <Button android:id="@+id/btnSaveTxt" android:layout_width="0dp" android:layout_height="48dp" android:layout_weight="1" android:text="保存" android:textSize="13sp" android:backgroundTint="@color/btn_light_green_bg" android:textColor="@color/btn_light_green_text"/>
             </LinearLayout>
             <TextView android:id="@+id/tvResultStaleWarning" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="已修改原始文本，以下纠错结果对应修改前的内容，建议重新纠错。" android:textColor="#D32F2F" android:textSize="13sp" android:textStyle="bold" android:paddingLeft="8dp" android:paddingRight="8dp" android:paddingBottom="8dp" android:visibility="gone"/>
 
