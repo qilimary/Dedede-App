@@ -1,0 +1,196 @@
+# 手机上传方案：仓库根目录放 Dedede-Windows-source.zip；本文件放 .github/workflows/windows.yml
+# 不修改安卓文件，不在 GitHub 仓库展开源码。
+name: Windows 纠错 Pro（EXE 安装版）
+'on':
+  workflow_dispatch: {}
+  push:
+    branches: [main]
+    paths:
+      - 'Dedede-Windows-source.zip'
+      - '.github/workflows/windows.yml'
+
+permissions:
+  contents: write  # 发布安装包到 GitHub Releases；仓库代码无需写权限
+
+concurrency:
+  group: dedede-windows-installer-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-windows:
+    runs-on: windows-2022
+    timeout-minutes: 65
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Verify and unpack 69-file source archive
+        shell: python
+        run: |
+          import hashlib
+          import json
+          import zipfile
+          from pathlib import Path, PurePosixPath
+
+          source = Path('Dedede-Windows-source.zip')
+          expected_zip = '3a212f82bd60fe6504fe250549e9367a3c981231307d813f82087178ed81fcb3'
+          assert source.is_file(), '缺少根目录的 Dedede-Windows-source.zip'
+          digest = hashlib.sha256(source.read_bytes()).hexdigest()
+          assert digest == expected_zip, '源码 ZIP 的 SHA-256 不符合预期，请上传本次提供的原始 ZIP'
+
+          with zipfile.ZipFile(source) as z:
+              assert z.testzip() is None, 'ZIP 文件损坏'
+              checksums = json.loads(z.read('SOURCE-SHA256.json'))
+              names = {item.filename for item in z.infolist() if not item.is_dir()}
+              assert names == set(checksums) | {'SOURCE-SHA256.json'}, 'ZIP 清单和文件不一致'
+              assert len(checksums) == 69, '源码文件数发生变化'
+              for filename in sorted(checksums):
+                  bits = PurePosixPath(filename).parts
+                  assert filename and not filename.startswith('/') and '..' not in bits and '\\' not in filename
+                  assert filename.startswith('windows/') or filename == '.github/workflows/windows.yml'
+                  data = z.read(filename)
+                  assert hashlib.sha256(data).hexdigest() == checksums[filename], f'校验失败: {filename}'
+                  if filename.startswith('windows/'):
+                      target = Path(filename)
+                      target.parent.mkdir(parents=True, exist_ok=True)
+                      target.write_bytes(data)
+          assert Path('windows/build.ps1').is_file()
+          print('完整解包且校验成功：Windows 源码已准备就绪（不会修改仓库代码）')
+
+      - name: Set up .NET SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: windows/global.json
+
+      - name: Cache model
+        uses: actions/cache@v4
+        with:
+          path: windows/assets/models/HCAM_V2_5CHAR_INT8_PT.onnx
+          key: dedede-hcamv2-int8-15f0af5c
+
+      - name: Fetch and verify ONNX model
+        shell: pwsh
+        run: |
+          python -m pip install gdown==5.2.0
+          if ($LASTEXITCODE -ne 0) { throw 'gdown 安装失败' }
+          python windows/scripts/fetch_model.py
+          if ($LASTEXITCODE -ne 0) { throw '模型下载或校验失败' }
+
+      - name: Build, core tests, Windows runtime smoke test
+        shell: pwsh
+        run: |
+          ./windows/build.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'Windows 构建或测试失败' }
+          if (-not (Test-Path 'windows/dist/Dedede-Windows-x64/Dedede.exe')) {
+            throw '未生成 Windows EXE'
+          }
+
+      - name: Install Inno Setup compiler
+        shell: pwsh
+        run: |
+          choco install innosetup --yes --no-progress
+          if (($LASTEXITCODE -ne 0) -and ($LASTEXITCODE -ne 3010)) {
+            throw 'Inno Setup 安装失败'
+          }
+
+      - name: Make one-click Windows installer EXE
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $script = @'
+          [Setup]
+          AppName=纠错 Pro
+          AppVersion=1.0.0
+          AppPublisher=奇
+          DefaultDirName={autopf}\Dedede
+          DefaultGroupName=纠错 Pro
+          DisableProgramGroupPage=yes
+          PrivilegesRequired=admin
+          ArchitecturesAllowed=x64compatible
+          ArchitecturesInstallIn64BitMode=x64compatible
+          WizardStyle=modern
+          SetupIconFile=assets\app.ico
+          UninstallDisplayIcon={app}\Dedede.exe
+          OutputDir=dist
+          OutputBaseFilename=Dedede-Windows-Setup
+          Compression=lzma2
+          SolidCompression=yes
+          ChangesAssociations=no
+          CloseApplications=yes
+
+          [Tasks]
+          Name: "desktopicon"; Description: "创建桌面快捷方式"; Flags: unchecked
+
+          [Files]
+          Source: "dist\Dedede-Windows-x64\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+
+          [Icons]
+          Name: "{autoprograms}\纠错 Pro"; Filename: "{app}\Dedede.exe"
+          Name: "{autodesktop}\纠错 Pro"; Filename: "{app}\Dedede.exe"; Tasks: desktopicon
+
+          [Run]
+          Filename: "{app}\prerequisites\vc_redist.x64.exe"; Parameters: "/install /quiet /norestart"; Flags: runhidden waituntilterminated; StatusMsg: "正在配置微软 VC++ 运行库…"
+          Filename: "{app}\Dedede.exe"; Description: "启动纠错 Pro"; Flags: nowait postinstall skipifsilent
+          '@
+          $iss = 'windows/Dedede-Installer.iss'
+          Set-Content -LiteralPath $iss -Value $script -Encoding utf8BOM
+          $compiler = @(
+            'C:\Program Files (x86)\Inno Setup 6\ISCC.exe',
+            'C:\Program Files\Inno Setup 6\ISCC.exe'
+          ) | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $compiler) {
+            $command = Get-Command ISCC -ErrorAction SilentlyContinue
+            if ($command) { $compiler = $command.Source }
+          }
+          if (-not $compiler) { throw '找不到 Inno Setup ISCC.exe' }
+          & $compiler $iss
+          if ($LASTEXITCODE -ne 0) { throw 'Windows 安装程序编译失败' }
+          if (-not (Test-Path 'windows/dist/Dedede-Windows-Setup.exe')) {
+            throw '安装 EXE 不存在'
+          }
+          Get-Item 'windows/dist/Dedede-Windows-Setup.exe' | Select-Object Name, Length
+
+      - name: Upload portable ZIP (backup)
+        uses: actions/upload-artifact@v4
+        with:
+          name: Dedede-Windows-Portable
+          path: windows/dist/Dedede-Windows-x64.zip
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload installer EXE (Actions backup)
+        uses: actions/upload-artifact@v4
+        with:
+          name: Dedede-Windows-Installer
+          path: windows/dist/Dedede-Windows-Setup.exe
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Publish direct-download EXE to GitHub Releases
+        # 成功时，用户在 Releases 里直接下载 EXE（不用解压 Actions ZIP）
+        if: github.ref == 'refs/heads/main'
+        shell: pwsh
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $repo = $env:GITHUB_REPOSITORY
+          $tag = 'windows-latest'
+          $asset = 'windows/dist/Dedede-Windows-Setup.exe'
+          $ErrorActionPreference = 'Continue'
+          gh release view $tag --repo $repo --json tagName 2>$null | Out-Null
+          $exists = ($LASTEXITCODE -eq 0)
+          $ErrorActionPreference = 'Stop'
+          if ($exists) {
+            gh release upload $tag $asset --repo $repo --clobber
+          } else {
+            gh release create $tag $asset --repo $repo --title '纠错 Pro Windows（最新版）' --notes 'Windows 10/11 x64 离线安装程序。下载 EXE，双击运行即可安装。未经 Windows 用户实机验证；安装程序尚无商业代码签名。' --latest
+          }
+          if ($LASTEXITCODE -ne 0) { throw 'Release 发布失败，可在 Actions 产物下载备用安装包' }
+          Write-Host '直接下载：https://github.com/'$repo'/releases/download/windows-latest/Dedede-Windows-Setup.exe'
