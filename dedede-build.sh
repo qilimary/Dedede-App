@@ -5249,8 +5249,8 @@ cat > "app/src/main/res/layout/activity_main.xml" <<'DEDEDE_SOURCE_EOF'
     android:id="@+id/drawerLayout" android:layout_width="match_parent" android:layout_height="match_parent" android:background="@color/bg_color">
 
     <FrameLayout android:id="@+id/mainContentFrame" android:layout_width="match_parent" android:layout_height="match_parent" android:background="@color/bg_color">
-        <LinearLayout android:id="@+id/mainBody" android:layout_width="match_parent" android:layout_height="match_parent" android:orientation="vertical" android:padding="14dp" android:background="@color/bg_color">
-            <RelativeLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginBottom="8dp">
+        <LinearLayout android:id="@+id/mainBody" android:layout_width="match_parent" android:layout_height="match_parent" android:orientation="vertical" android:paddingStart="14dp" android:paddingEnd="14dp" android:paddingTop="12dp" android:paddingBottom="14dp" android:background="@color/bg_color">
+            <RelativeLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginBottom="7dp">
                 <TextView android:id="@+id/tvTitle" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="纠错 Pro" android:textSize="20sp" android:textStyle="bold" android:textColor="@color/text_primary" android:layout_alignParentStart="true" android:layout_centerVertical="true" android:clickable="true" android:focusable="true"/>
                 <LinearLayout android:layout_width="wrap_content" android:layout_height="wrap_content" android:orientation="horizontal" android:layout_alignParentEnd="true" android:layout_centerVertical="true" android:gravity="center_vertical">
                     <androidx.appcompat.widget.AppCompatButton android:id="@+id/btnFloat" android:layout_width="24dp" android:layout_height="24dp" android:layout_marginEnd="8dp" android:text="✓" android:textSize="12sp" android:background="@drawable/circle_btn_bg" android:textColor="#FFFFFF" android:stateListAnimator="@null" android:padding="0dp"/>
@@ -5259,7 +5259,7 @@ cat > "app/src/main/res/layout/activity_main.xml" <<'DEDEDE_SOURCE_EOF'
                 </LinearLayout>
             </RelativeLayout>
 
-            <LinearLayout android:id="@+id/modeBar" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:gravity="center_vertical" android:layout_marginBottom="8dp">
+            <LinearLayout android:id="@+id/modeBar" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:gravity="center_vertical" android:layout_marginBottom="7dp">
                 <RadioGroup android:id="@+id/rgMode" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:orientation="horizontal" android:gravity="center_vertical">
                     <RadioButton android:id="@+id/rbFast" android:layout_width="0dp" android:layout_height="48dp" android:layout_weight="1" android:minWidth="0dp" android:paddingStart="0dp" android:paddingEnd="0dp" android:text="极速" android:textColor="@color/text_primary" android:textSize="14sp"/>
                     <RadioButton android:id="@+id/rbPro" android:layout_width="0dp" android:layout_height="48dp" android:layout_weight="1.8" android:layout_marginStart="12dp" android:minWidth="0dp" android:paddingStart="0dp" android:paddingEnd="0dp" android:text="专业（HCAM）" android:checked="true" android:textColor="@color/text_primary" android:textSize="14sp"/>
@@ -5271,7 +5271,7 @@ cat > "app/src/main/res/layout/activity_main.xml" <<'DEDEDE_SOURCE_EOF'
             </LinearLayout>
 
             <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginStart="6dp" android:layout_marginBottom="2dp" android:text="修改阈值" android:textSize="10sp" android:textColor="@color/text_secondary"/>
-            <LinearLayout android:id="@+id/paramsCard" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:background="@color/card_bg" android:paddingStart="6dp" android:paddingEnd="6dp" android:paddingTop="3dp" android:paddingBottom="4dp" android:layout_marginBottom="10dp">
+            <LinearLayout android:id="@+id/paramsCard" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:background="@color/card_bg" android:paddingStart="6dp" android:paddingEnd="6dp" android:paddingTop="3dp" android:paddingBottom="4dp" android:layout_marginBottom="9dp">
                 <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:gravity="center_vertical" android:baselineAligned="false">
                 <LinearLayout android:id="@+id/paramDe" android:layout_width="0dp" android:layout_height="42dp" android:layout_weight="1" android:orientation="horizontal" android:gravity="center_vertical">
                     <TextView android:id="@+id/labelDe" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="的" android:textSize="15sp" android:textStyle="bold" android:textColor="@color/text_primary"/>
@@ -5302,7 +5302,7 @@ cat > "app/src/main/res/layout/activity_main.xml" <<'DEDEDE_SOURCE_EOF'
                 <TextView android:id="@+id/tvWordCount" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_alignParentBottom="true" android:layout_alignParentEnd="true" android:layout_marginEnd="8dp" android:layout_marginBottom="3dp" android:text="0 字" android:textColor="#9E9E9E" android:textSize="11sp"/>
             </RelativeLayout>
 
-            <Button android:id="@+id/btnCheck" android:layout_width="match_parent" android:layout_height="52dp" android:text="开始纠错" android:textSize="16sp" android:letterSpacing="0.075" android:textColor="#FFFFFF" android:layout_marginTop="2dp" android:layout_marginBottom="6dp" android:background="@drawable/bg_check_gradient" android:backgroundTint="@null"/>
+            <Button android:id="@+id/btnCheck" android:layout_width="match_parent" android:layout_height="52dp" android:text="开始纠错" android:textSize="16sp" android:letterSpacing="0.075" android:textColor="#ECF5FF" android:layout_marginTop="2dp" android:layout_marginBottom="6dp" android:background="@drawable/bg_check_gradient" android:backgroundTint="@null"/>
             <ProgressBar android:id="@+id/progressBar" style="?android:attr/progressBarStyleHorizontal" android:layout_width="match_parent" android:layout_height="4dp" android:progressTint="#81C784" android:max="100" android:progress="0" android:layout_marginTop="-4dp" android:layout_marginBottom="6dp" android:visibility="invisible"/>
 
             <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:layout_marginBottom="10dp">
