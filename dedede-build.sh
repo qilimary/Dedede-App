@@ -5190,7 +5190,7 @@ cat > "app/src/main/res/drawable/bg_check_gradient.xml" <<'DEDEDE_SOURCE_EOF'
 <ripple xmlns:android="http://schemas.android.com/apk/res/android" android:color="#22FFFFFF">
     <item>
         <inset android:insetLeft="4dp" android:insetRight="4dp" android:insetTop="6dp" android:insetBottom="6dp">
-            <shape><corners android:radius="12dp"/><gradient android:angle="0" android:startColor="#2589D8" android:endColor="#4497E3"/><stroke android:width="1dp" android:color="#88C0C4CC"/></shape>
+            <shape><corners android:radius="12dp"/><solid android:color="#2196F3"/></shape>
         </inset>
     </item>
 </ripple>
@@ -5200,9 +5200,18 @@ mkdir -p "app/src/main/res/drawable"
 cat > "app/src/main/res/drawable/bg_temp_outline.xml" <<'DEDEDE_SOURCE_EOF'
 <?xml version="1.0" encoding="utf-8"?>
 <shape xmlns:android="http://schemas.android.com/apk/res/android">
-    <solid android:color="#10FFFFFF"/>
-    <stroke android:width="1dp" android:color="#22000000"/>
-    <corners android:radius="9dp"/>
+    <solid android:color="#06FFFFFF"/>
+    <stroke android:width="1dp" android:color="#16000000"/>
+    <corners android:radius="8dp"/>
+</shape>
+DEDEDE_SOURCE_EOF
+
+mkdir -p "app/src/main/res/drawable"
+cat > "app/src/main/res/drawable/bg_light_green_button.xml" <<'DEDEDE_SOURCE_EOF'
+<?xml version="1.0" encoding="utf-8"?>
+<shape xmlns:android="http://schemas.android.com/apk/res/android">
+    <solid android:color="@color/btn_light_green_bg"/>
+    <corners android:radius="7dp"/>
 </shape>
 DEDEDE_SOURCE_EOF
 
@@ -5262,16 +5271,16 @@ cat > "app/src/main/res/layout/activity_main.xml" <<'DEDEDE_SOURCE_EOF'
             <LinearLayout android:id="@+id/modeBar" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:gravity="center_vertical" android:layout_marginBottom="8dp">
                 <RadioGroup android:id="@+id/rgMode" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:orientation="horizontal" android:gravity="center_vertical">
                     <RadioButton android:id="@+id/rbFast" android:layout_width="0dp" android:layout_height="48dp" android:layout_weight="1" android:minWidth="0dp" android:paddingStart="0dp" android:paddingEnd="0dp" android:text="极速" android:textColor="@color/text_primary" android:textSize="14sp"/>
-                    <RadioButton android:id="@+id/rbPro" android:layout_width="0dp" android:layout_height="48dp" android:layout_weight="1.8" android:layout_marginStart="4dp" android:minWidth="0dp" android:paddingStart="0dp" android:paddingEnd="0dp" android:text="专业（HCAM）" android:checked="true" android:textColor="@color/text_primary" android:textSize="14sp"/>
+                    <RadioButton android:id="@+id/rbPro" android:layout_width="0dp" android:layout_height="48dp" android:layout_weight="1.8" android:layout_marginStart="12dp" android:minWidth="0dp" android:paddingStart="0dp" android:paddingEnd="0dp" android:text="专业（HCAM）" android:checked="true" android:textColor="@color/text_primary" android:textSize="14sp"/>
                 </RadioGroup>
-                <LinearLayout android:id="@+id/paramTemp" android:layout_width="wrap_content" android:layout_height="42dp" android:orientation="horizontal" android:gravity="center_vertical" android:layout_marginStart="4dp" android:layout_marginEnd="4dp" android:paddingStart="8dp" android:paddingEnd="4dp" android:background="@drawable/bg_temp_outline">
+                <LinearLayout android:id="@+id/paramTemp" android:layout_width="wrap_content" android:layout_height="36dp" android:orientation="horizontal" android:gravity="center_vertical" android:layout_marginStart="4dp" android:layout_marginEnd="4dp" android:paddingStart="6dp" android:paddingEnd="2dp" android:background="@drawable/bg_temp_outline">
                     <TextView android:id="@+id/labelTemp" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="温度" android:textSize="12.5sp" android:textColor="@color/text_secondary"/>
-                    <EditText android:id="@+id/editTemp" android:layout_width="42dp" android:layout_height="40dp" android:minWidth="0dp" android:padding="0dp" android:text="1.0" android:contentDescription="温度" android:textColor="@color/text_primary" android:textSize="13sp" android:inputType="numberDecimal" android:maxLength="5" android:singleLine="true" android:gravity="center" android:background="@null"/>
+                    <EditText android:id="@+id/editTemp" android:layout_width="42dp" android:layout_height="34dp" android:minWidth="0dp" android:padding="0dp" android:text="1.0" android:contentDescription="温度" android:textColor="@color/text_primary" android:textSize="13sp" android:inputType="numberDecimal" android:maxLength="5" android:singleLine="true" android:gravity="center" android:background="@null"/>
                 </LinearLayout>
             </LinearLayout>
 
-            <LinearLayout android:id="@+id/paramsCard" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:background="@color/card_bg" android:paddingStart="6dp" android:paddingEnd="6dp" android:paddingTop="5dp" android:paddingBottom="5dp" android:layout_marginBottom="10dp">
-                <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginStart="6dp" android:layout_marginBottom="1dp" android:text="修改阈值" android:textSize="10sp" android:textColor="@color/text_secondary"/>
+            <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginStart="6dp" android:layout_marginBottom="2dp" android:text="修改阈值" android:textSize="10sp" android:textColor="@color/text_secondary"/>
+            <LinearLayout android:id="@+id/paramsCard" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:background="@color/card_bg" android:paddingStart="6dp" android:paddingEnd="6dp" android:paddingTop="3dp" android:paddingBottom="4dp" android:layout_marginBottom="10dp">
                 <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:gravity="center_vertical" android:baselineAligned="false">
                 <LinearLayout android:id="@+id/paramDe" android:layout_width="0dp" android:layout_height="42dp" android:layout_weight="1" android:orientation="horizontal" android:gravity="center_vertical">
                     <TextView android:id="@+id/labelDe" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="的" android:textSize="15sp" android:textStyle="bold" android:textColor="@color/text_primary"/>
@@ -5306,11 +5315,11 @@ cat > "app/src/main/res/layout/activity_main.xml" <<'DEDEDE_SOURCE_EOF'
             <ProgressBar android:id="@+id/progressBar" style="?android:attr/progressBarStyleHorizontal" android:layout_width="match_parent" android:layout_height="4dp" android:progressTint="#81C784" android:max="100" android:progress="0" android:layout_marginTop="-4dp" android:layout_marginBottom="6dp" android:visibility="invisible"/>
 
             <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:layout_marginBottom="10dp">
-                <Button android:id="@+id/btnImport" android:layout_width="0dp" android:layout_height="48dp" android:layout_weight="1" android:text="导入" android:textSize="13sp" android:backgroundTint="@color/btn_light_green_bg" android:textColor="@color/btn_light_green_text" android:layout_marginRight="4dp"/>
-                <Button android:id="@+id/btnPaste" android:layout_width="0dp" android:layout_height="48dp" android:layout_weight="1" android:text="粘贴" android:textSize="13sp" android:backgroundTint="@color/btn_light_green_bg" android:textColor="@color/btn_light_green_text" android:layout_marginRight="4dp"/>
-                <Button android:id="@+id/btnClear" android:layout_width="0dp" android:layout_height="48dp" android:layout_weight="1" android:text="清空" android:textSize="13sp" android:backgroundTint="@color/btn_light_green_bg" android:textColor="@color/btn_light_green_text" android:layout_marginRight="4dp"/>
-                <Button android:id="@+id/btnCopy" android:layout_width="0dp" android:layout_height="48dp" android:layout_weight="1" android:text="复制" android:textSize="13sp" android:backgroundTint="@color/btn_light_green_bg" android:textColor="@color/btn_light_green_text" android:layout_marginRight="4dp" android:enabled="false"/>
-                <Button android:id="@+id/btnSaveTxt" android:layout_width="0dp" android:layout_height="48dp" android:layout_weight="1" android:text="保存" android:textSize="13sp" android:backgroundTint="@color/btn_light_green_bg" android:textColor="@color/btn_light_green_text"/>
+                <Button android:id="@+id/btnImport" android:layout_width="0dp" android:layout_height="48dp" android:layout_weight="1" android:text="导入" android:textSize="13sp" android:background="@drawable/bg_light_green_button" android:backgroundTint="@null" android:textColor="@color/btn_light_green_text" android:layout_marginRight="4dp"/>
+                <Button android:id="@+id/btnPaste" android:layout_width="0dp" android:layout_height="48dp" android:layout_weight="1" android:text="粘贴" android:textSize="13sp" android:background="@drawable/bg_light_green_button" android:backgroundTint="@null" android:textColor="@color/btn_light_green_text" android:layout_marginRight="4dp"/>
+                <Button android:id="@+id/btnClear" android:layout_width="0dp" android:layout_height="48dp" android:layout_weight="1" android:text="清空" android:textSize="13sp" android:background="@drawable/bg_light_green_button" android:backgroundTint="@null" android:textColor="@color/btn_light_green_text" android:layout_marginRight="4dp"/>
+                <Button android:id="@+id/btnCopy" android:layout_width="0dp" android:layout_height="48dp" android:layout_weight="1" android:text="复制" android:textSize="13sp" android:background="@drawable/bg_light_green_button" android:backgroundTint="@null" android:textColor="@color/btn_light_green_text" android:layout_marginRight="4dp" android:enabled="false"/>
+                <Button android:id="@+id/btnSaveTxt" android:layout_width="0dp" android:layout_height="48dp" android:layout_weight="1" android:text="保存" android:textSize="13sp" android:background="@drawable/bg_light_green_button" android:backgroundTint="@null" android:textColor="@color/btn_light_green_text"/>
             </LinearLayout>
             <TextView android:id="@+id/tvResultStaleWarning" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="已修改原始文本，以下纠错结果对应修改前的内容，建议重新纠错。" android:textColor="#D32F2F" android:textSize="13sp" android:textStyle="bold" android:paddingLeft="8dp" android:paddingRight="8dp" android:paddingBottom="8dp" android:visibility="gone"/>
 
