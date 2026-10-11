@@ -20,6 +20,10 @@ jobs:
   build-windows:
     runs-on: windows-2022
     timeout-minutes: 65
+    # Windows hosted runner 的 Python 控制台默认可能为 cp1252，强制使用 UTF-8。
+    env:
+      PYTHONIOENCODING: 'utf-8'
+      PYTHONUTF8: '1'
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -60,7 +64,7 @@ jobs:
                       target.parent.mkdir(parents=True, exist_ok=True)
                       target.write_bytes(data)
           assert Path('windows/build.ps1').is_file()
-          print('完整解包且校验成功：Windows 源码已准备就绪（不会修改仓库代码）')
+          print('Windows source archive verified and extracted successfully (69 files).')
 
       - name: Set up .NET SDK
         uses: actions/setup-dotnet@v4
