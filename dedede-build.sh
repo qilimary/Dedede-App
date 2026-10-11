@@ -3337,8 +3337,6 @@ public class MainActivity extends AppCompatActivity {
         android.widget.SeekBar textSeek = new android.widget.SeekBar(this); textSeek.setMax(14); textSeek.setProgress(textOffset + 4); textSeek.setPadding((int) (8 * density), 0, (int) (8 * density), (int) (10 * density));
         TextView systemLabel = new TextView(this); systemLabel.setText("系统字号 (按钮/标题等): " + (systemOffset > 0 ? "+" + systemOffset : systemOffset)); systemLabel.setTextSize(14f); systemLabel.setTextColor(0xFF666666); systemLabel.setPadding(0, (int) (6 * density), 0, (int) (4 * density));
         android.widget.SeekBar systemSeek = new android.widget.SeekBar(this); systemSeek.setMax(6); systemSeek.setProgress(Math.max(0, Math.min(6, systemOffset + 3))); systemSeek.setPadding((int) (8 * density), 0, (int) (8 * density), (int) (10 * density));
-        textSeek.setOnSeekBarChangeListener(new SimpleSeekListener() { @Override public void onProgressChanged(android.widget.SeekBar seekBar, int progress, boolean fromUser) { int offset = progress - 4; textLabel.setText("正文字号 (输入/输出等): " + (15 + offset)); updateFontSize(offset, systemSeek.getProgress() - 3); } });
-        systemSeek.setOnSeekBarChangeListener(new SimpleSeekListener() { @Override public void onProgressChanged(android.widget.SeekBar seekBar, int progress, boolean fromUser) { int offset = progress - 3; systemLabel.setText("系统字号 (按钮/标题等): " + (offset > 0 ? "+" + offset : offset)); updateFontSize(textSeek.getProgress() - 4, offset); } });
 
         LinearLayout skinRow = new LinearLayout(this); skinRow.setOrientation(LinearLayout.HORIZONTAL); skinRow.setGravity(android.view.Gravity.CENTER); skinRow.setPadding(0, (int) (6 * density), 0, (int) (2 * density));
         TextView depthLabel = new TextView(this); depthLabel.setText("界面深浅"); depthLabel.setTextSize(13f); depthLabel.setTextColor(0xFF777777); depthLabel.setPadding(0, (int) (8 * density), 0, 0);
@@ -3379,6 +3377,23 @@ public class MainActivity extends AppCompatActivity {
         Button done = new Button(this); done.setText("完成"); done.setTextColor(0xFF2196F3); done.setBackgroundColor(Color.TRANSPARENT); LinearLayout.LayoutParams doneParams = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT); doneParams.gravity = android.view.Gravity.END; doneParams.rightMargin = (int) (1 * density); done.setLayoutParams(doneParams);
         Button reset = new Button(this); reset.setText("恢复默认"); reset.setTextColor(0xFF777777); reset.setBackgroundColor(Color.TRANSPARENT);
         LinearLayout actions = new LinearLayout(this); actions.setOrientation(LinearLayout.HORIZONTAL); actions.setGravity(android.view.Gravity.END | android.view.Gravity.CENTER_VERTICAL); actions.addView(reset); actions.addView(done);
+        // 将按钮文字向字号滑条右端对齐，不改变弹窗内容的横向留白。
+        actions.setTranslationX(24f * density);
+        // 弹窗本身同样跟随“系统字号”；按钮保留系统主题的原始字号作为 0 档基准。
+        float resetBaseSp = reset.getTextSize() / getResources().getDisplayMetrics().scaledDensity;
+        float doneBaseSp = done.getTextSize() / getResources().getDisplayMetrics().scaledDensity;
+        Runnable refreshDialogTextSizes = () -> {
+            int ui = systemSeek.getProgress() - 3;
+            title.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 18f + ui);
+            textLabel.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 14f + ui);
+            systemLabel.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 14f + ui);
+            depthLabel.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 13f + ui);
+            reset.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, resetBaseSp + ui);
+            done.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, doneBaseSp + ui);
+        };
+        refreshDialogTextSizes.run();
+        textSeek.setOnSeekBarChangeListener(new SimpleSeekListener() { @Override public void onProgressChanged(android.widget.SeekBar seekBar, int progress, boolean fromUser) { int offset = progress - 4; textLabel.setText("正文字号 (输入/输出/便签): " + (15 + offset)); updateFontSize(offset, systemSeek.getProgress() - 3); } });
+        systemSeek.setOnSeekBarChangeListener(new SimpleSeekListener() { @Override public void onProgressChanged(android.widget.SeekBar seekBar, int progress, boolean fromUser) { int offset = progress - 3; systemLabel.setText("系统字号 (按钮/标题等): " + (offset > 0 ? "+" + offset : offset)); refreshDialogTextSizes.run(); updateFontSize(textSeek.getProgress() - 4, offset); } });
         layout.addView(title); layout.addView(textLabel); layout.addView(textSeek); layout.addView(systemLabel); layout.addView(systemSeek); layout.addView(skinRow); layout.addView(depthLabel); layout.addView(depthSeek); layout.addView(actions); refreshDepthVisibility.run();
         android.app.AlertDialog dialog = new android.app.AlertDialog.Builder(this).setView(layout).create();
         Runnable persist = () -> sp.edit().putInt("font_offset_text", textSeek.getProgress() - 4).putInt("font_offset_sys", systemSeek.getProgress() - 3).putInt("skin_depth", depthSeek.getProgress()).apply();
