@@ -199,7 +199,7 @@ jobs:
                   elif 'weekdays[i]' in item:
                       loop_counts['weekdays'] += 1
                       for i in range(1,8):
-                          add(rf'(星期|周|礼拜)( *)({{i}})(?![0-9])', [[None, arrays['weekdays'][i]]])
+                          add(rf'(星期|周|礼拜)( *)({i})(?![0-9])', [[None, arrays['weekdays'][i]]])
                   elif 'lunarDays[i]' in item:
                       loop_counts['lunarDays'] += 1
                       for i in range(1,31):
