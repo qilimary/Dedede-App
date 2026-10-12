@@ -114,8 +114,10 @@ jobs:
           mkdir -p delivery
           if [[ '${{ matrix.platform }}' == windows ]]; then
             cp windows/dist/Dedede-Windows-Setup.exe delivery/
+            cp windows/dist/Dedede-Windows-Setup.zip delivery/
           else
             cp "macos/dist/Dedede-Mac-${{ matrix.label }}.dmg" delivery/
+            cp "macos/dist/Dedede-Mac-${{ matrix.label }}.zip" delivery/
           fi
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -157,20 +159,20 @@ jobs:
         run: |
           set -euo pipefail
           cat > windows-notes.md <<'NOTES'
-          Windows 10/11 x64 离线安装程序。当前用户安装，提供启动诊断与兼容启动。未经商业代码签名；云端检查不等于所有电脑实测。
+          Windows 10/11 x64 离线安装程序。EXE 可直接安装；ZIP 内为同一完整安装程序，便于分享，解压后安装。当前用户安装，提供启动诊断与兼容启动。未经商业代码签名；云端检查不等于所有电脑实测。
           NOTES
           cat > macos-notes.md <<'NOTES'
-          macOS 14+，Apple Silicon 与 Intel 原生包。拖入 Applications 安装；采用本机签名，尚未 Apple 公证，首次启动可能被系统拦截。OCR 在本机处理。
+          macOS 14+，Apple Silicon 与 Intel 原生包。可下载 DMG，或下载 ZIP 后解压出同一 DMG。拖入 Applications 安装；采用本机签名，尚未 Apple 公证，首次启动可能被系统拦截。OCR 在本机处理。
           NOTES
           if gh release view windows-latest --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release upload windows-latest installers/Dedede-Windows-Setup.exe --repo "$GITHUB_REPOSITORY" --clobber
+            gh release upload windows-latest installers/Dedede-Windows-Setup.exe installers/Dedede-Windows-Setup.zip --repo "$GITHUB_REPOSITORY" --clobber
             gh release edit windows-latest --repo "$GITHUB_REPOSITORY" --notes-file windows-notes.md
           else
-            gh release create windows-latest installers/Dedede-Windows-Setup.exe --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title '纠错 Pro Windows（最新版）' --notes-file windows-notes.md --latest
+            gh release create windows-latest installers/Dedede-Windows-Setup.exe installers/Dedede-Windows-Setup.zip --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title '纠错 Pro Windows（最新版）' --notes-file windows-notes.md --latest
           fi
           if gh release view macos-latest --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release upload macos-latest installers/Dedede-Mac-*.dmg --repo "$GITHUB_REPOSITORY" --clobber
+            gh release upload macos-latest installers/Dedede-Mac-*.dmg installers/Dedede-Mac-*.zip --repo "$GITHUB_REPOSITORY" --clobber
             gh release edit macos-latest --repo "$GITHUB_REPOSITORY" --notes-file macos-notes.md
           else
-            gh release create macos-latest installers/Dedede-Mac-*.dmg --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title '纠错 Pro Mac（最新版）' --notes-file macos-notes.md --latest=false
+            gh release create macos-latest installers/Dedede-Mac-*.dmg installers/Dedede-Mac-*.zip --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title '纠错 Pro Mac（最新版）' --notes-file macos-notes.md --latest=false
           fi
