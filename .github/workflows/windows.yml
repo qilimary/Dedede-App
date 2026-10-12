@@ -1,13 +1,8 @@
-name: Desktop apps (Windows + Mac)
-on:
-  push:
-    branches: [main]
-    paths: [dedede-desktop.py, .github/workflows/windows.yml]
-  workflow_dispatch:
+name: Windows app
 permissions:
   contents: read
 concurrency:
-  group: desktop-${{ github.ref }}
+  group: windows-${{ github.ref }}
   cancel-in-progress: false
 env:
   PYTHONIOENCODING: utf-8
@@ -23,150 +18,140 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - {name: Windows x64, runner: windows-2022, platform: windows, rid: win-x64, label: Windows}
-          - {name: Mac Apple Silicon, runner: macos-15, platform: macos, rid: osx-arm64, label: AppleSilicon}
-          - {name: Mac Intel, runner: macos-15-intel, platform: macos, rid: osx-x64, label: Intel}
+        - name: Windows x64
+          runner: windows-2022
+          platform: windows
+          rid: win-x64
+          label: Windows
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: '3.12'
-      - name: Verify and restore desktop sources
-        shell: bash
-        run: python dedede-desktop.py
-      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
-        with:
-          global-json-file: windows/global.json
-      - name: Cache verified model
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: windows/assets/models/HCAM_V2_5CHAR_INT8_PT.onnx
-          key: dedede-model-15f0af5c03857ac2b049ac9f02cfe1dde2fba11ea639e191ca6453cb9a6e75cc
-          enableCrossOsArchive: true
-      - name: Build Windows and installer
-        if: matrix.platform == 'windows'
-        shell: pwsh
-        run: |
-          $ErrorActionPreference='Stop'
-          $repoRoot=$env:GITHUB_WORKSPACE
-          & "$repoRoot/windows/build.ps1" -Installer
-          Set-Location $repoRoot
-          if(-not(Test-Path "$repoRoot/windows/dist/Dedede-Windows-Setup.exe")){throw 'Installer missing.'}
-      - name: Test installed Windows files
-        if: matrix.platform == 'windows'
-        shell: pwsh
-        run: |
-          $ErrorActionPreference='Stop'
-          $install=Join-Path $env:RUNNER_TEMP 'Dedede Installer Check'
-          $log=Join-Path $env:GITHUB_WORKSPACE 'windows/dist/install-test.log'
-          $setup=Start-Process 'windows/dist/Dedede-Windows-Setup.exe' -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/SP-','/TASKS=desktopicon',('/DIR="'+$install+'"'),('/LOG="'+$log+'"') -PassThru
-          if(-not $setup.WaitForExit(180000)){Stop-Process -Id $setup.Id -Force;throw 'Installer timeout.'}
-          if($setup.ExitCode -notin @(0,3010)){throw "Installer exit code $($setup.ExitCode)"}
-          $runtime=Start-Process "$install/Dedede-Launcher.exe" -ArgumentList '--check-runtime' -PassThru -Wait
-          $runtimeFiles=@('vcruntime140.dll','vcruntime140_1.dll','msvcp140.dll','msvcp140_1.dll')|ForEach-Object {
-            $file=Get-Item (Join-Path $env:SystemRoot "System32/$_") -ErrorAction SilentlyContinue
-            [pscustomobject]@{name=$_;exists=($null -ne $file);version=if($file){$file.VersionInfo.FileVersion}else{$null}}
-          }
-          @{exitCode=$runtime.ExitCode;files=$runtimeFiles}|ConvertTo-Json -Depth 4|Set-Content 'windows/dist/runtime-check.json' -Encoding utf8
-          if($runtime.ExitCode -ne 0){throw "Installed runtime check failed (exit $($runtime.ExitCode))."}
-          foreach($binary in @('Dedede.exe','Dedede-Launcher.exe')){
-            $bytes=[IO.File]::ReadAllBytes((Join-Path $install $binary))
-            $pe=[BitConverter]::ToInt32($bytes,0x3c)
-            if([BitConverter]::ToUInt16($bytes,$pe+24+68) -ne 2){throw "$binary must use GUI subsystem, never console."}
-          }
-          $shellObject=New-Object -ComObject WScript.Shell
-          $link=$shellObject.CreateShortcut((Join-Path ([Environment]::GetFolderPath('Desktop')) '纠错 Pro.lnk'))
-          if($link.TargetPath -ne (Join-Path $install 'Dedede-Launcher.exe') -or $link.IconLocation -notmatch 'assets[\\/]app\.ico,0$'){throw 'Installed desktop shortcut target/icon is incorrect.'}
-          $report=Join-Path $env:GITHUB_WORKSPACE 'windows/dist/installed-smoke.json' 
-          $app=Start-Process "$install/Dedede-Launcher.exe" -ArgumentList '--safe-render','--smoke-test',('"'+$report+'"') -PassThru
-          if(-not $app.WaitForExit(180000)){Stop-Process -Id $app.Id -Force;throw 'Installed app timeout.'}
-          if($app.ExitCode -ne 0 -or -not(Test-Path $report) -or -not((Get-Content $report -Raw|ConvertFrom-Json).passed)){throw 'Installed model/OCR check failed.'}
-      - name: Render actual Windows UI
-        if: matrix.platform == 'windows'
-        shell: pwsh
-        run: |
-          $out=Join-Path $env:GITHUB_WORKSPACE 'windows/dist/previews'
-          $app=Start-Process 'windows/dist/Dedede-Windows-x64/Dedede.exe' -ArgumentList '--safe-render','--render-preview',('"'+$out+'"') -PassThru
-          if(-not $app.WaitForExit(180000)){Stop-Process -Id $app.Id -Force;throw 'Preview timeout.'}
-          if($app.ExitCode -ne 0 -or -not(Test-Path "$out/07-dark.png")){throw 'Windows preview failed.'}
-      - name: Build native Mac package, model and OCR checks
-        if: matrix.platform == 'macos'
-        shell: bash
-        run: bash macos/build.sh "${{ matrix.rid }}"
-      - name: Stage installer
-        shell: bash
-        run: |
-          mkdir -p delivery
-          if [[ '${{ matrix.platform }}' == windows ]]; then
-            cp windows/dist/Dedede-Windows-Setup.exe delivery/
-            cp windows/dist/Dedede-Windows-Setup.zip delivery/
-          else
-            cp "macos/dist/Dedede-Mac-${{ matrix.label }}.dmg" delivery/
-            cp "macos/dist/Dedede-Mac-${{ matrix.label }}.zip" delivery/
-          fi
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: Installer-${{ matrix.label }}
-          path: delivery/*
-          if-no-files-found: error
-          retention-days: 30
-          compression-level: 0
-      - name: Upload diagnostics and real UI previews
-        if: always()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: Checks-and-previews-${{ matrix.label }}
-          path: |
-            source-verification.json
-            windows/dist/*.json
-            windows/dist/*.log
-            windows/dist/previews/
-            macos/dist/*.json
-            macos/dist/previews-*/
-          if-no-files-found: ignore
-          retention-days: 14
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+    - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+      with:
+        python-version: '3.12'
+    - name: Verify and restore windows sources
+      shell: bash
+      run: python dedede-windows.py
+    - name: Sync current Android grammar and dictionary
+      shell: bash
+      run: python windows/scripts/sync_android.py --repo .
+    - name: Regression check for shortcut validation
+      shell: pwsh
+      run: '& windows/tests/check_shortcuts.Tests.ps1'
+    - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68
+      with:
+        global-json-file: windows/global.json
+    - name: Cache verified model
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+      with:
+        path: windows/assets/models/HCAM_V2_5CHAR_INT8_PT.onnx
+        key: dedede-model-15f0af5c03857ac2b049ac9f02cfe1dde2fba11ea639e191ca6453cb9a6e75cc
+        enableCrossOsArchive: true
+    - name: Build Windows and installer
+      shell: pwsh
+      run: |
+        $ErrorActionPreference='Stop'
+        $repoRoot=$env:GITHUB_WORKSPACE
+        & "$repoRoot/windows/build.ps1" -Installer
+        Set-Location $repoRoot
+        if(-not(Test-Path "$repoRoot/windows/dist/Dedede-Windows-Setup.exe")){throw 'Installer missing.'}
+    - name: Test installed Windows files
+      shell: pwsh
+      run: |
+        $ErrorActionPreference='Stop'
+        # Both desktop and Start menu shortcuts are validated and logged.
+        $install=Join-Path $env:RUNNER_TEMP 'Dedede Installer Check'
+        $log=Join-Path $env:GITHUB_WORKSPACE 'windows/dist/install-test.log'
+        $setup=Start-Process 'windows/dist/Dedede-Windows-Setup.exe' -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/SP-','/TASKS=desktopicon',('/DIR="'+$install+'"'),('/LOG="'+$log+'"') -PassThru
+        if(-not $setup.WaitForExit(180000)){Stop-Process -Id $setup.Id -Force;throw 'Installer timeout.'}
+        if($setup.ExitCode -notin @(0,3010)){throw "Installer exit code $($setup.ExitCode)"}
+        $runtime=Start-Process "$install/Dedede-Launcher.exe" -ArgumentList '--check-runtime' -PassThru
+        if(-not $runtime.WaitForExit(60000)){Stop-Process -Id $runtime.Id -Force;throw 'Runtime check timeout.'}
+        $runtime.WaitForExit()
+        $runtimeFiles=@('vcruntime140.dll','vcruntime140_1.dll','msvcp140.dll','msvcp140_1.dll')|ForEach-Object {
+          $file=Get-Item (Join-Path $env:SystemRoot "System32/$_") -ErrorAction SilentlyContinue
+          [pscustomobject]@{name=$_;exists=($null -ne $file);version=if($file){$file.VersionInfo.FileVersion}else{$null}}
+        }
+        @{exitCode=$runtime.ExitCode;files=$runtimeFiles}|ConvertTo-Json -Depth 4|Set-Content 'windows/dist/runtime-check.json' -Encoding utf8
+        if($runtime.ExitCode -ne 0){throw "Installed runtime check failed (exit $($runtime.ExitCode))."}
+        foreach($binary in @('Dedede.exe','Dedede-Launcher.exe')){
+          $bytes=[IO.File]::ReadAllBytes((Join-Path $install $binary))
+          $pe=[BitConverter]::ToInt32($bytes,0x3c)
+          if([BitConverter]::ToUInt16($bytes,$pe+24+68) -ne 2){throw "$binary must use GUI subsystem, never console."}
+        }
+        & "$env:GITHUB_WORKSPACE/windows/scripts/check_shortcuts.ps1" -InstallDirectory $install -Report "$env:GITHUB_WORKSPACE/windows/dist/shortcut-check.json"
+        $report=Join-Path $env:GITHUB_WORKSPACE 'windows/dist/installed-smoke.json'
+        $app=Start-Process "$install/Dedede-Launcher.exe" -ArgumentList '--safe-render','--smoke-test',('"'+$report+'"') -PassThru
+        if(-not $app.WaitForExit(180000)){Stop-Process -Id $app.Id -Force;throw 'Installed app timeout.'}
+        if($app.ExitCode -ne 0 -or -not(Test-Path $report) -or -not((Get-Content $report -Raw|ConvertFrom-Json).passed)){throw 'Installed model/OCR check failed.'}
+    - name: Render actual Windows UI
+      shell: pwsh
+      run: |
+        $out=Join-Path $env:GITHUB_WORKSPACE 'windows/dist/previews'
+        $app=Start-Process 'windows/dist/Dedede-Windows-x64/Dedede.exe' -ArgumentList '--safe-render','--render-preview',('"'+$out+'"') -PassThru
+        if(-not $app.WaitForExit(180000)){Stop-Process -Id $app.Id -Force;throw 'Preview timeout.'}
+        if($app.ExitCode -ne 0 -or -not(Test-Path "$out/07-dark.png")){throw 'Windows preview failed.'}
+    - name: Stage installer
+      shell: bash
+      run: |
+        mkdir -p delivery
+        cp windows/dist/Dedede-Windows-Setup.exe windows/dist/Dedede-Windows-Setup.zip delivery/
+    - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+      with:
+        name: Installer-${{ matrix.label }}
+        path: delivery/*
+        if-no-files-found: error
+        retention-days: 30
+        compression-level: 0
+    - name: Upload diagnostics and real UI previews
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+      with:
+        name: Checks-and-previews-${{ matrix.label }}
+        path: |-
+          source-verification.json
+          windows/assets/android-sync.json
+          windows/dist/*.json
+          windows/dist/*.log
+          windows/dist/previews/
+        if-no-files-found: ignore
+        retention-days: 14
+      if: always()
   publish:
-    name: Publish desktop installers
+    name: Publish windows installers
     needs: build
-    if: ${{ always() && !cancelled() && github.ref == 'refs/heads/main' }}
+    if: ${{ needs.build.result == 'success' && github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          pattern: Installer-*
-          path: installers
-          merge-multiple: true
-      - name: Publish direct downloads
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          cat > windows-notes.md <<'NOTES'
-          Windows 10/11 x64 离线安装程序。EXE 可直接安装；ZIP 内为同一完整安装程序，便于分享，解压后安装。当前用户安装，提供启动诊断与兼容启动。未经商业代码签名；云端检查不等于所有电脑实测。
-          NOTES
-          cat > macos-notes.md <<'NOTES'
-          macOS 14+，Apple Silicon 与 Intel 原生包。可下载 DMG，或下载 ZIP 后解压出同一 DMG。拖入 Applications 安装；采用本机签名，尚未 Apple 公证，首次启动可能被系统拦截。OCR 在本机处理。
-          NOTES
-          if [[ -f installers/Dedede-Windows-Setup.exe && -f installers/Dedede-Windows-Setup.zip ]]; then
-          if gh release view windows-latest --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release upload windows-latest installers/Dedede-Windows-Setup.exe installers/Dedede-Windows-Setup.zip --repo "$GITHUB_REPOSITORY" --clobber
-            gh release edit windows-latest --repo "$GITHUB_REPOSITORY" --notes-file windows-notes.md
-          else
-            gh release create windows-latest installers/Dedede-Windows-Setup.exe installers/Dedede-Windows-Setup.zip --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title '纠错 Pro Windows（最新版）' --notes-file windows-notes.md --latest
-          fi
-          else
-            echo 'Windows installer has not passed all checks; no Windows release was changed.'
-          fi
-          if [[ -f installers/Dedede-Mac-AppleSilicon.dmg && -f installers/Dedede-Mac-Intel.dmg && -f installers/Dedede-Mac-AppleSilicon.zip && -f installers/Dedede-Mac-Intel.zip ]]; then
-          if gh release view macos-latest --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release upload macos-latest installers/Dedede-Mac-*.dmg installers/Dedede-Mac-*.zip --repo "$GITHUB_REPOSITORY" --clobber
-            gh release edit macos-latest --repo "$GITHUB_REPOSITORY" --notes-file macos-notes.md
-          else
-            gh release create macos-latest installers/Dedede-Mac-*.dmg installers/Dedede-Mac-*.zip --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title '纠错 Pro Mac（最新版）' --notes-file macos-notes.md --latest=false
-          fi
-          else
-            echo 'Both Mac architectures must pass checks before the Mac release is updated.'
-          fi
+    - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+      with:
+        pattern: Installer-Windows
+        path: installers
+        merge-multiple: true
+    - name: Publish direct downloads
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        set -euo pipefail
+        cat > release-notes.md <<'NOTES'
+        Windows 10/11 x64 离线安装程序。EXE 可直接安装；ZIP 内为同一完整安装程序。当前用户安装，提供启动诊断与兼容启动。版本 1.2.3，同步当前安卓规则。
+        NOTES
+        test -s installers/Dedede-Windows-Setup.exe
+        test -s installers/Dedede-Windows-Setup.zip
+        if gh release view windows-latest --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+          gh release upload windows-latest installers/Dedede-Windows-Setup.exe installers/Dedede-Windows-Setup.zip --repo "$GITHUB_REPOSITORY" --clobber
+          gh release edit windows-latest --repo "$GITHUB_REPOSITORY" --notes-file release-notes.md
+        else
+          gh release create windows-latest installers/Dedede-Windows-Setup.exe installers/Dedede-Windows-Setup.zip --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title '纠错 Pro Windows（最新版）' --notes-file release-notes.md --latest=false
+        fi
+'on':
+  push:
+    branches:
+    - main
+    paths:
+    - dedede-windows.py
+    - .github/workflows/windows.yml
+    - dedede-build.sh
+    - 错别字.txt
+  workflow_dispatch: {}
