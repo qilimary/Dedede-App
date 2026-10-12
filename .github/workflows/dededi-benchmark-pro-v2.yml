@@ -43,8 +43,23 @@ jobs:
         run: |
           set -euo pipefail
           python -m pip install --upgrade pip
-          python -m pip install 'torch==2.9.1' --index-url https://download.pytorch.org/whl/cpu
+          # ExecuTorch 1.5.1 Python wheel is linked against PyTorch 2.11 ABI.
+          # Pin both; installing torch 2.9 makes executorch's native .so fail to import.
+          python -m pip install 'torch==2.11.0' --index-url https://download.pytorch.org/whl/cpu
           python -m pip install 'executorch==1.5.1' 'gdown==5.2.0' 'regex==2024.11.6'
+          python - <<'PY_CHECK'
+          import importlib.metadata
+          import torch
+          assert torch.__version__.split('+')[0] == '2.11.0', f'PyTorch 版本不匹配: {torch.__version__}'
+          from executorch.runtime import Runtime
+          print('PyTorch:', torch.__version__, flush=True)
+          print('ExecuTorch:', importlib.metadata.version('executorch'), flush=True)
+          backend_names = Runtime.get().backend_registry.backend_names
+          print('Available ExecuTorch backends:', backend_names, flush=True)
+          if 'XnnpackBackend' not in backend_names:
+              raise RuntimeError('当前 ExecuTorch wheel 未提供 XNNPACK，不能加载 Android PTE 模型')
+          print('ExecuTorch ABI and XNNPACK smoke-check passed', flush=True)
+          PY_CHECK
       - name: Download the original benchmark datasets
         shell: bash
         run: |
@@ -681,7 +696,8 @@ jobs:
           if __name__=='__main__':main()
           PY
           python -m py_compile /tmp/dedede_hcam_benchmark.py
-          python /tmp/dedede_hcam_benchmark.py
+          # Always retain complete benchmark output, even if PTE loading fails.
+          python /tmp/dedede_hcam_benchmark.py 2>&1 | tee benchmark_console.log
           {
             echo '## HCAM V2 自动测试完成'
             echo
@@ -696,5 +712,6 @@ jobs:
             benchmark_report.md
             benchmark_metrics.json
             benchmark_failures.jsonl
+            benchmark_console.log
           if-no-files-found: warn
           retention-days: 90
