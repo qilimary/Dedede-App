@@ -106,6 +106,53 @@ HIGH_BOUND = r"(?<!不)(超过|高于|高过|高达|多达)(" + BOUND_MIDDLE + r
 LOW_BOUND = r"(?<!不)(低于|少于|不足)(" + BOUND_MIDDLE + r")(以下)" + BOUND_END
 GUARD_REGEX = r"期待(地)(?=搓手手)"
 
+NOTE_LABELS = {
+    '二＋限定普通量词': '',
+    '二三＋普通数量单位': '',
+    '被＋明确施事＋当选为': '搭配不当',
+    '片＋文章类名词': '搭配不当',
+    '所＋房间名词': '搭配不当',
+    '采纳+明确措施': '搭配不当',
+    '采取+明确意见': '搭配不当',
+    '增强+效率': '搭配不当',
+    '加快/扩大+特定力度': '搭配不当',
+    '提高+处罚等力度': '搭配不当',
+    '加大+效率': '搭配不当',
+    '加大+自觉性/主动性': '搭配不当',
+    '损坏+权益': '搭配不当',
+    '达到+赛事冠军身份': '搭配不当',
+    '头+有颜色的马': '搭配不当',
+    '条/支+颜色的鹅': '搭配不当',
+    '枚+鲜花名称': '搭配不当',
+    '片+电影作品': '搭配不当',
+    '间+学校实体': '搭配不当',
+    '匹+狮虎': '搭配不当',
+    '颗+树木': '搭配不当',
+    '把+裤子': '搭配不当',
+    '接待来信直接宾语': '搭配不当',
+    '必需＋明确动作动词': '',
+    '作品反应现实': '',
+    '经济形势严峻': '',
+    '截止+过去明确时间': '',
+    '媒体报道新闻': '',
+    '经济转型过渡阶段': '',
+    '过渡消费等滥用': '',
+    '公众向机构反应问题': '',
+    '截止+日期+统计谓语': '',
+    '由＋明确身份＋为首的': '句式杂糅',
+    '之所以和的原因': '句式杂糅',
+    '名词人数+们': '语义重复',
+    '当务之急的工作': '语义重复',
+    '殊荣称号': '语义重复',
+    '无不毫无例外': '语义重复',
+    '经常性地频频': '语义重复',
+    '无谓的重复强调': '语义重复',
+    '预防+事件+不再发生': '',
+    '杜绝+事件+不再发生': '',
+    '遏制+负面天气+不频发': '',
+    '落实并制定计划': '语序不当',
+}
+
 
 def jstr(value: str) -> str:
     """Serialize regex as a safely escaped Java string literal."""
@@ -403,6 +450,11 @@ EXTENSION_ASSERTIONS = [('采纳+明确措施',
   ['报名截止2026年10月12日。', '投稿截止10月12日，已经延长了三天。', '截止2026年10月12日办理业务。', '申请截止到10月12日。'])]
 
 def verify():
+    titles = [rule[0] for rule in RULES] + [rule[0] for rule in EXTENSION_ASSERTIONS]
+    if len(titles) != 44 or len(set(titles)) != 44 or set(titles) != set(NOTE_LABELS):
+        raise AssertionError("Annotation category table must match all 44 grammar rules")
+    if any(x not in {"", "搭配不当", "句式杂糅", "语义重复", "语序不当"} for x in NOTE_LABELS.values()):
+        raise AssertionError("Unknown annotation category")
     total = 0
 
     # Addition safety-regression checks: positives AND near-miss legal Chinese examples.
@@ -448,10 +500,12 @@ def verify():
     return total + 3 + sum(len(rule[4]) + len(rule[5]) for rule in EXTENSION_ASSERTIONS)
 
 
-def add_rule_line(regex, first, third, description="条件用词纠错"):
-    return "            addRule(" + jstr(regex) + ", new String[][]{{" + (
-        "null" if first is None else jstr(first)
-    ) + ", " + ("null" if third is None else jstr(third)) + ", " + jstr(description) + "}});"
+def add_rule_line(regex, first, third, description):
+    # Match the original Android convention: no third field means no explanation.
+    choices = ("null" if first is None else jstr(first)) + ", " + ("null" if third is None else jstr(third))
+    if description:
+        choices += ", " + jstr(description)
+    return "            addRule(" + jstr(regex) + ", new String[][]{{" + choices + "}});"
 
 
 def main():
@@ -480,15 +534,15 @@ def main():
     rule_lines = "\n\n            // Chinese conditional correction; context restrictions based on LanguageTool zh rules.\n"
     rule_lines += "            // Only matched grammar spans are changed; fixed typo replacements stay in 错别字.txt.\n"
     for title, rx, first, third, _, _ in RULES:
-        rule_lines += add_rule_line(rx, first, third) + "\n"
+        rule_lines += add_rule_line(rx, first, third, NOTE_LABELS[title]) + "\n"
     source = source.replace(matches[0], matches[0] + rule_lines.rstrip("\n"), 1)
 
     # Existing bounds rules are overly broad and can match unrelated text across
     # several words. Tighten them to explicit, same-clause numeric expressions.
     lines = source.splitlines(keepends=True)
     for fragment, replacement in [
-        ('addRule("(超过|高达|多达)(', add_rule_line(HIGH_BOUND, None, "")),
-        ('addRule("(低于|少于|不足)(', add_rule_line(LOW_BOUND, None, "")),
+        ('addRule("(超过|高达|多达)(', add_rule_line(HIGH_BOUND, None, "", "")),
+        ('addRule("(低于|少于|不足)(', add_rule_line(LOW_BOUND, None, "", "")),
     ]:
         indexes = [i for i, line in enumerate(lines) if fragment in line]
         if len(indexes) != 1:
@@ -670,7 +724,7 @@ def main():
         raise SystemExit("Extended grammar anchor changed; stopping without writing.")
     additional = "            // GEC 2026: low-ambiguity collocation / classifier / redundancy / logic rules.\n"
     for title, regex, replacement1, replacement3 in NEW_GEC_RULES:
-        additional += add_rule_line(regex, replacement1, replacement3, "搭配与语义纠错") + "\n"
+        additional += add_rule_line(regex, replacement1, replacement3, NOTE_LABELS[title]) + "\n"
     source = source.replace(new_guard_anchor, additional + new_guard_anchor, 1)
 
     # Make sure this is the Android source generator, not a different project.
