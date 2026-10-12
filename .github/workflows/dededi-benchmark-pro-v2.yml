@@ -1,1163 +1,700 @@
-name: Dededi Pro Benchmark V2
+# Replacement for .github/workflows/dededi-benchmark-pro-v2.yml
+# Pushing this file to main triggers the benchmark automatically.
+# All benchmark code is embedded below: only ONE file needs replacing.
+name: Dedede HCAM V2 Pro Benchmark
 
 on:
-  workflow_dispatch:
-    inputs:
-      temperature:
-        description: "专业模型温度（APP 默认 1.0）"
-        required: false
-        default: "1.0"
-      threshold_de:
-        description: "“的”最低置信度（APP 默认 0.70）"
-        required: false
-        default: "0.70"
-      threshold_di:
-        description: "“地”最低置信度（APP 默认 0.75）"
-        required: false
-        default: "0.75"
-      threshold_de3:
-        description: "“得”最低置信度（APP 默认 0.75）"
-        required: false
-        default: "0.75"
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/dededi-benchmark-pro-v2.yml'
+      - 'dedede-build.sh'
+      - '错别字.txt'
+  workflow_dispatch: {}
 
 permissions:
   contents: read
 
 concurrency:
-  group: dededi-pro-benchmark-${{ github.ref }}
-  cancel-in-progress: true
+  group: dedede-hcam-benchmark-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   benchmark:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
-
+    timeout-minutes: 180
     env:
-      DEDEDI_TEMPERATURE: ${{ github.event.inputs.temperature || '1.0' }}
-      DEDEDI_THRESHOLD_DE: ${{ github.event.inputs.threshold_de || '0.70' }}
-      DEDEDI_THRESHOLD_DI: ${{ github.event.inputs.threshold_di || '0.75' }}
-      DEDEDI_THRESHOLD_DE3: ${{ github.event.inputs.threshold_de3 || '0.75' }}
-
+      DEDEDI_TEMPERATURE: '1.0'
+      DEDEDI_THRESHOLD_DE: '0.70'
+      DEDEDI_THRESHOLD_DI: '0.70'
+      DEDEDI_THRESHOLD_DE3: '0.75'
+      DEDEDI_THRESHOLD_ZUO: '0.75'
+      DEDEDI_THRESHOLD_ZUO4: '0.75'
+      PYTHONUNBUFFERED: '1'
     steps:
-      - name: Checkout repository
+      - name: Check out exact source revision
         uses: actions/checkout@v4
-
       - name: Set up Python 3.10
         uses: actions/setup-python@v5
         with:
-          python-version: "3.10"
-
-      - name: Install dependencies
+          python-version: '3.10'
+      - name: Install CPU inference environment
         shell: bash
         run: |
           set -euo pipefail
           python -m pip install --upgrade pip
-          python -m pip install \
-            torch==1.13.1+cpu \
-            gdown==5.2.0 \
-            regex==2024.11.6 \
-            --extra-index-url https://download.pytorch.org/whl/cpu
-
-      - name: Download the SAME professional model used by the APP build
-        shell: bash
-        run: |
-          set -euo pipefail
-          gdown 10NTeKyG6JigASVwsekKs3MJl0Ev4Oj29 -O dededi_mobile_model_quantized.zip
-          test -s dededi_mobile_model_quantized.zip
-          mkdir -p .benchmark-pro-model
-          unzip -oq dededi_mobile_model_quantized.zip -d .benchmark-pro-model
-
-          python - <<'PY'
-          import json
-          from pathlib import Path
-
-          root = Path(".benchmark-pro-model")
-          models = list(root.rglob("model_traced.pt"))
-          tokenizers = list(root.rglob("tokenizer.json"))
-
-          if not models:
-              raise FileNotFoundError("专业模型压缩包中没有找到 model_traced.pt")
-          if not tokenizers:
-              raise FileNotFoundError("专业模型压缩包中没有找到 tokenizer.json")
-
-          model = models[0]
-          tokenizer = tokenizers[0]
-
-          data = json.loads(tokenizer.read_text(encoding="utf-8"))
-          vocab = {k: int(v) for k, v in data["model"]["vocab"].items()}
-
-          Path(".benchmark-pro-model/model_path.txt").write_text(str(model), encoding="utf-8")
-          Path(".benchmark-pro-model/pro_vocab.json").write_text(
-              json.dumps(vocab, ensure_ascii=False, separators=(",", ":")),
-              encoding="utf-8",
-          )
-          print("Professional model:", model)
-          print("Vocab size:", len(vocab))
-          PY
-
-      - name: Download benchmark datasets
+          python -m pip install 'torch==2.9.1' --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install 'executorch==1.5.1' 'gdown==5.2.0' 'regex==2024.11.6'
+      - name: Download the original benchmark datasets
         shell: bash
         run: |
           set -euo pipefail
           git clone --depth 1 https://github.com/zejunwang1/CTCDataset.git .benchmark-data
           test -s .benchmark-data/NLPCC2023/spell/data.jsonl
           test -s .benchmark-data/yacsc/sighan_revised/test_sighan15.jsonl
-
-      - name: Run exact-style Dededi pipeline benchmark
+      - name: Run benchmark and publish the scores to run summary
         shell: bash
         run: |
           set -euo pipefail
-
-          cat > /tmp/dededi_pro_benchmark.py <<'PY'
+          cat > /tmp/dedede_hcam_benchmark.py <<'PY'
+          import argparse
+          import hashlib
           import json
           import math
           import os
           import random
           import re
+          import subprocess
+          import sys
           import time
           from dataclasses import dataclass
           from pathlib import Path
-
+          
           import regex as jregex
-          import torch
-
+          
           ROOT = Path.cwd()
-          WORKFLOW_DIR = ROOT / ".github/workflows"
-          APP_WORKFLOW = None
-          for candidate in sorted(WORKFLOW_DIR.glob("*.yml")):
-              if candidate.name.startswith("dededi-benchmark"):
-                  continue
-              try:
-                  probe = candidate.read_text(encoding="utf-8")
-              except Exception:
-                  continue
-              if re.search(r"(?m)^name:\s*Build Android APK\s*$", probe):
-                  APP_WORKFLOW = candidate
-                  break
-          TYPO_FILE = ROOT / "错别字.txt"
-          DATA_ROOT = ROOT / ".benchmark-data"
-          MODEL_ROOT = ROOT / ".benchmark-pro-model"
-
-          LABELS = ("的", "地", "得")
-          MAX_SEQUENCE_LENGTH = 300
-
-          TEMPERATURE = float(os.environ.get("DEDEDI_TEMPERATURE", "1.0"))
-          THRESHOLDS = {
-              "的": float(os.environ.get("DEDEDI_THRESHOLD_DE", "0.70")),
-              "地": float(os.environ.get("DEDEDI_THRESHOLD_DI", "0.75")),
-              "得": float(os.environ.get("DEDEDI_THRESHOLD_DE3", "0.75")),
-          }
-
-          # APP itself randomly chooses among some grammar-rule alternatives.
-          # A fixed seed keeps benchmark runs reproducible while retaining
-          # the same "choose one option" behavior.
+          APP_SOURCE_PATH = ROOT / 'dedede-build.sh'
+          DATA_ROOT = ROOT / '.benchmark-data'
+          MODEL_ROOT = ROOT / '.benchmark-pro-model'
+          TYPO_FILE = ROOT / '错别字.txt'
+          LABELS = '的地得做作'
           RNG = random.Random(20260807)
-
-          if APP_WORKFLOW is None or not APP_WORKFLOW.exists():
-              raise FileNotFoundError(
-                  "找不到 name: Build Android APK 的当前 APP 工作流"
-              )
-          if not TYPO_FILE.exists():
-              raise FileNotFoundError(f"找不到错词库：{TYPO_FILE}")
-
-          APP_SOURCE = APP_WORKFLOW.read_text(encoding="utf-8")
-
-          # -----------------------------------------------------------------
-          # Read current APP constants/rules FROM the active Android build
-          # workflow itself. The filename may change; detection is by workflow name.
-          # This prevents the benchmark's blacklist/whitelist/grammar rules
-          # from silently drifting away from the APP when the APP is updated.
-          # -----------------------------------------------------------------
-          def decode_java_string(raw):
-              # Java strings used here are JSON-compatible after being quoted.
+          TEMPERATURE = float(os.getenv('DEDEDI_TEMPERATURE', '1.0'))
+          THRESHOLDS = {k: float(os.getenv('DEDEDI_THRESHOLD_' + name, str(default)))
+                        for k, name, default in [('的','DE',.7),('地','DI',.7),('得','DE3',.75),('做','ZUO',.75),('作','ZUO4',.75)]}
+          if not 0.5 <= TEMPERATURE <= 2.0 or any(not 0.0 <= x <= 1.0 for x in THRESHOLDS.values()):
+              raise ValueError('温度或阈值超出 APP 允许范围')
+          
+          
+          def verify_and_download():
+              source = APP_SOURCE_PATH.read_text(encoding='utf-8')
+              MODEL_ROOT.mkdir(exist_ok=True)
+              for key, filename in [('MODEL', 'model.pte'), ('TOKENIZER', 'tokenizer.json')]:
+                  def lookup(suffix):
+                      found = re.search(r"(?m)^" + key + suffix + r"='([^']+)'", source)
+                      if found is None:
+                          raise RuntimeError('当前 Android 构建脚本缺少 ' + key + suffix)
+                      return found.group(1)
+                  expected = lookup('_SHA')
+                  target = MODEL_ROOT / filename
+                  if not target.is_file() or hashlib.sha256(target.read_bytes()).hexdigest() != expected:
+                      subprocess.run([sys.executable, '-m', 'gdown', lookup('_ID'), '--no-cookies', '-O', str(target)], check=True)
+                  sha = hashlib.sha256(target.read_bytes()).hexdigest()
+                  if sha != expected:
+                      raise RuntimeError(f'{filename} 校验失败: {sha}, 预期 {expected}')
+                  print(f'资源已校验: {filename}, {target.stat().st_size:,} bytes, {sha}', flush=True)
+              return source
+          
+          
+          def java_string(raw):
               return json.loads('"' + raw + '"')
-
-          def extract_java_string_constant(name):
-              m = re.search(
-                  rf'public static final String {re.escape(name)} = "((?:\\.|[^"\\])*)";',
-                  APP_SOURCE,
-              )
-              if not m:
-                  raise RuntimeError(f"无法从 APP 源码读取 {name}")
-              return decode_java_string(m.group(1))
-
-          def extract_java_string_array(name):
-              m = re.search(
-                  rf'public static final String\[\] {re.escape(name)} = \{{(.*?)\}};',
-                  APP_SOURCE,
-                  flags=re.S,
-              )
-              if not m:
-                  raise RuntimeError(f"无法从 APP 源码读取 {name}")
-              return [
-                  decode_java_string(x)
-                  for x in re.findall(r'"((?:\\.|[^"\\])*)"', m.group(1))
-              ]
-
-          NUMS = extract_java_string_constant("NUMS")
-          KNOWN_QUANTS = extract_java_string_constant("KNOWN_QUANTS")
-          IGNORE_WORDS = extract_java_string_array("IGNORE_WORDS")
-          WHITE_LIST = extract_java_string_array("WHITE_LIST")
-
-          safe_match = re.search(
-              r'public static boolean isSafeCharAfterNoun\(char c\).*?return "((?:\\.|[^"\\])*)"\.indexOf\(c\) >= 0;',
-              APP_SOURCE,
-              flags=re.S,
-          )
-          if not safe_match:
-              raise RuntimeError("无法从 APP 源码读取 isSafeCharAfterNoun 白名单")
-          SAFE_AFTER_NOUN = decode_java_string(safe_match.group(1))
-
-          # -----------------------------------------------------------------
-          # Parse all current grammar rules from the APP source.
-          #
-          # The APP contains:
-          #   1) normal addRule("literal regex", ...)
-          #   2) regex strings concatenated with variables such as
-          #      evidenceSource / locations
-          #   3) several for-loops that generate number/date/time rules.
-          #
-          # We reproduce all three forms so the benchmark follows the same
-          # current grammar-rule set instead of silently dropping dynamic rules.
-          # -----------------------------------------------------------------
+          
+          
+          def extract_constants(source):
+              def const(name):
+                  m = re.search(r'public static final String ' + re.escape(name) + r' = "((?:\\.|[^"\\])*)";', source)
+                  if m is None:
+                      raise RuntimeError('当前 Java 源码缺少常量 ' + name)
+                  return java_string(m.group(1))
+              def string_array(name):
+                  m = re.search(r'public static final String\[\] ' + re.escape(name) + r' = \{(.*?)\};', source, re.S)
+                  if m is None:
+                      raise RuntimeError('当前 Java 源码缺少词表 ' + name)
+                  return [java_string(x) for x in re.findall(r'"((?:\\.|[^"\\])*)"', m.group(1))]
+              match = re.search(r'public static boolean isSafeCharAfterNoun\(char c\).*?return "((?:\\.|[^"\\])*)"\.indexOf\(c\) >= 0;', source, re.S)
+              if not match:
+                  raise RuntimeError('无法读取量词规则安全后缀')
+              return const('NUMS'), const('KNOWN_QUANTS'), string_array('IGNORE_WORDS'), string_array('WHITE_LIST'), java_string(match.group(1))
+          
+          
           @dataclass
-          class GramRule:
-              pattern: object
+          class Rule:
+              regex: object
               options: list
-              raw_pattern: str
-
-          GRAM_RULES = []
-
-          def parse_java_options(line):
-              m = re.search(
-                  r',\s*new String\[\]\[\]\{(.*)\}\);',
-                  line,
-              )
-              if not m:
-                  raise RuntimeError("无法解析语法规则 options：" + line.strip())
-
-              option_groups = re.findall(r'\{([^{}]*)\}', m.group(1))
-              value_re = re.compile(r'null|"(?:\\.|[^"\\])*"')
-              options = []
-
-              for group in option_groups:
-                  values = []
-                  for token in value_re.findall(group):
-                      if token == "null":
-                          values.append(None)
-                      else:
-                          values.append(decode_java_string(token[1:-1]))
-                  if values:
-                      options.append(values)
-
-              if not options:
-                  raise RuntimeError("语法规则没有解析到 options：" + line.strip())
-              return options
-
-          def append_gram_rule(pattern_text, options):
-              try:
-                  compiled = jregex.compile(pattern_text)
-              except Exception as e:
-                  raise RuntimeError(
-                      f"Python regex 无法编译 APP 规则：{pattern_text}\n{e}"
-                  )
-              GRAM_RULES.append(GramRule(compiled, options, pattern_text))
-
-          # Local Java string variables used to compose a few large regex rules.
-          JAVA_STRING_VARS = {}
-          for name, raw in re.findall(
-              r'\bString\s+([A-Za-z_]\w*)\s*=\s*"((?:\\.|[^"\\])*)";',
-              APP_SOURCE,
-          ):
-              JAVA_STRING_VARS[name] = decode_java_string(raw)
-
-          JAVA_STRING_ARRAYS = {}
-          for name, body in re.findall(
-              r'\bString\[\]\s+([A-Za-z_]\w*)\s*=\s*\{(.*?)\};',
-              APP_SOURCE,
-              flags=re.S,
-          ):
-              JAVA_STRING_ARRAYS[name] = [
-                  decode_java_string(x)
-                  for x in re.findall(r'"((?:\\.|[^"\\])*)"', body)
-              ]
-
-          def eval_java_string_concat(expr):
-              """Evaluate the simple Java string concatenations used by addRule."""
-              pieces = []
-              pos = 0
-              token_re = re.compile(
-                  r'\s*(?:"((?:\\.|[^"\\])*)"|([A-Za-z_]\w*))\s*(?:\+|$)'
-              )
-
-              while pos < len(expr):
-                  m = token_re.match(expr, pos)
+              raw: str
+          
+          
+          def extract_rules(source):
+              start = source.index('public static synchronized void ensureRulesLoaded()')
+              end = source.index('} catch (Throwable error) { rulesAttempted=false;', start)
+              body = source[start:end]
+              vars_ = {name: java_string(raw) for name, raw in re.findall(
+                  r'\bString\s+([A-Za-z_]\w*)\s*=\s*"((?:\\.|[^"\\])*)";', body)}
+              arrays = {name: [java_string(x) for x in re.findall(r'"((?:\\.|[^"\\])*)"', raw)]
+                        for name, raw in re.findall(r'\bString\[\]\s+([A-Za-z_]\w*)\s*=\s*\{(.*?)\};', body, re.S)}
+              rules = []
+              def add(pattern, options):
+                  try:
+                      compiled = jregex.compile(pattern)
+                  except Exception as e:
+                      raise RuntimeError('当前 Java 正则无法在 Python 中编译: ' + pattern) from e
+                  if compiled.groups < 3:
+                      raise RuntimeError('语法规则必须有 3 个捕获组: ' + pattern)
+                  rules.append(Rule(compiled, options, pattern))
+              def options_from_line(line):
+                  m = re.search(r',\s*new String\[\]\[\]\{(.*)\}\);', line)
                   if not m:
-                      raise RuntimeError(
-                          "无法解析 addRule 的字符串拼接表达式：" + expr
-                      )
-                  if m.group(1) is not None:
-                      pieces.append(decode_java_string(m.group(1)))
-                  else:
-                      name = m.group(2)
-                      if name not in JAVA_STRING_VARS:
-                          raise RuntimeError(
-                              f"addRule 引用了未知字符串变量 {name}: {expr}"
-                          )
-                      pieces.append(JAVA_STRING_VARS[name])
-                  pos = m.end()
-
-              return "".join(pieces)
-
-          # Parse ordinary and variable-concatenated addRule calls.
-          # Loop-generated rules are synthesized below because their expressions
-          # contain Java variables such as i / weekdays[i].
-          for line in APP_SOURCE.splitlines():
-              if "addRule(" not in line:
-                  continue
-
-              stripped = line.strip()
-              if stripped.startswith("private static void addRule("):
-                  continue
-              if "for (" in stripped:
-                  continue
-
-              after = stripped.split("addRule(", 1)[1]
-              marker = ", new String[][]"
-              if marker not in after:
-                  raise RuntimeError("无法解析语法规则行：" + stripped)
-
-              expr = after.split(marker, 1)[0].strip()
-              pattern_text = eval_java_string_concat(expr)
-              options = parse_java_options(stripped)
-              append_gram_rule(pattern_text, options)
-
-          # Reproduce the APP's loop-generated rules exactly.
-          quantifiers = JAVA_STRING_VARS.get("quantifiers")
-          chinese_numbers = JAVA_STRING_ARRAYS.get("chineseNumbers")
-          weekdays = JAVA_STRING_ARRAYS.get("weekdays")
-          lunar_days = JAVA_STRING_ARRAYS.get("lunarDays")
-          simple = JAVA_STRING_ARRAYS.get("simple")
-
-          if not all(
-              x is not None
-              for x in (
-                  quantifiers,
-                  chinese_numbers,
-                  weekdays,
-                  lunar_days,
-                  simple,
-              )
-          ):
-              raise RuntimeError(
-                  "无法读取 APP 动态数字/日期/时间语法规则所需变量"
-              )
-
-          for i in range(1, 11):
-              append_gram_rule(
-                  rf"(?<![0-9a-zA-Z.])({i})( *)({quantifiers})",
-                  [[chinese_numbers[i], None]],
-              )
-
-          for i in range(1, 8):
-              append_gram_rule(
-                  rf"(星期|周|礼拜)( *)({i})(?![0-9])",
-                  [[None, weekdays[i]]],
-              )
-
-          for i in range(1, 31):
-              append_gram_rule(
-                  rf"(正月|腊月|冬月)( *)({i})(?![0-9])",
-                  [[None, lunar_days[i]]],
-              )
-
-          for i in range(1, 11):
-              append_gram_rule(
-                  rf"(初)( *)({i})(?![0-9])",
-                  [[None, simple[i]]],
-              )
-
-          for i in range(1, 10):
-              append_gram_rule(
-                  rf"(?<![0-9])({i})()(点|点钟)(?![0-9分秒])",
-                  [[simple[i], None]],
-              )
-          for i in range(1, 10):
-              append_gram_rule(
-                  rf"(?<![0-9])({i})()(楼|层)(?![0-9])",
-                  [[simple[i], None]],
-              )
-          for i in range(1, 10):
-              append_gram_rule(
-                  rf"(?<![0-9])({i})()(班)(?![0-9])",
-                  [[simple[i], None]],
-              )
-
-          if len(GRAM_RULES) < 80:
-              raise RuntimeError(
-                  f"只解析到 {len(GRAM_RULES)} 条语法规则，疑似 APP 源码格式已改变"
-              )
-
-          # -----------------------------------------------------------------
-          # Parse current quantifier rules from APP source.
-          # -----------------------------------------------------------------
-          QUANT_RULES = {}
-          for noun, primary, allowed in re.findall(
-              r"quantRules\.put\('(.?)',\s*new QuantifierRule\(\"((?:\\.|[^\"\\])*)\",\s*\"((?:\\.|[^\"\\])*)\"\)\)",
-              APP_SOURCE,
-          ):
-              QUANT_RULES[noun] = (
-                  decode_java_string(primary),
-                  decode_java_string(allowed),
-              )
-
-          if not QUANT_RULES:
-              raise RuntimeError("没有解析到量词规则")
-
-          # -----------------------------------------------------------------
-          # Load typo map exactly like loadTypoMap() for a clean installation.
-          # (GitHub Actions has no Android SharedPreferences, so user-added
-          # custom_typos on one phone are intentionally not part of benchmark.)
-          # -----------------------------------------------------------------
-          TYPO_MAP = {}
-          with TYPO_FILE.open("r", encoding="utf-8-sig", errors="ignore") as f:
-              for raw in f:
-                  line = raw.strip()
-                  if not line:
-                      continue
-                  parts = re.split(r"\s+", line, maxsplit=2)
-                  if len(parts) >= 2 and parts[0] != parts[1]:
-                      TYPO_MAP[parts[0]] = parts[1]
-
-          if not TYPO_MAP:
-              raise RuntimeError("错词库为空")
-
-          MAX_TYPO_LEN = max(map(len, TYPO_MAP))
-          MIN_TYPO_LEN = min(map(len, TYPO_MAP))
-
-          lengths_tmp = {}
-          for source in TYPO_MAP:
-              lengths_tmp.setdefault(source[0], set()).add(len(source))
-          TYPO_LENGTHS_BY_FIRST = {
-              ch: sorted(lengths, reverse=True)
-              for ch, lengths in lengths_tmp.items()
-          }
-
-          def is_false_positive_typo(sentence, index, source):
-              # Exact current APP static WHITE_LIST behavior.
-              for white in WHITE_LIST:
-                  search_start = max(0, index - len(white))
-                  search_end = min(
-                      len(sentence), index + len(source) + len(white)
-                  )
-                  window = sentence[search_start:search_end]
-                  found = window.find(white)
-                  while found >= 0:
-                      start = search_start + found
-                      end = start + len(white)
-                      if start < index + len(source) and end > index:
-                          return True
-                      found = window.find(white, found + 1)
-
-              if source == "作事" and index > 0 and sentence[index - 1] == "下":
-                  return True
-              if source == "导至" and index > 0 and sentence[index - 1] == "传":
-                  return True
-
-              if source and source[0] in ("做", "作"):
-                  if (
-                      index > 0
-                      and sentence[index - 1]
-                      in "创去要在该想会能可来把给多没不曾刚才将正就爱肯敢配帮替让叫使令"
-                  ):
-                      return True
-                  after = index + len(source)
-                  if (
-                      after < len(sentence)
-                      and sentence[after] in "扇筝联山发牙眼肢手脚衣裤帽鞋饭菜汤了"
-                  ):
-                      return True
-
-              return False
-
-          def is_conflicting_correction(sentence, index, source, correction):
-              if source == correction or MIN_TYPO_LEN <= 0:
-                  return False
-
-              simulated = (
-                  sentence[:index]
-                  + correction
-                  + sentence[index + len(source):]
-              )
-              start = index
-              end = index + len(correction)
-              search_start = max(0, start - MAX_TYPO_LEN + 1)
-
-              for cursor in range(search_start, end):
-                  if cursor < 0 or cursor >= len(simulated):
-                      continue
-                  lengths = TYPO_LENGTHS_BY_FIRST.get(simulated[cursor])
-                  if lengths is None:
-                      continue
-                  for length in lengths:
-                      if cursor + length > len(simulated):
-                          continue
-                      crosses_left = cursor < start and cursor + length > start
-                      crosses_right = cursor < end and cursor + length > end
-                      if not crosses_left and not crosses_right:
-                          continue
-                      candidate = simulated[cursor:cursor + length]
-                      target = TYPO_MAP.get(candidate)
-                      if target is not None and candidate != target:
-                          return True
-              return False
-
-          def find_typo_match(sentence, index):
-              if index < 0 or index >= len(sentence):
-                  return None
-              lengths = TYPO_LENGTHS_BY_FIRST.get(sentence[index])
-              if lengths is None:
-                  return None
-
-              for length in lengths:
-                  if index + length > len(sentence):
-                      continue
-                  candidate = sentence[index:index + length]
-                  correction = TYPO_MAP.get(candidate)
-                  if correction is None:
-                      continue
-                  if is_false_positive_typo(sentence, index, candidate):
-                      continue
-                  if (
-                      candidate != correction
-                      and is_conflicting_correction(
-                          sentence, index, candidate, correction
-                      )
-                  ):
-                      continue
-                  return candidate, correction
-              return None
-
-          # -----------------------------------------------------------------
-          # Grammar hits: same priority behavior as collectGrammarHits().
-          # Earlier gramRules win when several rules begin at same position.
-          # -----------------------------------------------------------------
-          def collect_grammar_hits(sentence):
-              hits = [None] * len(sentence)
-              for rule in GRAM_RULES:
-                  search_start = 0
-                  while search_start < len(sentence):
-                      match = rule.pattern.search(sentence, pos=search_start)
-                      if match is None:
-                          break
-                      match_start = match.start()
-                      if match_start < len(hits) and hits[match_start] is None:
-                          try:
-                              g1 = match.group(1)
-                              g2 = match.group(2)
-                              g3 = match.group(3)
-                          except IndexError as e:
-                              raise RuntimeError(
-                                  "APP grammar rule has fewer than 3 groups: "
-                                  + rule.raw_pattern
-                              ) from e
-                          hits[match_start] = (
-                              rule,
-                              match.end(),
-                              g1,
-                              g2,
-                              g3,
-                          )
-                      search_start = match_start + 1
-              return hits
-
-          def is_safe_char_after_noun(ch):
-              if ch == "\0" or not ("\u4e00" <= ch <= "\u9fff"):
-                  return True
-              return ch in SAFE_AFTER_NOUN
-
-          # -----------------------------------------------------------------
-          # Exact APP sentence/chunk split.
-          # -----------------------------------------------------------------
-          def split_text(text):
-              first_pass = []
-              current = []
-
-              for ch in text:
-                  current.append(ch)
-                  if ch in ("。", "！", "？", "!", "?", "\n"):
-                      first_pass.append("".join(current))
-                      current.clear()
-
-              if current:
-                  first_pass.append("".join(current))
-
-              result = []
-              for segment in first_pass:
-                  if len(segment) <= MAX_SEQUENCE_LENGTH:
-                      result.append(segment)
-                      continue
-
-                  pending = []
-                  for ch in segment:
-                      pending.append(ch)
-                      if len(pending) < MAX_SEQUENCE_LENGTH:
-                          continue
-
-                      split = -1
-                      low = max(0, len(pending) - 60)
-                      for j in range(len(pending) - 1, low - 1, -1):
-                          if pending[j] in ("，", ",", "；", ";", "、"):
-                              split = j
-                              break
-
-                      if split > 0:
-                          result.append("".join(pending[:split + 1]))
-                          pending = pending[split + 1:]
+                      raise RuntimeError('语法规则选项格式已变化: ' + line[:150])
+                  groups = re.findall(r'\{([^{}]*)\}', m.group(1))
+                  options = [[None if k == 'null' else java_string(k[1:-1])
+                              for k in re.findall(r'null|"(?:\\.|[^"\\])*"', group)] for group in groups]
+                  if not options:
+                      raise RuntimeError('语法规则缺少候选: ' + line[:150])
+                  return options
+              def eval_concat(expr):
+                  result = []
+                  token = re.compile(r'\s*(?:"((?:\\.|[^"\\])*)"|([A-Za-z_]\w*))\s*(?:\+|$)')
+                  pos = 0
+                  while pos < len(expr):
+                      m = token.match(expr, pos)
+                      if not m:
+                          raise RuntimeError('无法读取动态规则字符串: ' + expr)
+                      if m.group(1) is not None:
+                          result.append(java_string(m.group(1)))
                       else:
-                          result.append("".join(pending))
-                          pending.clear()
-
-                  if pending:
-                      result.append("".join(pending))
-
-              return result
-
-          # -----------------------------------------------------------------
-          # Build APP's intermediate corrected text + ignored mask.
-          # We only need these two things to reproduce model input.
-          # -----------------------------------------------------------------
-          def append_chars(out_chars, out_ignored, text, ignored):
-              out_chars.extend(text)
-              out_ignored.extend([ignored] * len(text))
-
-          def preprocess_sentence(sentence):
-              grammar_hits = collect_grammar_hits(sentence)
-              out_chars = []
-              out_ignored = []
-              cursor = 0
-
-              while cursor < len(sentence):
-                  typo = find_typo_match(sentence, cursor)
-                  if typo is not None:
-                      source, correction = typo
-                      # APP TextBlock type=2 -> ignored by model, even after replace.
-                      append_chars(out_chars, out_ignored, correction, True)
-                      cursor += len(source)
+                          result.append(vars_[m.group(2)])
+                      pos = m.end()
+                  return ''.join(result)
+              # Preserve registration order exactly. APP resolves overlapping rules by
+              # the first registered match, so appending synthesized loop rules at the
+              # end (as the previous benchmark did) would silently change behavior.
+              loop_counts = {name: 0 for name in ('quantifiers', 'weekdays', 'lunarDays', 'simple', 'point', 'floor', 'class')}
+              need = ['quantifiers','chineseNumbers','weekdays','lunarDays','simple']
+              if any(k not in vars_ and k not in arrays for k in need):
+                  raise RuntimeError('动态数字规则变量缺失')
+              for line in body.splitlines():
+                  item = line.strip()
+                  if item.startswith(('addRule(', 'addProfessionalRule(')):
+                      after = item.split('(', 1)[1]
+                      if ', new String[][]' not in after:
+                          raise RuntimeError('语法规则格式不支持: ' + item[:150])
+                      add(eval_concat(after.split(', new String[][]', 1)[0]), options_from_line(item))
                       continue
-
-                  grammar_hit = grammar_hits[cursor]
-                  if grammar_hit is not None:
-                      rule, end, group1, group2, group3 = grammar_hit
-                      selected = rule.options[RNG.randrange(len(rule.options))]
-
-                      replacement1 = (
-                          selected[0]
-                          if len(selected) > 0 and selected[0] is not None
-                          else group1
-                      )
-                      replacement3 = (
-                          selected[1]
-                          if len(selected) > 1 and selected[1] is not None
-                          else group3
-                      )
-                      explanation = (
-                          selected[2]
-                          if len(selected) > 2 and selected[2] is not None
-                          else ""
-                      )
-
-                      group1_error = (
-                          group1 != replacement1
-                          or (
-                              explanation != ""
-                              and len(selected) > 0
-                              and selected[0] is not None
-                          )
-                      )
-                      group3_error = (
-                          group3 != replacement3
-                          or (
-                              explanation != ""
-                              and len(selected) > 1
-                              and selected[1] is not None
-                          )
-                      )
-
-                      append_chars(
-                          out_chars, out_ignored, replacement1, group1_error
-                      )
-                      append_chars(out_chars, out_ignored, group2, False)
-                      append_chars(
-                          out_chars, out_ignored, replacement3, group3_error
-                      )
-                      cursor = end
+                  if not item.startswith('for (int i =') or 'addRule(' not in item:
                       continue
-
-                  if cursor > 0 and cursor + 1 < len(sentence):
-                      number = sentence[cursor - 1]
-                      quantifier = sentence[cursor]
-                      noun = sentence[cursor + 1]
-
-                      if quantifier in KNOWN_QUANTS and number in NUMS:
-                          qrule = QUANT_RULES.get(noun)
-                          if qrule is not None:
-                              primary, allowed = qrule
-                              if quantifier not in allowed:
-                                  next_char = (
-                                      sentence[cursor + 2]
-                                      if cursor + 2 < len(sentence)
-                                      else "\0"
-                                  )
-                                  if is_safe_char_after_noun(next_char):
-                                      append_chars(
-                                          out_chars,
-                                          out_ignored,
-                                          primary,
-                                          True,
-                                      )
-                                      cursor += 1
-                                      continue
-
-                  append_chars(
-                      out_chars, out_ignored, sentence[cursor], False
-                  )
-                  cursor += 1
-
-              infer_text = "".join(out_chars)
-
-              # Exact current model skip-list / "blacklist" behavior.
-              for word in IGNORE_WORDS:
-                  index = infer_text.find(word)
-                  while index >= 0:
-                      end = min(len(out_ignored), index + len(word))
-                      for i in range(index, end):
-                          out_ignored[i] = True
-                      index = infer_text.find(word, index + 1)
-
-              return infer_text, out_ignored
-
-          # -----------------------------------------------------------------
-          # Professional model — SAME downloaded source used by APP build.
-          # We load model_traced.pt directly on GitHub CPU so benchmark does
-          # not accidentally run the repo's lightweight BiGRU model.
-          # -----------------------------------------------------------------
-          model_path = Path(
-              (MODEL_ROOT / "model_path.txt").read_text(encoding="utf-8").strip()
-          )
-          vocab = json.loads(
-              (MODEL_ROOT / "pro_vocab.json").read_text(encoding="utf-8")
-          )
-
-          UNK_ID = int(vocab.get("[UNK]", 100))
-          CLS_ID = int(vocab.get("[CLS]", 101))
-          SEP_ID = int(vocab.get("[SEP]", 102))
-          MASK_ID = int(vocab.get("[MASK]", 103))
-          DE_ID = int(vocab.get("的", 0))
-          DI_ID = int(vocab.get("地", 0))
-          DE3_ID = int(vocab.get("得", 0))
-          VOCAB_SIZE = len(vocab)
-
-          char_ids = {}
-          for token, token_id in vocab.items():
-              if len(token) == 1:
-                  char_ids[token] = int(token_id)
-
-          model = torch.jit.load(str(model_path), map_location="cpu")
-          model.eval()
-          # Keep runner responsive and avoid excessive thread oversubscription.
-          torch.set_num_threads(min(4, max(1, os.cpu_count() or 1)))
-
-          def first_tensor(obj):
-              if torch.is_tensor(obj):
-                  return obj
-              if isinstance(obj, (tuple, list)):
-                  for x in obj:
-                      t = first_tensor(x)
-                      if t is not None:
-                          return t
-              if isinstance(obj, dict):
-                  for x in obj.values():
-                      t = first_tensor(x)
-                      if t is not None:
-                          return t
-              return None
-
-          def softmax3(a, b, c, temperature):
-              inv = 1.0 / temperature
-              values = [a * inv, b * inv, c * inv]
-              m = max(values)
-              ex = [math.exp(v - m) for v in values]
-              s = sum(ex)
-              if not math.isfinite(s) or s <= 0:
-                  return [1 / 3, 1 / 3, 1 / 3]
-              return [x / s for x in ex]
-
-          @torch.inference_mode()
-          def professional_inference(infer_text, ignored):
-              has_target = any(
-                  (not ignored[i]) and ch in LABELS
-                  for i, ch in enumerate(infer_text)
-              )
-              if not has_target or TEMPERATURE <= 0:
-                  return infer_text
-
-              exact_length = len(infer_text) + 2
-              ids = [0] * exact_length
-              masks = [1] * exact_length
-              types = [0] * exact_length
-
-              ids[0] = CLS_ID
-              for i, ch in enumerate(infer_text):
-                  ids[i + 1] = (
-                      MASK_ID
-                      if (not ignored[i] and ch in LABELS)
-                      else char_ids.get(ch, UNK_ID)
-                  )
-              ids[-1] = SEP_ID
-
-              input_ids = torch.tensor([ids], dtype=torch.long)
-              attention_mask = torch.tensor([masks], dtype=torch.long)
-              token_type_ids = torch.tensor([types], dtype=torch.long)
-
-              output = model(input_ids, attention_mask, token_type_ids)
-              scores = first_tensor(output)
-              if scores is None:
-                  raise RuntimeError("专业模型没有返回 Tensor")
-
-              if scores.dim() != 3:
-                  raise RuntimeError(
-                      f"专业模型输出维度异常：{tuple(scores.shape)}"
-                  )
-              if scores.shape[0] != 1:
-                  raise RuntimeError(
-                      f"专业模型 batch 维度异常：{tuple(scores.shape)}"
-                  )
-              if scores.shape[1] < exact_length:
-                  raise RuntimeError(
-                      f"专业模型序列长度异常：{tuple(scores.shape)}"
-                  )
-              if scores.shape[2] < max(DE_ID, DI_ID, DE3_ID) + 1:
-                  raise RuntimeError(
-                      f"专业模型词表维度异常：{tuple(scores.shape)}"
-                  )
-
-              chars = list(infer_text)
-              for i, original in enumerate(chars):
-                  if ignored[i] or original not in LABELS:
-                      continue
-
-                  row = scores[0, i + 1]
-                  probs = softmax3(
-                      float(row[DE_ID]),
-                      float(row[DI_ID]),
-                      float(row[DE3_ID]),
-                      TEMPERATURE,
-                  )
-
-                  # Same tie behavior as APP:
-                  # start with 的; 地 only wins if strictly greater;
-                  # 得 only wins if strictly greater than current winner.
-                  best = 1 if probs[1] > probs[0] else 0
-                  if probs[2] > probs[best]:
-                      best = 2
-
-                  prediction = LABELS[best]
-                  confidence = probs[best]
-                  threshold = THRESHOLDS[prediction]
-
-                  if prediction != original and confidence >= threshold:
-                      chars[i] = prediction
-
-              return "".join(chars)
-
-          def correct_text(text):
-              out = []
-              for sentence in split_text(text):
-                  infer_text, ignored = preprocess_sentence(sentence)
-                  out.append(professional_inference(infer_text, ignored))
-              return "".join(out)
-
-          # -----------------------------------------------------------------
-          # Datasets + metrics
-          # -----------------------------------------------------------------
-          DATASETS = [
-              (
-                  "NLPCC2023-Task8",
-                  DATA_ROOT / "NLPCC2023/spell/data.jsonl",
-              ),
-              (
-                  "SIGHAN15-Revised",
-                  DATA_ROOT / "yacsc/sighan_revised/test_sighan15.jsonl",
-              ),
-          ]
-
-          def load_jsonl(path):
-              rows = []
-              with path.open("r", encoding="utf-8-sig") as f:
-                  for line_no, raw in enumerate(f, 1):
-                      raw = raw.strip()
-                      if not raw:
-                          continue
-                      obj = json.loads(raw)
-                      src = obj.get("source")
-                      tgt = obj.get("target")
-                      if not isinstance(src, str) or not isinstance(tgt, str):
-                          raise ValueError(
-                              f"{path}:{line_no} 缺少 source/target"
-                          )
-                      rows.append((src, tgt))
-              return rows
-
-          def safe_div(a, b):
-              return a / b if b else 0.0
-
-          def f1(p, r):
-              return 2 * p * r / (p + r) if p + r else 0.0
-
-          def evaluate(rows):
-              exact = 0
-              correct_inputs = 0
-              correct_preserved = 0
-              wrong_inputs = 0
-              wrong_exact_fixed = 0
-
-              det_tp = det_fp = det_fn = 0
-              cor_tp = cor_fp = cor_fn = 0
-              aligned_samples = 0
-              length_changed = 0
-
-              failures = []
-              total_chars = sum(len(src) for src, _ in rows)
-              total_time = 0.0
-
-              for idx, (src, tgt) in enumerate(rows):
-                  t0 = time.perf_counter()
-                  pred = correct_text(src)
-                  total_time += time.perf_counter() - t0
-
-                  if pred == tgt:
-                      exact += 1
-
-                  if src == tgt:
-                      correct_inputs += 1
-                      if pred == src:
-                          correct_preserved += 1
+                  if 'chineseNumbers[i]' in item:
+                      loop_counts['quantifiers'] += 1
+                      for i in range(1,11):
+                          add(rf'(?<![0-9a-zA-Z.])({i})( *)({vars_["quantifiers"]})', [[arrays['chineseNumbers'][i], None]])
+                  elif 'weekdays[i]' in item:
+                      loop_counts['weekdays'] += 1
+                      for i in range(1,8):
+                          add(rf'(星期|周|礼拜)( *)({{i}})(?![0-9])', [[None, arrays['weekdays'][i]]])
+                  elif 'lunarDays[i]' in item:
+                      loop_counts['lunarDays'] += 1
+                      for i in range(1,31):
+                          add(rf'(正月|腊月|冬月)( *)({i})(?![0-9])', [[None, arrays['lunarDays'][i]]])
+                  elif 'simple[i]' in item:
+                      if '(初)' in item:
+                          key,tail,stop='simple','初',r'(?![0-9])'
+                          for i in range(1,11):
+                              add(rf'(初)( *)({i}){stop}',[[None,arrays['simple'][i]]])
+                      elif '(点|点钟)' in item:
+                          key='point'
+                          for i in range(1,10):
+                              add(rf'(?<![0-9])({i})()(点|点钟)(?![0-9分秒])',[[arrays['simple'][i],None]])
+                      elif '(楼|层)' in item:
+                          key='floor'
+                          for i in range(1,10):
+                              add(rf'(?<![0-9])({i})()(楼|层)(?![0-9])',[[arrays['simple'][i],None]])
+                      elif '(班)' in item:
+                          key='class'
+                          for i in range(1,10):
+                              add(rf'(?<![0-9])({i})()(班)(?![0-9])',[[arrays['simple'][i],None]])
+                      else:
+                          raise RuntimeError('未知的动态 simple[i] 规则: ' + item[:120])
+                      loop_counts[key] += 1
                   else:
-                      wrong_inputs += 1
-                      if pred == tgt:
-                          wrong_exact_fixed += 1
-
-                  if len(src) == len(tgt) == len(pred):
-                      aligned_samples += 1
-                      gold_pos = {
-                          i for i, (a, b) in enumerate(zip(src, tgt))
-                          if a != b
-                      }
-                      pred_pos = {
-                          i for i, (a, b) in enumerate(zip(src, pred))
-                          if a != b
-                      }
-
-                      det_tp += len(gold_pos & pred_pos)
-                      det_fp += len(pred_pos - gold_pos)
-                      det_fn += len(gold_pos - pred_pos)
-
-                      for i in pred_pos:
-                          if i in gold_pos and pred[i] == tgt[i]:
-                              cor_tp += 1
-                          else:
-                              cor_fp += 1
-
-                      for i in gold_pos:
-                          if not (i in pred_pos and pred[i] == tgt[i]):
-                              cor_fn += 1
-                  elif len(pred) != len(src):
-                      length_changed += 1
-
-                  if pred != tgt and len(failures) < 60:
-                      failures.append(
-                          {
-                              "index": idx,
-                              "source": src,
-                              "target": tgt,
-                              "prediction": pred,
-                          }
-                      )
-
-              det_p = safe_div(det_tp, det_tp + det_fp)
-              det_r = safe_div(det_tp, det_tp + det_fn)
-              cor_p = safe_div(cor_tp, cor_tp + cor_fp)
-              cor_r = safe_div(cor_tp, cor_tp + cor_fn)
-
-              return {
-                  "samples": len(rows),
-                  "characters": total_chars,
-                  "exact": safe_div(exact, len(rows)),
-                  "correct_inputs": correct_inputs,
-                  "correct_preserve": safe_div(
-                      correct_preserved, correct_inputs
-                  ),
-                  "overcorrection": safe_div(
-                      correct_inputs - correct_preserved, correct_inputs
-                  ),
-                  "wrong_inputs": wrong_inputs,
-                  "wrong_exact_fix": safe_div(
-                      wrong_exact_fixed, wrong_inputs
-                  ),
-                  "det_p": det_p,
-                  "det_r": det_r,
-                  "det_f1": f1(det_p, det_r),
-                  "cor_p": cor_p,
-                  "cor_r": cor_r,
-                  "cor_f1": f1(cor_p, cor_r),
-                  "aligned_samples": aligned_samples,
-                  "length_changed": length_changed,
-                  "seconds": total_time,
-                  "chars_per_second": safe_div(total_chars, total_time),
-                  "ms_per_sentence": 1000 * safe_div(
-                      total_time, len(rows)
-                  ),
-                  "failures": failures,
-              }
-
-          # Warm-up, not counted.
-          _warm_text = "他的动作做得很快。"
-          _warm_infer, _warm_ignored = preprocess_sentence(_warm_text)
-          _ = professional_inference(_warm_infer, _warm_ignored)
-
-          results = {}
-          all_failures = []
-
-          for dataset_name, path in DATASETS:
-              rows = load_jsonl(path)
-              print(f"\n===== {dataset_name} | {len(rows)} 条 =====")
-              metrics = evaluate(rows)
-              results[dataset_name] = metrics
-              for row in metrics["failures"]:
-                  all_failures.append(
-                      {"dataset": dataset_name, **row}
-                  )
-
-          def pct(x):
-              return f"{x * 100:.2f}%"
-
-          report = []
-          report.append("# Dededi 专业模式基准测试")
-          report.append("")
-          report.append("## 运行配置")
-          report.append("")
-          report.append("- 模式：**专业（RoBERTa）**")
-          report.append(f"- APP 工作流：`{APP_WORKFLOW.name}`")
-          report.append(f"- Temperature：**{TEMPERATURE:g}**")
-          report.append(
-              "- 阈值："
-              + "，".join(
-                  f"{label}={THRESHOLDS[label]:g}" for label in LABELS
-              )
-          )
-          report.append(f"- 错词库：**{len(TYPO_MAP):,}** 条")
-          report.append(f"- 语法规则：**{len(GRAM_RULES):,}** 条")
-          report.append(f"- 量词规则：**{len(QUANT_RULES):,}** 条")
-          report.append(f"- 模型跳过词：**{len(IGNORE_WORDS):,}** 条")
-          report.append(f"- 静态白名单：**{len(WHITE_LIST):,}** 条")
-          report.append(
-              f"- 专业词表：**{VOCAB_SIZE:,}** tokens"
-          )
-          report.append("")
-          report.append(
-              "> 流程按当前 `dededi_3.1a.yml`："
-              "**错词库 → 语法规则 → 量词规则 → 已改位置保护 → "
-              "IGNORE_WORDS 保护 → 专业模型 的/地/得 → 置信度阈值**。"
-          )
-          report.append("")
-          report.append(
-              "> `IGNORE_WORDS`、`WHITE_LIST`、语法规则、量词规则均在运行时"
-              "直接从当前 APP 工作流读取，避免 benchmark 与 APP 配置脱节。"
-          )
-          report.append("")
-          report.append(
-              "> APP 的部分语法规则存在多个随机修法；为了让 GitHub 每次跑分"
-              "可复现，本 benchmark 固定随机种子，但仍使用同样的候选选择流程。"
-          )
-          report.append("")
-          report.append(
-              "> GitHub Actions 没有手机端 SharedPreferences，因此不会包含你"
-              "在某一台手机里后来手动添加的 `custom_typos`；仓库内置规则、"
-              "黑名单/白名单则会完整加载。"
-          )
-          report.append("")
-
-          report.append("## 结果")
-          report.append("")
-          report.append(
-              "| 数据集 | 句数 | 原文字符 | 整句完全正确 | "
-              "错句整句修好 | 正确句保持率 | 误改率 | "
-              "检测 P/R/F1 | 纠正 P/R/F1 | 速度 |"
-          )
-          report.append(
-              "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|"
-          )
-
-          for name, m in results.items():
-              report.append(
-                  f"| {name} "
-                  f"| {m['samples']:,} "
-                  f"| {m['characters']:,} "
-                  f"| {pct(m['exact'])} "
-                  f"| {pct(m['wrong_exact_fix'])} "
-                  f"| {pct(m['correct_preserve'])} "
-                  f"| {pct(m['overcorrection'])} "
-                  f"| {pct(m['det_p'])}/{pct(m['det_r'])}/{pct(m['det_f1'])} "
-                  f"| {pct(m['cor_p'])}/{pct(m['cor_r'])}/{pct(m['cor_f1'])} "
-                  f"| {m['chars_per_second']:.1f} 字/s |"
-              )
-
-          report.append("")
-          report.append("## 补充")
-          report.append("")
-          for name, m in results.items():
-              report.append(
-                  f"- **{name}**：总推理 {m['seconds']:.2f}s；"
-                  f"平均 {m['ms_per_sentence']:.2f}ms/条；"
-                  f"字符级指标可对齐样本 {m['aligned_samples']:,}/"
-                  f"{m['samples']:,}；输出长度改变 {m['length_changed']:,} 条。"
-              )
-
-          report.append("")
-          report.append(
-              "字符级 P/R/F1 仅在 source、target、prediction 等长时按位置计算；"
-              "整句完全正确率、错句修好率和正确句保持率覆盖全部样本。"
-          )
-
-          report_text = "\n".join(report)
-          Path("benchmark_report.md").write_text(
-              report_text, encoding="utf-8"
-          )
-
-          with Path("benchmark_failures.jsonl").open(
-              "w", encoding="utf-8"
-          ) as f:
-              for row in all_failures:
-                  f.write(
-                      json.dumps(row, ensure_ascii=False) + "\n"
-                  )
-
-          print("\n" + report_text)
+                      raise RuntimeError('新增的 APP 动态语法规则暂不支持：' + item[:150])
+              if any(count != 1 for count in loop_counts.values()) or len(rules) < 250:
+                  raise RuntimeError(f'APP 规则不完整：动态规则={loop_counts}，总规则={len(rules)}')
+          
+              protected = []
+              for raw in re.findall(r'(?m)^\s*addProtectedTargetPattern\("((?:\\.|[^"\\])*)"\);', body):
+                  pat = jregex.compile(java_string(raw))
+                  if pat.groups < 1:
+                      raise RuntimeError('目标保护正则无捕获组')
+                  protected.append(pat)
+              if len(protected) < 50:
+                  raise RuntimeError(f'只找到 {len(protected)} 条保护正则')
+              quant = {noun: (java_string(primary), java_string(allowed))
+                       for noun, primary, allowed in re.findall(
+                           r'quantRules\.put\(\'(.?)\',\s*new QuantifierRule\("((?:\\.|[^"\\])*)",\s*"((?:\\.|[^"\\])*)"\)\)', body)}
+              if len(quant) < 10:
+                  raise RuntimeError('量词规则未正确解析')
+              return rules, protected, quant
+          
+          
+          class Dictionary:
+              def __init__(self, words, whites, exclusions):
+                  self.words, self.whites, self.exclusions = words, whites, exclusions
+                  self.lengths = {}
+                  for key in words:
+                      self.lengths.setdefault(key[0], set()).add(len(key))
+                  self.lengths = {k: sorted(v, reverse=True) for k, v in self.lengths.items()}
+                  self.max_len = max(map(len, words))
+          
+              def excluded(self, text, index, word):
+                  end = index + len(word)
+                  for guard in self.exclusions.get(word, ()):
+                      found = text.find(guard, max(0, end-len(guard)))
+                      if found >= 0 and found <= index and found + len(guard) >= end:
+                          return True
+                  return False
+          
+              def conflicts(self, sentence, index, source, correction):
+                  if source == correction:
+                      return False
+                  simulated = sentence[:index] + correction + sentence[index+len(source):]
+                  end = index+len(correction)
+                  for cursor in range(max(0,index-self.max_len+1),end):
+                      if cursor >= len(simulated):
+                          break
+                      for n in self.lengths.get(simulated[cursor], ()):
+                          cand = simulated[cursor:cursor+n]
+                          if len(cand) != n or cand not in self.words:
+                              continue
+                          if not ((cursor < index and cursor+n > index) or cursor+n > end):
+                              continue
+                          if cand != self.words[cand] and not self.excluded(simulated,cursor,cand):
+                              return True
+                  return False
+          
+              def find(self, text, index):
+                  for n in self.lengths.get(text[index], ()):
+                      key = text[index:index+n]
+                      if key not in self.words:
+                          continue
+                      if any(start < index+n and start+len(white) > index
+                             for white in self.whites if white
+                             for start in self._find_all(text, white, max(0, index-len(white)), min(len(text), index+n+len(white)))):
+                          continue
+                      if key[0] in '做作':
+                          if index > 0 and text[index-1] in '创去要在该想会能可来把给多没不曾刚才将正就爱肯敢配帮替让叫使令':
+                              continue
+                          if index+n < len(text) and text[index+n] in '扇筝联山发牙眼肢手脚衣裤帽鞋饭菜汤了':
+                              continue
+                      replacement = self.words[key]
+                      if self.excluded(text,index,key):
+                          return key,key  # APP's neutral protected match, not a skip.
+                      if replacement != key and self.conflicts(text,index,key,replacement):
+                          continue
+                      return key, replacement
+                  return None
+          
+              @staticmethod
+              def _find_all(text, needle, left, right):
+                  if not needle:
+                      return
+                  pos = text.find(needle, left, right)
+                  while pos >= 0:
+                      yield pos
+                      pos = text.find(needle, pos+1, right)
+          
+          
+          def load_dictionary(white):
+              # Mirror Android parseTypoLine, including n= exclusion fields and
+              # supplemental safe-context entries; source==target text lines are ignored.
+              data, exclusions = {}, {}
+              for raw in TYPO_FILE.read_text(encoding='utf-8-sig').splitlines():
+                  line = raw.strip().lstrip('\ufeff').strip()
+                  parts = re.split(r'\s+', line, maxsplit=2)
+                  if len(parts) < 2 or parts[0] == parts[1]:
+                      continue
+                  source,target = parts[:2]
+                  data[source] = target
+                  exclusions.pop(source,None)
+                  if len(parts)==3 and parts[2].startswith('n='):
+                      tail = parts[2][2:].strip()
+                      if tail: exclusions[source] = tail.split()
+                  boundary = {
+                      ('妨照','仿照'): ['不妨照'],
+                      ('换界','换届'): ['换界面'],
+                      ('做数','作数'): ['做数学','做数据','做数值','做数理','做数独','做数字','做数量','做数组']
+                  }.get((source,target))
+                  if boundary:
+                      exclusions[source] = list(dict.fromkeys(list(exclusions.get(source, ())) + boundary))
+              for word in ('舒的','怎的','能的','您的'):
+                  data[word] = word
+                  exclusions.pop(word,None)
+              if not data:
+                  raise RuntimeError('系统错词库为空')
+              return Dictionary(data, white, exclusions)
+          
+          
+          def split_text(text):
+              parts, current = [], ''
+              for c in text:
+                  current += c
+                  if c in '。！？!?\n':
+                      parts.append(current)
+                      current = ''
+              if current:
+                  parts.append(current)
+              result = []
+              for part in parts:
+                  if len(part) <= 300:
+                      result.append(part)
+                      continue
+                  pending = ''
+                  for c in part:
+                      pending += c
+                      if len(pending) < 300:
+                          continue
+                      cut = max((pending.rfind(q, max(0, len(pending)-60)) for q in '，,；;、'), default=-1)
+                      if cut > 0:
+                          result.append(pending[:cut+1]); pending = pending[cut+1:]
+                      else:
+                          result.append(pending); pending = ''
+                  if pending:
+                      result.append(pending)
+              return result
+          
+          
+          class Pipeline:
+              def __init__(self, rules, protected, quant, words, nums, known, ignore, safe):
+                  self.rules, self.protected, self.quant, self.words = rules, protected, quant, words
+                  self.nums, self.known, self.ignore, self.safe = nums, known, ignore, safe
+          
+              def preprocess(self, sentence):
+                  hits = [None] * len(sentence)
+                  for rule in self.rules:
+                      for m in rule.regex.finditer(sentence, overlapped=True):
+                          p = m.start()
+                          if p < len(hits) and hits[p] is None:
+                              hits[p] = (m.end(), tuple(m.group(i) or '' for i in (1,2,3)), rule.options)
+                  out, ignored, p = [], [], 0
+                  def append(value, protect=False):
+                      out.append(value)
+                      ignored.extend([protect] * len(value))
+                  while p < len(sentence):
+                      found = self.words.find(sentence, p)
+                      if found:
+                          source, replacement = found
+                          append(replacement, protect=True)
+                          p += len(source)
+                          continue
+                      match = hits[p]
+                      if match:
+                          end, (g1, g2, g3), options = match
+                          selected = RNG.choice(options)
+                          a = selected[0] if len(selected) > 0 and selected[0] is not None else g1
+                          c = selected[1] if len(selected) > 1 and selected[1] is not None else g3
+                          # APP has a special overlapping "2个电脑" grammatical precedence rule.
+                          if g3 == '个' and c == '个' and end > 0 and hits[end-1]:
+                              h = hits[end-1]
+                              if h[1][0] == '个' and h[1][1] == '' and h[1][2] == '电脑' and h[2][0][0] == '台':
+                                  c = '台'
+                          appendix = len(selected) > 2 and selected[2] is not None and selected[2] != ''
+                          if (len(selected)>2 and selected[2]=='标点多余' and not g2 and
+                              ((re.fullmatch(r'[，、]+',g1) and re.fullmatch(r'[。；：]',g3)) or
+                               (re.fullmatch(r'[。；：]',g1) and re.fullmatch(r'[，、]+',g3))) and
+                              (not a) != (not c)):
+                              kept = c if not a else a
+                              if len(kept)>1 and re.fullmatch(r'[，、]+',kept):
+                                  kept=kept[0]
+                              append(kept, protect=True)
+                              p=end
+                              continue
+                          append(a, protect=(g1 != a or appendix and selected[0] is not None))
+                          append(g2)
+                          append(c, protect=(g3 != c or appendix and len(selected)>1 and selected[1] is not None))
+                          p = end
+                          continue
+                      if 0 < p < len(sentence)-1 and sentence[p] in self.known and sentence[p-1] in self.nums:
+                          noun = sentence[p+1]
+                          if noun in self.quant:
+                              primary, allowed = self.quant[noun]
+                              following = sentence[p+2] if p+2 < len(sentence) else '\0'
+                              if sentence[p] not in allowed and (following == '\0' or not ('\u4e00' <= following <= '\u9fff') or following in self.safe):
+                                  append(primary, protect=True); p += 1; continue
+                      append(sentence[p]); p += 1
+                  result = ''.join(out)
+                  for word in self.ignore:
+                      for p in Dictionary._find_all(result, word, 0, len(result)):
+                          ignored[p:p+len(word)] = [True]*len(word)
+                  for pattern in self.protected:
+                      for match in pattern.finditer(result):
+                          p = match.start(1)
+                          if p >= 0 and p < len(ignored) and result[p] in LABELS:
+                              ignored[p] = True
+                  if len(result) != len(ignored):
+                      raise RuntimeError('预处理保护索引长度不符')
+                  return result, ignored
+          
+          
+          class HcamModel:
+              def __init__(self):
+                  import torch
+                  from executorch.runtime import Runtime
+                  self.torch = torch
+                  torch.set_num_threads(min(4, os.cpu_count() or 1))
+                  data = json.loads((MODEL_ROOT / 'tokenizer.json').read_text(encoding='utf-8'))
+                  if data.get('format') != 'HCAM-character-latin-bpe-tokenizer' or data.get('version') != 6:
+                      raise RuntimeError('Tokenzier 格式错误')
+                  pieces = data['pieces']
+                  if len(pieces) != 23000:
+                      raise RuntimeError('Tokenzier 词表长度异常')
+                  self.vocab = {piece: i for i, piece in enumerate(pieces)}
+                  if [self.vocab[x] for x in LABELS] != [472,510,561,724,496]:
+                      raise RuntimeError('目标标签 ID 与 Android 不一致')
+                  self.latin = json.loads(data['latin_bpe_json'])['model']
+                  self.latin_vocab = set(self.latin['vocab'])
+                  self.ranks = {}
+                  for i, pair in enumerate(self.latin['merges']):
+                      left, right = pair if isinstance(pair, list) else pair.split(' ', 1)
+                      self.ranks[left+'\0'+right] = i
+                  self.pattern = jregex.compile(r'\p{Script=Latin}[\p{Script=Latin}\p{M}]*')
+                  self.program = Runtime.get().load_program(MODEL_ROOT / 'model.pte')
+                  self.forward_method = self.program.load_method('forward')
+                  self.calls = 0
+                  self.reviews = 0
+          
+              def latin_parts(self, raw):
+                  cased = [c for c in raw if c.lower()!=c.upper()]
+                  upper = any(c.isupper() for c in cased)
+                  lower = any(c.islower() for c in cased)
+                  title = bool(cased) and cased[0].isupper() and all(c.islower() for c in cased[1:])
+                  keep = (len(cased)==1 and upper) or (upper and not lower) or (upper and lower and not title)
+                  normalized = raw if keep else ''.join(c.lower() if len(c.lower())==1 else c for c in raw)
+                  parts = list(normalized)
+                  fallback = len(parts)>128 or any(c not in self.latin_vocab for c in parts)
+                  if not fallback:
+                      while len(parts)>1:
+                          best=(10**10,-1)
+                          for i in range(len(parts)-1):
+                              rank=self.ranks.get(parts[i]+'\0'+parts[i+1],10**10)
+                              if rank<best[0]: best=(rank,i)
+                          if best[1]<0: break
+                          i=best[1]; parts[i:i+2]=[parts[i]+parts[i+1]]
+                      fallback = any(piece not in self.vocab for piece in parts)
+                  return list(normalized) if fallback else parts
+          
+              def encode(self, text):
+                  ids, starts, ends = [], [], []
+                  p=0
+                  while p<len(text):
+                      start=p
+                      if text.startswith(('<用户>','<助手>'),p):
+                          special=4 if text.startswith('<用户>',p) else 5
+                          p+=4
+                      elif text[p] in '\r\n\u2028\u2029':
+                          count=0
+                          while p<len(text) and text[p] in '\r\n\u2028\u2029':
+                              if text[p:p+2]=='\r\n': p+=2
+                              else: p+=1
+                              count+=1
+                          special=7 if count>=2 else 6
+                      else:
+                          latin=self.pattern.match(text,p)
+                          if latin:
+                              for piece in self.latin_parts(latin.group()):
+                                  nxt=p+len(piece)
+                                  ids.append(self.vocab.get(piece,0)); starts.append(p); ends.append(nxt)
+                                  p=nxt
+                              continue
+                          cp=ord(text[p]);p+=1
+                          special=4+cp-0xE000 if 0xE000<=cp<=0xE003 else self.vocab.get(text[start:p],0)
+                      ids.append(special); starts.append(start); ends.append(p)
+                  return ids,starts,ends
+          
+              @staticmethod
+              def softmax(values,temperature):
+                  nums=[float(x)/temperature for x in values]
+                  mx=max(nums); exp=[math.exp(x-mx) for x in nums]; total=sum(exp)
+                  if total<=0 or not math.isfinite(total): raise RuntimeError('softmax 出现异常')
+                  return [x/total for x in exp]
+          
+              def forward(self,ids,mask):
+                  if len(ids)>1248 or not ids or len(ids)!=len(mask):
+                      raise ValueError('PTE 输入形状错误')
+                  torch=self.torch
+                  with torch.inference_mode():
+                      output=self.forward_method.execute((torch.tensor([ids],dtype=torch.long),torch.tensor([mask],dtype=torch.bool)))
+                  if not output or tuple(output[0].shape)!=(1,len(ids),5):
+                      raise RuntimeError('PTE 输出不是 [1,L,5]')
+                  if not torch.isfinite(output[0]).all(): raise RuntimeError('PTE 输出含非有限数值')
+                  self.calls+=1
+                  return output[0][0].tolist()
+          
+              def predict(self,text,ignored):
+                  if not any(c in LABELS and not ignored[p] for p,c in enumerate(text)):
+                      return text
+                  ids,starts,ends=self.encode(text)
+                  mask=[b==a+1 and text[a] in LABELS for a,b in zip(starts,ends)]
+                  first=self.forward(ids,mask)
+                  out=list(text)
+                  for i,(a,b) in enumerate(zip(starts,ends)):
+                      if not mask[i] or ignored[a]: continue
+                      original=text[a]
+                      group=0 if original in LABELS[:3] else 3
+                      count=3 if group==0 else 2
+                      row=first[i]
+                      original_p=self.softmax(row[group:group+count],1.0)
+                      left,right=a,a
+                      while left>0 and text[left-1] in LABELS: left-=1
+                      while right+1<len(text) and text[right+1] in LABELS: right+=1
+                      if right-left+1>=2 and max(original_p)<.78:
+                          one=[False]*len(mask); one[i]=True
+                          row=self.forward(ids,one)[i]
+                          self.reviews+=1
+                      probs=self.softmax(row[group:group+count],TEMPERATURE)
+                      best=max(range(count),key=probs.__getitem__)
+                      pred=LABELS[group+best]
+                      if pred!=original and probs[best]>=THRESHOLDS[pred]:out[a]=pred
+                  return ''.join(out)
+          
+          
+          def score(dataset, rows, pipeline, model):
+              t0=time.perf_counter()
+              counters=dict(exact=0,clean=0,clean_kept=0,wrong=0,wrong_fixed=0,
+                            aligned=0,length_changed=0,det_tp=0,det_fp=0,det_fn=0,
+                            cor_tp=0,cor_fp=0,cor_fn=0)
+              failures=[]
+              n_chars=sum(len(x) for x,_ in rows)
+              for k,(src,target) in enumerate(rows):
+                  prediction=''.join(model.predict(*pipeline.preprocess(part)) for part in split_text(src))
+                  if prediction==target:counters['exact']+=1
+                  if src==target:
+                      counters['clean']+=1
+                      if prediction==src:counters['clean_kept']+=1
+                  else:
+                      counters['wrong']+=1
+                      if prediction==target:counters['wrong_fixed']+=1
+                  if len(src)==len(target)==len(prediction):
+                      counters['aligned']+=1
+                      golden={i for i,(x,y) in enumerate(zip(src,target)) if x!=y}
+                      altered={i for i,(x,y) in enumerate(zip(src,prediction)) if x!=y}
+                      counters['det_tp']+=len(golden&altered)
+                      counters['det_fp']+=len(altered-golden)
+                      counters['det_fn']+=len(golden-altered)
+                      corrected={i for i in altered if i in golden and prediction[i]==target[i]}
+                      counters['cor_tp']+=len(corrected)
+                      counters['cor_fp']+=len(altered-corrected)
+                      counters['cor_fn']+=len(golden-corrected)
+                  elif len(prediction)!=len(src):counters['length_changed']+=1
+                  if prediction!=target and len(failures)<100:
+                      failures.append(dict(index=k,source=src,target=target,prediction=prediction))
+                  if (k+1)%200==0:
+                      print(f'{dataset}: {k+1}/{len(rows)}',flush=True)
+              seconds=time.perf_counter()-t0
+              def ratio(a,b):return a/b if b else 0.0
+              def f1(p,r):return ratio(2*p*r,p+r)
+              dp=ratio(counters['det_tp'],counters['det_tp']+counters['det_fp'])
+              dr=ratio(counters['det_tp'],counters['det_tp']+counters['det_fn'])
+              cp=ratio(counters['cor_tp'],counters['cor_tp']+counters['cor_fp'])
+              cr=ratio(counters['cor_tp'],counters['cor_tp']+counters['cor_fn'])
+              m=dict(samples=len(rows),characters=n_chars,exact=ratio(counters['exact'],len(rows)),
+                     wrong_exact_fix=ratio(counters['wrong_fixed'],counters['wrong']),
+                     correct_preserve=ratio(counters['clean_kept'],counters['clean']),
+                     overcorrection=ratio(counters['clean']-counters['clean_kept'],counters['clean']),
+                     det_p=dp,det_r=dr,det_f1=f1(dp,dr),cor_p=cp,cor_r=cr,cor_f1=f1(cp,cr),
+                     aligned_samples=counters['aligned'],length_changed=counters['length_changed'],
+                     seconds=seconds,chars_per_second=ratio(n_chars,seconds),
+                     ms_per_sentence=1000*ratio(seconds,len(rows)),model_calls=model.calls,review_calls=model.reviews)
+              return m,failures
+          
+          
+          def main():
+              source=verify_and_download()
+              nums,known,ignore,white,safe=extract_constants(source)
+              rules,protected,quant=extract_rules(source)
+              dictionary=load_dictionary(white)
+              pipe=Pipeline(rules,protected,quant,dictionary,nums,known,ignore,safe)
+              model=HcamModel()
+              model_sha_match = re.search(r"(?m)^MODEL_SHA='([^']+)'", source)
+              if not model_sha_match:
+                  raise RuntimeError('模型 SHA 没有读取到')
+              dataset_revision = subprocess.run(
+                  ['git', '-C', str(DATA_ROOT), 'rev-parse', 'HEAD'],
+                  check=True, capture_output=True, text=True).stdout.strip()
+              # Smoke test shape and tokenizer even when all targets are ignored in real data.
+              smoke='他做的作业。'
+              print('Smoke (仅模型预检):',model.predict(smoke,[False]*len(smoke)),flush=True)
+              datasets=[('NLPCC2023-Task8',DATA_ROOT/'NLPCC2023/spell/data.jsonl'),
+                        ('SIGHAN15-Revised',DATA_ROOT/'yacsc/sighan_revised/test_sighan15.jsonl')]
+              results={};failures=[]
+              for name,path in datasets:
+                  rows=[]
+                  with path.open(encoding='utf-8-sig') as f:
+                      for i,line in enumerate(f,1):
+                          if not line.strip():continue
+                          row=json.loads(line)
+                          if not isinstance(row.get('source'),str) or not isinstance(row.get('target'),str):
+                              raise RuntimeError(f'{path}:{i} 不含标准 source/target')
+                          rows.append((row['source'],row['target']))
+                  if not rows:raise RuntimeError('测试集为空: '+str(path))
+                  print(name,'样本数:',len(rows),flush=True)
+                  scores,fails=score(name,rows,pipe,model)
+                  results[name]=scores
+                  failures.extend(dict(dataset=name,**f) for f in fails)
+              def pct(x):return f'{x*100:.2f}%'
+              report=['# Dedede Pro HCAM PTE 基准测试','','## 测试说明','',
+                      '- 模型：**当前 Android 构建中校验的 HCAM V2 五字 PTE INT8**',
+                      f'- PTE SHA256：`{model_sha_match.group(1)}`',
+                      f'- 源码提交：`{os.environ.get("GITHUB_SHA", "local")}`；CTCDataset 提交：`{dataset_revision}`',
+                      '- 推理：GitHub Ubuntu x86 CPU / ExecuTorch Python Runtime / XNNPACK',
+                      '- 数据集：与旧版报告一致（NLPCC2023-Task8、SIGHAN15-Revised）',
+                      '- 计分：与旧版报告一致（整句准确率、错句修好率、正确句保持率、检测与纠正 P/R/F1）',
+                      '- 纠错流程：Python 对当前 Java 语法规则、词库、保护规则的复现；不是在 Android JVM 内直接运行完整 APP',
+                      '- 不含手机内自定义词库与白名单；结果不能当成完整 APP 手机实测',
+                      '- x86 CPU 速度不是手机端速度，勿与过去的端侧延迟比较',
+                      f'- 温度：**{TEMPERATURE}**；阈值：'+', '.join(f'{x}={THRESHOLDS[x]}' for x in LABELS),
+                      f'- 字典：{len(dictionary.words):,}；语法规则：{len(rules):,}；量词：{len(quant):,}；保护正则：{len(protected):,}；跳过词：{len(ignore):,}',
+                      '- 连续目标字：同 APP 的二次复核阈值 0.78（先全 Mask，再按需单字 Mask）',
+                      '', '## 结果', '',
+                      '| 数据集 | 句数 | 原文字符 | 整句完全正确 | 错句整句修好 | 正确句保持率 | 误改率 | 检测 P/R/F1 | 纠正 P/R/F1 | 速度 |',
+                      '|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|']
+              for name,m in results.items():
+                  report.append(f'| {name} | {m["samples"]:,} | {m["characters"]:,} | {pct(m["exact"])} | {pct(m["wrong_exact_fix"])} | {pct(m["correct_preserve"])} | {pct(m["overcorrection"])} | {pct(m["det_p"])}/{pct(m["det_r"])}/{pct(m["det_f1"])} | {pct(m["cor_p"])}/{pct(m["cor_r"])}/{pct(m["cor_f1"])} | {m["chars_per_second"]:.1f} 字/s |')
+              report.extend(['','## 附加指标',''])
+              for name,m in results.items():
+                  report.append(f'- **{name}**：耗时 {m["seconds"]:.2f}s；平均 {m["ms_per_sentence"]:.2f}ms/句；等长对齐 {m["aligned_samples"]:,}/{m["samples"]:,}；输出长度改变 {m["length_changed"]:,}；累计模型调用 {m["model_calls"]:,}（复核 {m["review_calls"]:,}）。')
+              report.extend(['', '注：字符级 P/R/F1 与旧版一致，仅统计 source/target/prediction 三者等长样本。跨版本规则与模型均有变化，不能简单理解为同一条件下模型性能变化。'])
+              rendered='\n'.join(report)+'\n'
+              Path('benchmark_report.md').write_text(rendered,encoding='utf-8')
+              Path('benchmark_metrics.json').write_text(json.dumps(results,ensure_ascii=False,indent=2),encoding='utf-8')
+              Path('benchmark_failures.jsonl').write_text(''.join(json.dumps(row,ensure_ascii=False)+'\n' for row in failures),encoding='utf-8')
+              print(rendered,flush=True)
+          
+          
+          if __name__=='__main__':main()
           PY
-
-          python /tmp/dededi_pro_benchmark.py
-
+          python -m py_compile /tmp/dedede_hcam_benchmark.py
+          python /tmp/dedede_hcam_benchmark.py
           {
+            echo '## HCAM V2 自动测试完成'
             echo
             cat benchmark_report.md
           } >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Upload detailed report
+      - name: Upload score report and failures
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: dededi-pro-benchmark-report
           path: |
             benchmark_report.md
+            benchmark_metrics.json
             benchmark_failures.jsonl
-          if-no-files-found: error
+          if-no-files-found: warn
+          retention-days: 90
