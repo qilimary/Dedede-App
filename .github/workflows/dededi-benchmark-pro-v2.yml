@@ -54,11 +54,14 @@ jobs:
           from executorch.runtime import Runtime
           print('PyTorch:', torch.__version__, flush=True)
           print('ExecuTorch:', importlib.metadata.version('executorch'), flush=True)
-          backend_names = Runtime.get().backend_registry.backend_names
+          # ExecuTorch 1.5 public API: registered_backend_names / is_available.
+          # backend_names (used in the previous workflow) does not exist.
+          registry = Runtime.get().backend_registry
+          backend_names = registry.registered_backend_names
           print('Available ExecuTorch backends:', backend_names, flush=True)
-          if 'XnnpackBackend' not in backend_names:
+          if not registry.is_available('XnnpackBackend'):
               raise RuntimeError('当前 ExecuTorch wheel 未提供 XNNPACK，不能加载 Android PTE 模型')
-          print('ExecuTorch ABI and XNNPACK smoke-check passed', flush=True)
+          print('ExecuTorch native import and XNNPACK registry check passed', flush=True)
           PY_CHECK
       - name: Download the original benchmark datasets
         shell: bash
@@ -581,6 +584,8 @@ jobs:
           
           
           def score(dataset, rows, pipeline, model):
+              # Each dataset reports its own model calls, not a cumulative total.
+              calls_before, reviews_before = model.calls, model.reviews
               t0=time.perf_counter()
               counters=dict(exact=0,clean=0,clean_kept=0,wrong=0,wrong_fixed=0,
                             aligned=0,length_changed=0,det_tp=0,det_fp=0,det_fn=0,
@@ -626,7 +631,8 @@ jobs:
                      det_p=dp,det_r=dr,det_f1=f1(dp,dr),cor_p=cp,cor_r=cr,cor_f1=f1(cp,cr),
                      aligned_samples=counters['aligned'],length_changed=counters['length_changed'],
                      seconds=seconds,chars_per_second=ratio(n_chars,seconds),
-                     ms_per_sentence=1000*ratio(seconds,len(rows)),model_calls=model.calls,review_calls=model.reviews)
+                     ms_per_sentence=1000*ratio(seconds,len(rows)),
+                     model_calls=model.calls-calls_before,review_calls=model.reviews-reviews_before)
               return m,failures
           
           
