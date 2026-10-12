@@ -2,7 +2,7 @@ name: Desktop apps (Windows + Mac)
 on:
   push:
     branches: [main]
-    paths: [Dedede-Windows-source.zip, .github/workflows/windows.yml]
+    paths: [dedede-desktop.py, .github/workflows/windows.yml]
   workflow_dispatch:
 permissions:
   contents: read
@@ -31,29 +31,9 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: '3.12'
-      - name: Verify and extract source package
+      - name: Verify and restore desktop sources
         shell: bash
-        run: |
-          python - <<'PY'
-          import hashlib, json, pathlib, zipfile
-          root=pathlib.Path.cwd().resolve()
-          with zipfile.ZipFile('Dedede-Windows-source.zip') as z:
-              entries=z.infolist(); names=[i.filename for i in entries]
-              assert len(names)==len(set(names)), 'Duplicate ZIP paths'
-              assert sum(i.file_size for i in entries)<200_000_000, 'Unexpected source size'
-              files=json.loads(z.read('SOURCE-SHA256.json'))['files']
-              assert set(names)==set(files)|{'SOURCE-SHA256.json'}, 'Manifest mismatch'
-              for name,digest in files.items():
-                  p=pathlib.PurePosixPath(name)
-                  assert not p.is_absolute() and '..' not in p.parts and '\\' not in name and ':' not in name, 'Unsafe path'
-                  assert p.parts[0] in ('windows','macos'), 'Unexpected source directory'
-                  data=z.read(name)
-                  assert hashlib.sha256(data).hexdigest()==digest, 'Checksum mismatch: '+name
-                  target=root.joinpath(*p.parts)
-                  assert target.resolve().is_relative_to(root), 'Escaping path'
-                  target.parent.mkdir(parents=True,exist_ok=True); target.write_bytes(data)
-          print('Verified and extracted',len(files),'source files')
-          PY
+        run: python dedede-desktop.py
       - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
         with:
           global-json-file: windows/global.json
@@ -82,8 +62,13 @@ jobs:
           $setup=Start-Process 'windows/dist/Dedede-Windows-Setup.exe' -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/SP-','/TASKS=desktopicon',('/DIR="'+$install+'"'),('/LOG="'+$log+'"') -PassThru
           if(-not $setup.WaitForExit(180000)){Stop-Process -Id $setup.Id -Force;throw 'Installer timeout.'}
           if($setup.ExitCode -notin @(0,3010)){throw "Installer exit code $($setup.ExitCode)"}
-          & "$install/Dedede-Launcher.exe" --check-runtime
-          if($LASTEXITCODE -ne 0){throw 'Installed runtime check failed.'}
+          $runtime=Start-Process "$install/Dedede-Launcher.exe" -ArgumentList '--check-runtime' -PassThru -Wait
+          $runtimeFiles=@('vcruntime140.dll','vcruntime140_1.dll','msvcp140.dll','msvcp140_1.dll')|ForEach-Object {
+            $file=Get-Item (Join-Path $env:SystemRoot "System32/$_") -ErrorAction SilentlyContinue
+            [pscustomobject]@{name=$_;exists=($null -ne $file);version=if($file){$file.VersionInfo.FileVersion}else{$null}}
+          }
+          @{exitCode=$runtime.ExitCode;files=$runtimeFiles}|ConvertTo-Json -Depth 4|Set-Content 'windows/dist/runtime-check.json' -Encoding utf8
+          if($runtime.ExitCode -ne 0){throw "Installed runtime check failed (exit $($runtime.ExitCode))."}
           foreach($binary in @('Dedede.exe','Dedede-Launcher.exe')){
             $bytes=[IO.File]::ReadAllBytes((Join-Path $install $binary))
             $pe=[BitConverter]::ToInt32($bytes,0x3c)
@@ -132,6 +117,7 @@ jobs:
         with:
           name: Checks-and-previews-${{ matrix.label }}
           path: |
+            source-verification.json
             windows/dist/*.json
             windows/dist/*.log
             windows/dist/previews/
@@ -142,7 +128,7 @@ jobs:
   publish:
     name: Publish desktop installers
     needs: build
-    if: github.ref == 'refs/heads/main'
+    if: ${{ always() && !cancelled() && github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -164,15 +150,23 @@ jobs:
           cat > macos-notes.md <<'NOTES'
           macOS 14+，Apple Silicon 与 Intel 原生包。可下载 DMG，或下载 ZIP 后解压出同一 DMG。拖入 Applications 安装；采用本机签名，尚未 Apple 公证，首次启动可能被系统拦截。OCR 在本机处理。
           NOTES
+          if [[ -f installers/Dedede-Windows-Setup.exe && -f installers/Dedede-Windows-Setup.zip ]]; then
           if gh release view windows-latest --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release upload windows-latest installers/Dedede-Windows-Setup.exe installers/Dedede-Windows-Setup.zip --repo "$GITHUB_REPOSITORY" --clobber
             gh release edit windows-latest --repo "$GITHUB_REPOSITORY" --notes-file windows-notes.md
           else
             gh release create windows-latest installers/Dedede-Windows-Setup.exe installers/Dedede-Windows-Setup.zip --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title '纠错 Pro Windows（最新版）' --notes-file windows-notes.md --latest
           fi
+          else
+            echo 'Windows installer has not passed all checks; no Windows release was changed.'
+          fi
+          if [[ -f installers/Dedede-Mac-AppleSilicon.dmg && -f installers/Dedede-Mac-Intel.dmg && -f installers/Dedede-Mac-AppleSilicon.zip && -f installers/Dedede-Mac-Intel.zip ]]; then
           if gh release view macos-latest --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release upload macos-latest installers/Dedede-Mac-*.dmg installers/Dedede-Mac-*.zip --repo "$GITHUB_REPOSITORY" --clobber
             gh release edit macos-latest --repo "$GITHUB_REPOSITORY" --notes-file macos-notes.md
           else
             gh release create macos-latest installers/Dedede-Mac-*.dmg installers/Dedede-Mac-*.zip --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title '纠错 Pro Mac（最新版）' --notes-file macos-notes.md --latest=false
+          fi
+          else
+            echo 'Both Mac architectures must pass checks before the Mac release is updated.'
           fi
