@@ -1,6 +1,6 @@
 # .github/workflows/dededi-benchmark-pro-v2.yml
-# Fully automated on push; Windows ONNX model + Android rules and tokenizer.
-name: Dedede Pro Benchmark - Windows ONNX + Android Rules
+# Curated complete public evaluation sets (no sampling): Windows ONNX + Android rules.
+name: Dedede Pro Benchmark SELECTED - Windows ONNX + Android Rules
 
 on:
   push:
@@ -59,6 +59,12 @@ jobs:
         run: |
           set -euo pipefail
           git clone --depth 1 https://github.com/zejunwang1/CTCDataset.git .benchmark-data
+          # Lock the same source revision as the successful 2026-10-12 baseline.
+          DATA_REV=fc611214776a37d033ace8a2ca9d0fd121f060d0
+          if [ "$(git -C .benchmark-data rev-parse HEAD)" != "$DATA_REV" ]; then
+            git -C .benchmark-data fetch --depth 1 origin "$DATA_REV"
+            git -C .benchmark-data checkout --detach "$DATA_REV"
+          fi
           test -s .benchmark-data/NLPCC2023/spell/data.jsonl
           test -s .benchmark-data/yacsc/sighan_revised/test_sighan15.jsonl
       - name: Run benchmark and publish report
@@ -68,6 +74,7 @@ jobs:
           cat > /tmp/dedede_hcam_benchmark.py <<'PY'
           import argparse
           import hashlib
+          import gzip
           import json
           import math
           import os
@@ -87,6 +94,32 @@ jobs:
           MODEL_ROOT = ROOT / '.benchmark-pro-model'
           TYPO_FILE = ROOT / '错别字.txt'
           LABELS = '的地得做作'
+          # Fixed, full-length public evaluation corpus list; never sample or load train files.
+          DATASETS = [
+              ('NLPCC2023-Task8', 'NLPCC2023/spell/data.jsonl', '原版对照', '明确测试集', 1000),
+              ('SIGHAN15-Revised', 'yacsc/sighan_revised/test_sighan15.jsonl', '原版对照', '明确测试集', 1100),
+              ('SIGHAN13-Revised', 'yacsc/sighan_revised/test_sighan13.jsonl', '拼写纠错', '明确测试集', 1000),
+              ('SIGHAN14-Revised', 'yacsc/sighan_revised/test_sighan14.jsonl', '拼写纠错', '明确测试集', 1062),
+              ('CSCD-NS-Test', 'cscd-ns/test.jsonl', '拼写纠错', '明确测试集', 5000),
+              ('MCSCSet-Medical-Test', 'MCSCSet/test.jsonl', '行业专项', '明确测试集', 19650),
+              ('ECSpell-Law', 'ECSpell/ec_law.jsonl', '行业专项', '公开领域集', 2460),
+              ('ECSpell-Medical', 'ECSpell/ec_med.jsonl', '行业专项', '公开领域集', 3500),
+              ('ECSpell-Official', 'ECSpell/ec_odw.jsonl', '行业专项', '公开领域集', 2220),
+              ('LEMON-Car', 'lemon/car.jsonl', '跨领域', '公开领域集', 3410),
+              ('LEMON-Contract', 'lemon/cot.jsonl', '跨领域', '公开领域集', 1026),
+              ('LEMON-Enc', 'lemon/enc.jsonl', '跨领域', '公开领域集', 3434),
+              ('LEMON-Medical', 'lemon/mec.jsonl', '跨领域', '公开领域集', 2090),
+              ('LEMON-News', 'lemon/new.jsonl', '跨领域', '公开领域集', 5892),
+              ('LEMON-Novel', 'lemon/nov.jsonl', '跨领域', '公开领域集', 6000),
+              ('CCTC-Test-Wide', 'CCTC/cctc_test_wide.jsonl', '通用/语法', '明确测试集', 2311),
+              ('CTC2021-Val-Revised', 'CTC2021/val_revised.jsonl', '通用/语法', '验证集', 969),
+              ('YACSC-NoGE', 'yacsc/YACSC/YACSC-no_GE.jsonl', '通用/语法', '公开领域集', 2550),
+              ('Midu2022-Preliminary-Val', 'midu2022/preliminary_val.jsonl', '通用/语法', '验证集', 1014),
+              ('Midu2022-Final', 'midu2022/final.jsonl', '通用/语法', '公开领域集', 2919),
+          ]
+          if len({entry[1] for entry in DATASETS}) != len(DATASETS):
+              raise RuntimeError('Dataset registry has duplicate file paths')
+
           RNG = random.Random(20260807)
           TEMPERATURE = float(os.getenv('DEDEDI_TEMPERATURE', '1.0'))
           THRESHOLDS = {k: float(os.getenv('DEDEDI_THRESHOLD_' + name, str(default)))
@@ -643,7 +676,7 @@ jobs:
                   return ''.join(out)
           
           
-          def score(dataset, rows, pipeline, model):
+          def score(dataset, rows, pipeline, model, all_predictions):
               t0=time.perf_counter()
               counters=dict(exact=0,clean=0,clean_kept=0,wrong=0,wrong_fixed=0,
                             aligned=0,length_changed=0,det_tp=0,det_fp=0,det_fn=0,
@@ -653,6 +686,10 @@ jobs:
               calls_before, reviews_before = model.calls, model.reviews
               for k,(src,target) in enumerate(rows):
                   prediction=''.join(model.predict(*pipeline.preprocess(part)) for part in split_text(src))
+                  all_predictions.write(json.dumps(
+                      dict(dataset=dataset,index=k,source=src,target=target,
+                           prediction=prediction,exact=(prediction==target)),
+                      ensure_ascii=False) + '\n')
                   if prediction==target:counters['exact']+=1
                   if src==target:
                       counters['clean']+=1
@@ -683,7 +720,11 @@ jobs:
               dr=ratio(counters['det_tp'],counters['det_tp']+counters['det_fn'])
               cp=ratio(counters['cor_tp'],counters['cor_tp']+counters['cor_fp'])
               cr=ratio(counters['cor_tp'],counters['cor_tp']+counters['cor_fn'])
-              m=dict(samples=len(rows),characters=n_chars,exact=ratio(counters['exact'],len(rows)),
+              m=dict(samples=len(rows),characters=n_chars,
+                     correct_inputs=counters['clean'],wrong_inputs=counters['wrong'],
+                     exact_count=counters['exact'],wrong_fixed_count=counters['wrong_fixed'],
+                     clean_preserved_count=counters['clean_kept'],
+                     exact=ratio(counters['exact'],len(rows)),
                      wrong_exact_fix=ratio(counters['wrong_fixed'],counters['wrong']),
                      correct_preserve=ratio(counters['clean_kept'],counters['clean']),
                      overcorrection=ratio(counters['clean']-counters['clean_kept'],counters['clean']),
@@ -711,48 +752,122 @@ jobs:
               # Smoke test shape and tokenizer even when all targets are ignored in real data.
               smoke='他做的作业。'
               print('Smoke (仅模型预检):',model.predict(smoke,[False]*len(smoke)),flush=True)
-              datasets=[('NLPCC2023-Task8',DATA_ROOT/'NLPCC2023/spell/data.jsonl'),
-                        ('SIGHAN15-Revised',DATA_ROOT/'yacsc/sighan_revised/test_sighan15.jsonl')]
-              results={};failures=[]
-              for name,path in datasets:
-                  rows=[]
-                  with path.open(encoding='utf-8-sig') as f:
-                      for i,line in enumerate(f,1):
-                          if not line.strip():continue
-                          row=json.loads(line)
-                          if not isinstance(row.get('source'),str) or not isinstance(row.get('target'),str):
-                              raise RuntimeError(f'{path}:{i} 不含标准 source/target')
-                          rows.append((row['source'],row['target']))
-                  if not rows:raise RuntimeError('测试集为空: '+str(path))
-                  print(name,'样本数:',len(rows),flush=True)
-                  scores,fails=score(name,rows,pipe,model)
-                  results[name]=scores
-                  failures.extend(dict(dataset=name,**f) for f in fails)
+              # Check ALL configured datasets before the lengthy model inference.
+              missing = [rel for name,rel,group,role,expected in DATASETS
+                         if not (DATA_ROOT / rel).is_file()]
+              if missing:
+                  raise FileNotFoundError('完整测试集缺失：' + ', '.join(missing))
+              results, failures, manifest, seen_pairs = {}, [], [], set()
+              duplicate_pairs = 0
+              with gzip.open('benchmark_predictions.jsonl.gz', 'wt', encoding='utf-8', compresslevel=6) as predictions:
+                  for name, rel, group, role, expected in DATASETS:
+                      path=DATA_ROOT / rel
+                      rows=[]
+                      with path.open(encoding='utf-8-sig') as f:
+                          for line_no,line in enumerate(f,1):
+                              if not line.strip(): continue
+                              row=json.loads(line)
+                              if not isinstance(row.get('source'),str) or not isinstance(row.get('target'),str):
+                                  raise RuntimeError(f'{path}:{line_no} 缺少合法 source/target')
+                              rows.append((row['source'],row['target']))
+                      if not rows: raise RuntimeError('数据集为空: '+str(path))
+                      if len(rows)!=expected:
+                          print(f'[COUNT NOTE] {name}: current={len(rows)}, README={expected}',flush=True)
+                      manifest.append(dict(name=name,path=rel,group=group,role=role,
+                                           rows=len(rows),expected_rows=expected,
+                                           file_sha256=sha256_file(path)))
+                      duplicates_here=0
+                      for pair in rows:
+                          if pair in seen_pairs: duplicates_here+=1
+                          seen_pairs.add(pair)
+                      duplicate_pairs+=duplicates_here
+                      print(f'[START] {name}: {len(rows):,} 全量句对 / {group} / {role}; '
+                            f'之前数据集重复句对 {duplicates_here}', flush=True)
+                      scores,fails=score(name,rows,pipe,model,predictions)
+                      results[name]=scores
+                      failures.extend(dict(dataset=name,**f) for f in fails)
+                      print(f'[DONE] {name}: exact={scores["exact"]:.4%}, '
+                            f'cor_f1={scores["cor_f1"]:.4%}, time={scores["seconds"]:.1f}s',flush=True)
+                      # Flush gzipped results so interruption still leaves diagnostics.
+                      predictions.flush()
+              if len(results)!=len(DATASETS):
+                  raise RuntimeError('未完成全部数据集评分')
+              Path('benchmark_manifest.json').write_text(json.dumps({
+                  'revision':dataset_revision,'source_sha':os.getenv('GITHUB_SHA','local'),
+                  'datasets':manifest,'cross_dataset_duplicate_pairs':duplicate_pairs,
+                  'unique_source_target_pairs':len(seen_pairs),
+                  'note':'原样保留各数据集，不去重、不抽样；重复句对不能视为独立样本。'
+              },ensure_ascii=False,indent=2),encoding='utf-8')
+              del seen_pairs
               def pct(x):return f'{x*100:.2f}%'
-              report=['# Dedede Pro 基准测试（Windows ONNX 推理 + Android 纠错规则）','','## 测试说明','',
+              grand_total=sum(r['samples'] for r in results.values())
+              grand_chars=sum(r['characters'] for r in results.values())
+              grand_secs=sum(r['seconds'] for r in results.values())
+              meta_by_name={row[0]:row for row in DATASETS}
+              report=['# Dedede Pro 全量跨领域基准测试（Windows ONNX + Android 规则）',
+                      '', '## 评测配置', '',
+                      '- 原先两套测试集保留原顺序、原统计公式，用于与历史报告直接比较。',
+                      f'- **共 {len(DATASETS)} 份公开数据集，实际逐条测试 {grand_total:,} 条 / {grand_chars:,} 字；未抽样、未载入训练集。**',
                       '- 模型：**Windows 版 HCAM V2 五字 ONNX INT8（非 Android PTE）**',
                       f'- Windows ONNX SHA256：`{model_sha}`',
                       f'- Android tokenizer SHA256：`{tokenizer_sha_match.group(1)}`',
-                      f'- 源码提交：`{os.environ.get("GITHUB_SHA", "local")}`；CTCDataset 提交：`{dataset_revision}`',
+                      f'- 源码提交：`{os.environ.get("GITHUB_SHA", "local")}`；CTCDataset 固定提交：`{dataset_revision}`',
                       '- 推理：GitHub Ubuntu x86 CPU / ONNX Runtime CPUExecutionProvider',
-                      '- 注意：混合部署评测（Windows ONNX 推理 + Android 词库和规则），不代表 Android PTE 实际推理分数。量化差异可能改变边界例子',
-                      '- 数据集：与旧版报告一致（NLPCC2023-Task8、SIGHAN15-Revised）',
-                      '- 计分：与旧版报告一致（整句准确率、错句修好率、正确句保持率、检测与纠正 P/R/F1）',
-                      '- 纠错流程：Python 对当前 Java 语法规则、词库、保护规则的复现；不是在 Android JVM 内直接运行完整 APP',
-                      '- 不含手机内自定义词库与白名单；结果不能当成完整 APP 手机实测',
-                      '- x86 CPU 速度不是手机端速度，勿与过去的端侧延迟比较',
+                      '- 规则与词库：运行时从安卓版最新构建脚本和错词库读取；手机自定义规则不包含在内。',
+                      '- 五字模型只预测「的地得做作」；其他错别字依赖现有词库与语法规则，因此通用拼写纠错召回率可能较低。',
+                      '- **测试/验证集和公开领域集分开标明。** 某些公开领域集没有严格的独立测试拆分，且无法排除与模型/词库训练素材交叉。',
+                      '- 筛选说明：舍弃 LEMON-Game（400 句，含游戏标记、代表性较弱）及 MuCGEC-Dev-MinEdit（开放式语法纠错有多个合理答案，单参考评测偏差大）。其余正式测试集与领域集均保留。',
+                      f'- 公开数据集之间出现 {duplicate_pairs:,} 次 source+target 完全重复（按列表先后统计）。每套数据均独立完整计分，不能把总句数当成独立样本数。',
+                      '- 原版对照的成绩不受新增数据集影响。多个候选修法使用固定随机种子；顺序始终先原版两套，再扩展集。',
+                      '- 不应把 Linux CPU 速度与 Android 手机上的推理速度直接比较。',
                       f'- 温度：**{TEMPERATURE}**；阈值：'+', '.join(f'{x}={THRESHOLDS[x]}' for x in LABELS),
                       f'- 字典：{len(dictionary.words):,}；语法规则：{len(rules):,}；量词：{len(quant):,}；保护正则：{len(protected):,}；跳过词：{len(ignore):,}',
-                      '- 连续目标字：按 Android APP 策略二次复核（先全 Mask，再按需单字 Mask，复核阈值 0.78）',
-                      '', '## 结果', '',
-                      '| 数据集 | 句数 | 原文字符 | 整句完全正确 | 错句整句修好 | 正确句保持率 | 误改率 | 检测 P/R/F1 | 纠正 P/R/F1 | 速度 |',
-                      '|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|']
+                      '- 连续目标字复核：先全 Mask，必要时单字 Mask（阈值 0.78）。',
+                      '', '## 原版两套基准（直接对照历史成绩）', '']
+              table_header='| 数据集 | 句数 | 原文字符 | 整句完全正确 | 错句整句修好 | 正确句保持率 | 误改率 | 检测 P/R/F1 | 纠正 P/R/F1 | 速度 |'
+              table_divider='|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|'
+              def table_row(name,m):
+                  def rate(x,denom): return pct(x) if denom else '—'
+                  return (f'| {name} | {m["samples"]:,} | {m["characters"]:,} | '
+                          f'{pct(m["exact"])} | {rate(m["wrong_exact_fix"],m["wrong_inputs"])} | '
+                          f'{rate(m["correct_preserve"],m["correct_inputs"])} | '
+                          f'{rate(m["overcorrection"],m["correct_inputs"])} | '
+                          f'{pct(m["det_p"])}/{pct(m["det_r"])}/{pct(m["det_f1"])} | '
+                          f'{pct(m["cor_p"])}/{pct(m["cor_r"])}/{pct(m["cor_f1"])} | '
+                          f'{m["chars_per_second"]:.1f} 字/s |')
+              report.extend([table_header,table_divider])
+              for name,rel,group,role,expected in DATASETS[:2]:
+                  report.append(table_row(name,results[name]))
+              report.extend(['', '## 扩展数据集（全量）',
+                             '', '各数据集的来源不同，任务、标签难度和错误比例也不同，不宜只比较整句准确率。',
+                             '', '| 分类 | 数据集 | 类型 | 句数 | 错句数 | 整句准确率 | 错句修好率 | 正确句保持率 | 误改率 | 纠正 F1 | 耗时 |',
+                             '|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|'])
+              for name,rel,group,role,expected in DATASETS[2:]:
+                  m=results[name]
+                  fixed=pct(m['wrong_exact_fix']) if m['wrong_inputs'] else '—'
+                  held=pct(m['correct_preserve']) if m['correct_inputs'] else '—'
+                  over=pct(m['overcorrection']) if m['correct_inputs'] else '—'
+                  report.append(f'| {group} | {name} | {role} | {m["samples"]:,} | '
+                                f'{m["wrong_inputs"]:,} | {pct(m["exact"])} | {fixed} | '
+                                f'{held} | {over} | {pct(m["cor_f1"])} | {m["seconds"]:.1f}s |')
+              report.extend(['', '## 汇总与局限',
+                             '',f'- 共 **{len(results)}** 套数据，计 **{grand_total:,}** 条（含跨数据集重合），'
+                             f'**{grand_chars:,}** 字；正式评分耗时 **{grand_secs:.1f} 秒**。',
+                             '- 不提供跨数据集简单平均的“总准确率”：样本比例、领域、标签形式不一致，合并可能误导。',
+                             '- 整句准确率覆盖全部样本；字符级 P/R/F1 仅对 source/target/prediction 三者等长样本按位置计分。',
+                             '- 对单一参考答案的开放式语法纠错，存在多种合理修法；与标注答案不同不必然意味着修改错误。',
+                             '- 各类别的训练污染风险不同。明确的测试/验证集也不保证没有与训练语料重合。',
+                             '- **benchmark_predictions.jsonl.gz** 含每条样本的原文、标准答案、完整输出和是否完全命中。',
+                             '- **benchmark_failures.jsonl** 每套最多展示 100 条失败样本，仅作快速查看；完整记录以 gzip 为准。',
+                             '- **benchmark_manifest.json** 含各数据集真实样本数、SHA256、来源路径以及重复统计。',
+                             '', '## 每套推理诊断', ''])
               for name,m in results.items():
-                  report.append(f'| {name} | {m["samples"]:,} | {m["characters"]:,} | {pct(m["exact"])} | {pct(m["wrong_exact_fix"])} | {pct(m["correct_preserve"])} | {pct(m["overcorrection"])} | {pct(m["det_p"])}/{pct(m["det_r"])}/{pct(m["det_f1"])} | {pct(m["cor_p"])}/{pct(m["cor_r"])}/{pct(m["cor_f1"])} | {m["chars_per_second"]:.1f} 字/s |')
-              report.extend(['','## 附加指标',''])
-              for name,m in results.items():
-                  report.append(f'- **{name}**：耗时 {m["seconds"]:.2f}s；平均 {m["ms_per_sentence"]:.2f}ms/句；等长对齐 {m["aligned_samples"]:,}/{m["samples"]:,}；输出长度改变 {m["length_changed"]:,}；累计模型调用 {m["model_calls"]:,}（复核 {m["review_calls"]:,}）。')
-              report.extend(['', '注：字符级 P/R/F1 与旧版一致，仅统计 source/target/prediction 三者等长样本。跨版本规则与模型均有变化，不能简单理解为同一条件下模型性能变化。'])
+                  report.append(f'- **{name}**：{m["samples"]:,} 条，正确输入 {m["correct_inputs"]:,} / '
+                                f'错句 {m["wrong_inputs"]:,}；'
+                                f'{m["ms_per_sentence"]:.2f} ms/句；'
+                                f'等长对齐 {m["aligned_samples"]:,}；'
+                                f'输出长度改变 {m["length_changed"]:,}；'
+                                f'模型调用 {m["model_calls"]:,}（复核 {m["review_calls"]:,}）。')
               rendered='\n'.join(report)+'\n'
               Path('benchmark_report.md').write_text(rendered,encoding='utf-8')
               Path('benchmark_metrics.json').write_text(json.dumps(results,ensure_ascii=False,indent=2),encoding='utf-8')
@@ -765,7 +880,7 @@ jobs:
           python -m py_compile /tmp/dedede_hcam_benchmark.py
           python /tmp/dedede_hcam_benchmark.py 2>&1 | tee benchmark_console.log
           {
-            echo '## Windows ONNX + Android rules 测试完成'
+            echo '## Windows ONNX + Android rules 全量扩展测试完成'
             echo
             cat benchmark_report.md
           } >> "$GITHUB_STEP_SUMMARY"
@@ -778,6 +893,8 @@ jobs:
             benchmark_report.md
             benchmark_metrics.json
             benchmark_failures.jsonl
+            benchmark_manifest.json
+            benchmark_predictions.jsonl.gz
             benchmark_console.log
           if-no-files-found: warn
           retention-days: 90
