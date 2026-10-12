@@ -1,13 +1,13 @@
-# Replacement for .github/workflows/dededi-benchmark-pro-v2.yml
-# Pushing this file to main triggers the benchmark automatically.
-# All benchmark code is embedded below: only ONE file needs replacing.
-name: Dedede HCAM V2 Pro Benchmark
+# .github/workflows/dededi-benchmark-pro-v2.yml
+# Fully automated on push; Windows ONNX model + Android rules and tokenizer.
+name: Dedede Pro Benchmark - Windows ONNX + Android Rules
 
 on:
   push:
     branches: [main]
     paths:
       - '.github/workflows/dededi-benchmark-pro-v2.yml'
+      - '.github/workflows/windows.yml'
       - 'dedede-build.sh'
       - '错别字.txt'
   workflow_dispatch: {}
@@ -16,12 +16,12 @@ permissions:
   contents: read
 
 concurrency:
-  group: dedede-hcam-benchmark-${{ github.ref }}
+  group: dedede-hcam-onnx-benchmark-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
   benchmark:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     timeout-minutes: 180
     env:
       DEDEDI_TEMPERATURE: '1.0'
@@ -32,45 +32,36 @@ jobs:
       DEDEDI_THRESHOLD_ZUO4: '0.75'
       PYTHONUNBUFFERED: '1'
     steps:
-      - name: Check out exact source revision
+      - name: Checkout source and current Android rules
         uses: actions/checkout@v4
-      - name: Set up Python 3.10
+      - name: Set up Python 3.11
         uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
-      - name: Install CPU inference environment
+          python-version: '3.11'
+      - name: Install lightweight ONNX CPU dependencies
         shell: bash
         run: |
           set -euo pipefail
           python -m pip install --upgrade pip
-          # ExecuTorch 1.5.1 Python wheel is linked against PyTorch 2.11 ABI.
-          # Pin both; installing torch 2.9 makes executorch's native .so fail to import.
-          python -m pip install 'torch==2.11.0' --index-url https://download.pytorch.org/whl/cpu
-          python -m pip install 'executorch==1.5.1' 'gdown==5.2.0' 'regex==2024.11.6'
-          python - <<'PY_CHECK'
-          import importlib.metadata
-          import torch
-          assert torch.__version__.split('+')[0] == '2.11.0', f'PyTorch 版本不匹配: {torch.__version__}'
-          from executorch.runtime import Runtime
-          print('PyTorch:', torch.__version__, flush=True)
-          print('ExecuTorch:', importlib.metadata.version('executorch'), flush=True)
-          # ExecuTorch 1.5 public API: registered_backend_names / is_available.
-          # backend_names (used in the previous workflow) does not exist.
-          registry = Runtime.get().backend_registry
-          backend_names = registry.registered_backend_names
-          print('Available ExecuTorch backends:', backend_names, flush=True)
-          if not registry.is_available('XnnpackBackend'):
-              raise RuntimeError('当前 ExecuTorch wheel 未提供 XNNPACK，不能加载 Android PTE 模型')
-          print('ExecuTorch native import and XNNPACK registry check passed', flush=True)
-          PY_CHECK
-      - name: Download the original benchmark datasets
+          python -m pip install 'onnxruntime==1.23.2' 'numpy==2.2.6' 'gdown==5.2.0' 'regex==2024.11.6'
+          python - <<'CHECK'
+          import onnxruntime as ort, numpy as np
+          assert 'CPUExecutionProvider' in ort.get_available_providers()
+          print('ONNX Runtime', ort.__version__, 'NumPy', np.__version__)
+          CHECK
+      - name: Cache Windows ONNX model
+        uses: actions/cache@v4
+        with:
+          path: .benchmark-pro-model/HCAM_V2_5CHAR_INT8_PT.onnx
+          key: win-onnx-15f0af5c03857ac2b049ac9f02cfe1dde2fba11ea639e191ca6453cb9a6e75cc
+      - name: Download original unchanged benchmark datasets
         shell: bash
         run: |
           set -euo pipefail
           git clone --depth 1 https://github.com/zejunwang1/CTCDataset.git .benchmark-data
           test -s .benchmark-data/NLPCC2023/spell/data.jsonl
           test -s .benchmark-data/yacsc/sighan_revised/test_sighan15.jsonl
-      - name: Run benchmark and publish the scores to run summary
+      - name: Run benchmark and publish report
         shell: bash
         run: |
           set -euo pipefail
@@ -104,23 +95,53 @@ jobs:
               raise ValueError('温度或阈值超出 APP 允许范围')
           
           
+          # Provenance: Google Drive ID observed in successful Windows GitHub Actions
+          # (Windows x64 build 2026-10-12); expected SHA is read from windows.yml.
+          WINDOWS_ONNX_ID = '1RApK3KpMDIWG6fkro6c8YhVwpcooB-d3'
+          WINDOWS_MODEL_FILE = 'HCAM_V2_5CHAR_INT8_PT.onnx'
+          WINDOWS_SHA = '15f0af5c03857ac2b049ac9f02cfe1dde2fba11ea639e191ca6453cb9a6e75cc'
+          
+          
+          def sha256_file(path):
+              digest = hashlib.sha256()
+              with Path(path).open('rb') as src:
+                  for chunk in iter(lambda: src.read(1024*1024), b''):
+                      digest.update(chunk)
+              return digest.hexdigest()
+          
+          
+          def download_verified(file_id, path, expected):
+              path = Path(path)
+              if not path.is_file() or sha256_file(path) != expected:
+                  path.unlink(missing_ok=True)
+                  subprocess.run([sys.executable, '-m', 'gdown', file_id,
+                                  '--no-cookies', '-O', str(path)], check=True)
+              actual = sha256_file(path)
+              if actual != expected:
+                  path.unlink(missing_ok=True)
+                  raise RuntimeError(f'资源 SHA-256 校验失败：{path.name} {actual} != {expected}')
+              print(f'资源已校验：{path.name}（{path.stat().st_size:,} bytes），SHA256={expected}', flush=True)
+          
+          
           def verify_and_download():
               source = APP_SOURCE_PATH.read_text(encoding='utf-8')
-              MODEL_ROOT.mkdir(exist_ok=True)
-              for key, filename in [('MODEL', 'model.pte'), ('TOKENIZER', 'tokenizer.json')]:
-                  def lookup(suffix):
-                      found = re.search(r"(?m)^" + key + suffix + r"='([^']+)'", source)
-                      if found is None:
-                          raise RuntimeError('当前 Android 构建脚本缺少 ' + key + suffix)
-                      return found.group(1)
-                  expected = lookup('_SHA')
-                  target = MODEL_ROOT / filename
-                  if not target.is_file() or hashlib.sha256(target.read_bytes()).hexdigest() != expected:
-                      subprocess.run([sys.executable, '-m', 'gdown', lookup('_ID'), '--no-cookies', '-O', str(target)], check=True)
-                  sha = hashlib.sha256(target.read_bytes()).hexdigest()
-                  if sha != expected:
-                      raise RuntimeError(f'{filename} 校验失败: {sha}, 预期 {expected}')
-                  print(f'资源已校验: {filename}, {target.stat().st_size:,} bytes, {sha}', flush=True)
+              windows_flow = (ROOT / '.github/workflows/windows.yml').read_text(encoding='utf-8')
+              # Do not silently benchmark an outdated Windows model when the app changes.
+              match = re.search(r'dedede-model-([0-9a-f]{64})', windows_flow)
+              if not match:
+                  raise RuntimeError('当前 Windows 工作流中没有发现模型 SHA，请检查 windows.yml')
+              if match.group(1) != WINDOWS_SHA:
+                  raise RuntimeError('Windows 模型已更新，测试脚本中的下载文件 ID 需要同步更新，拒绝拿旧模型冒充新模型')
+              MODEL_ROOT.mkdir(parents=True, exist_ok=True)
+              download_verified(WINDOWS_ONNX_ID, MODEL_ROOT / WINDOWS_MODEL_FILE, WINDOWS_SHA)
+              def app_constant(key):
+                  m = re.search(r'(?m)^' + re.escape(key) + r"='([^']+)'", source)
+                  if not m:
+                      raise RuntimeError('Android 构建脚本缺少 ' + key)
+                  return m.group(1)
+              # All non-model logic remains Android. Use its exact tokenizer with hash verification.
+              download_verified(app_constant('TOKENIZER_ID'), MODEL_ROOT / 'tokenizer.json',
+                                app_constant('TOKENIZER_SHA'))
               return source
           
           
@@ -463,10 +484,9 @@ jobs:
           
           class HcamModel:
               def __init__(self):
-                  import torch
-                  from executorch.runtime import Runtime
-                  self.torch = torch
-                  torch.set_num_threads(min(4, os.cpu_count() or 1))
+                  import numpy as np
+                  import onnxruntime as ort
+                  self.np = np
                   data = json.loads((MODEL_ROOT / 'tokenizer.json').read_text(encoding='utf-8'))
                   if data.get('format') != 'HCAM-character-latin-bpe-tokenizer' or data.get('version') != 6:
                       raise RuntimeError('Tokenzier 格式错误')
@@ -483,8 +503,39 @@ jobs:
                       left, right = pair if isinstance(pair, list) else pair.split(' ', 1)
                       self.ranks[left+'\0'+right] = i
                   self.pattern = jregex.compile(r'\p{Script=Latin}[\p{Script=Latin}\p{M}]*')
-                  self.program = Runtime.get().load_program(MODEL_ROOT / 'model.pte')
-                  self.forward_method = self.program.load_method('forward')
+                  opts = ort.SessionOptions()
+                  opts.intra_op_num_threads = min(4, os.cpu_count() or 1)
+                  opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+                  model_path = MODEL_ROOT / WINDOWS_MODEL_FILE
+                  self.session = ort.InferenceSession(str(model_path), sess_options=opts,
+                                                     providers=['CPUExecutionProvider'])
+                  available = self.session.get_providers()
+                  if 'CPUExecutionProvider' not in available:
+                      raise RuntimeError('ONNX Runtime 没有可用 CPUExecutionProvider')
+                  inputs = self.session.get_inputs()
+                  outputs = self.session.get_outputs()
+                  print('Windows ONNX inputs:',[(x.name,x.type,x.shape) for x in inputs],flush=True)
+                  print('Windows ONNX outputs:',[(x.name,x.type,x.shape) for x in outputs],flush=True)
+                  if len(inputs) != 2:
+                      raise RuntimeError('Windows ONNX 模型输入数量不是 2，无法确认与 Android 输入语义一致')
+                  # Match IDs by name, then by input dtype, instead of assuming graph input order.
+                  id_candidates = [x for x in inputs if 'id' in x.name.lower() and 'mask' not in x.name.lower()]
+                  if len(id_candidates) != 1:
+                      id_candidates = [x for x in inputs if x.type == 'tensor(int64)']
+                  if len(id_candidates) != 1:
+                      raise RuntimeError('无法明确区分 ONNX 的 token_ids 与 target_mask 输入')
+                  self.ids_input = id_candidates[0]
+                  self.mask_input = next(x for x in inputs if x.name != self.ids_input.name)
+                  if 'mask' not in self.mask_input.name.lower() and self.mask_input.type != 'tensor(bool)':
+                      raise RuntimeError('无法确认 ONNX 第二输入是 mask，避免错误的模型评分')
+                  for meta in (self.ids_input,self.mask_input):
+                      if meta.type not in ('tensor(int32)','tensor(int64)','tensor(bool)'):
+                          raise RuntimeError('模型输入数据类型不支持：' + meta.type)
+                  if self.ids_input.type not in ('tensor(int32)','tensor(int64)'):
+                      raise RuntimeError('ONNX token_ids 不是整数张量')
+                  if not outputs:
+                      raise RuntimeError('Windows ONNX 没有输出')
+          
                   self.calls = 0
                   self.reviews = 0
           
@@ -545,15 +596,24 @@ jobs:
           
               def forward(self,ids,mask):
                   if len(ids)>1248 or not ids or len(ids)!=len(mask):
-                      raise ValueError('PTE 输入形状错误')
-                  torch=self.torch
-                  with torch.inference_mode():
-                      output=self.forward_method.execute((torch.tensor([ids],dtype=torch.long),torch.tensor([mask],dtype=torch.bool)))
-                  if not output or tuple(output[0].shape)!=(1,len(ids),5):
-                      raise RuntimeError('PTE 输出不是 [1,L,5]')
-                  if not torch.isfinite(output[0]).all(): raise RuntimeError('PTE 输出含非有限数值')
+                      raise ValueError('ONNX 输入长度超过 Android 允许的 1248 tokens')
+                  np = self.np
+                  def cast(values,meta):
+                      types = {'tensor(int64)': np.int64, 'tensor(int32)': np.int32,
+                               'tensor(bool)': np.bool_}
+                      return np.asarray(values,dtype=types[meta.type])[None,:]
+                  feeds={self.ids_input.name:cast(ids,self.ids_input),
+                         self.mask_input.name:cast(mask,self.mask_input)}
+                  output=self.session.run(None, feeds)
+                  logits=[x for x in output if isinstance(x,np.ndarray) and
+                          x.shape == (1,len(ids),5)]
+                  if len(logits)!=1:
+                      raise RuntimeError('Windows ONNX 输出没有唯一 [1,L,5] logits：'+
+                                         str([getattr(x,'shape',None) for x in output]))
+                  if not np.isfinite(logits[0]).all():
+                      raise RuntimeError('ONNX logits 含 NaN/Infinity')
                   self.calls+=1
-                  return output[0][0].tolist()
+                  return logits[0][0].tolist()
           
               def predict(self,text,ignored):
                   if not any(c in LABELS and not ignored[p] for p,c in enumerate(text)):
@@ -584,14 +644,13 @@ jobs:
           
           
           def score(dataset, rows, pipeline, model):
-              # Each dataset reports its own model calls, not a cumulative total.
-              calls_before, reviews_before = model.calls, model.reviews
               t0=time.perf_counter()
               counters=dict(exact=0,clean=0,clean_kept=0,wrong=0,wrong_fixed=0,
                             aligned=0,length_changed=0,det_tp=0,det_fp=0,det_fn=0,
                             cor_tp=0,cor_fp=0,cor_fn=0)
               failures=[]
               n_chars=sum(len(x) for x,_ in rows)
+              calls_before, reviews_before = model.calls, model.reviews
               for k,(src,target) in enumerate(rows):
                   prediction=''.join(model.predict(*pipeline.preprocess(part)) for part in split_text(src))
                   if prediction==target:counters['exact']+=1
@@ -631,8 +690,7 @@ jobs:
                      det_p=dp,det_r=dr,det_f1=f1(dp,dr),cor_p=cp,cor_r=cr,cor_f1=f1(cp,cr),
                      aligned_samples=counters['aligned'],length_changed=counters['length_changed'],
                      seconds=seconds,chars_per_second=ratio(n_chars,seconds),
-                     ms_per_sentence=1000*ratio(seconds,len(rows)),
-                     model_calls=model.calls-calls_before,review_calls=model.reviews-reviews_before)
+                     ms_per_sentence=1000*ratio(seconds,len(rows)),model_calls=model.calls-calls_before,review_calls=model.reviews-reviews_before)
               return m,failures
           
           
@@ -643,9 +701,10 @@ jobs:
               dictionary=load_dictionary(white)
               pipe=Pipeline(rules,protected,quant,dictionary,nums,known,ignore,safe)
               model=HcamModel()
-              model_sha_match = re.search(r"(?m)^MODEL_SHA='([^']+)'", source)
-              if not model_sha_match:
-                  raise RuntimeError('模型 SHA 没有读取到')
+              model_sha = WINDOWS_SHA
+              tokenizer_sha_match = re.search(r"(?m)^TOKENIZER_SHA='([^']+)'", source)
+              if not tokenizer_sha_match:
+                  raise RuntimeError('Android Tokenizer SHA 没有读取到')
               dataset_revision = subprocess.run(
                   ['git', '-C', str(DATA_ROOT), 'rev-parse', 'HEAD'],
                   check=True, capture_output=True, text=True).stdout.strip()
@@ -670,11 +729,13 @@ jobs:
                   results[name]=scores
                   failures.extend(dict(dataset=name,**f) for f in fails)
               def pct(x):return f'{x*100:.2f}%'
-              report=['# Dedede Pro HCAM PTE 基准测试','','## 测试说明','',
-                      '- 模型：**当前 Android 构建中校验的 HCAM V2 五字 PTE INT8**',
-                      f'- PTE SHA256：`{model_sha_match.group(1)}`',
+              report=['# Dedede Pro 基准测试（Windows ONNX 推理 + Android 纠错规则）','','## 测试说明','',
+                      '- 模型：**Windows 版 HCAM V2 五字 ONNX INT8（非 Android PTE）**',
+                      f'- Windows ONNX SHA256：`{model_sha}`',
+                      f'- Android tokenizer SHA256：`{tokenizer_sha_match.group(1)}`',
                       f'- 源码提交：`{os.environ.get("GITHUB_SHA", "local")}`；CTCDataset 提交：`{dataset_revision}`',
-                      '- 推理：GitHub Ubuntu x86 CPU / ExecuTorch Python Runtime / XNNPACK',
+                      '- 推理：GitHub Ubuntu x86 CPU / ONNX Runtime CPUExecutionProvider',
+                      '- 注意：混合部署评测（Windows ONNX 推理 + Android 词库和规则），不代表 Android PTE 实际推理分数。量化差异可能改变边界例子',
                       '- 数据集：与旧版报告一致（NLPCC2023-Task8、SIGHAN15-Revised）',
                       '- 计分：与旧版报告一致（整句准确率、错句修好率、正确句保持率、检测与纠正 P/R/F1）',
                       '- 纠错流程：Python 对当前 Java 语法规则、词库、保护规则的复现；不是在 Android JVM 内直接运行完整 APP',
@@ -682,7 +743,7 @@ jobs:
                       '- x86 CPU 速度不是手机端速度，勿与过去的端侧延迟比较',
                       f'- 温度：**{TEMPERATURE}**；阈值：'+', '.join(f'{x}={THRESHOLDS[x]}' for x in LABELS),
                       f'- 字典：{len(dictionary.words):,}；语法规则：{len(rules):,}；量词：{len(quant):,}；保护正则：{len(protected):,}；跳过词：{len(ignore):,}',
-                      '- 连续目标字：同 APP 的二次复核阈值 0.78（先全 Mask，再按需单字 Mask）',
+                      '- 连续目标字：按 Android APP 策略二次复核（先全 Mask，再按需单字 Mask，复核阈值 0.78）',
                       '', '## 结果', '',
                       '| 数据集 | 句数 | 原文字符 | 整句完全正确 | 错句整句修好 | 正确句保持率 | 误改率 | 检测 P/R/F1 | 纠正 P/R/F1 | 速度 |',
                       '|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|']
@@ -702,14 +763,13 @@ jobs:
           if __name__=='__main__':main()
           PY
           python -m py_compile /tmp/dedede_hcam_benchmark.py
-          # Always retain complete benchmark output, even if PTE loading fails.
           python /tmp/dedede_hcam_benchmark.py 2>&1 | tee benchmark_console.log
           {
-            echo '## HCAM V2 自动测试完成'
+            echo '## Windows ONNX + Android rules 测试完成'
             echo
             cat benchmark_report.md
           } >> "$GITHUB_STEP_SUMMARY"
-      - name: Upload score report and failures
+      - name: Upload benchmark report and diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
