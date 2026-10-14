@@ -2,14 +2,8 @@
 # Curated complete public evaluation sets (no sampling): Windows ONNX + Android rules.
 name: Dedede Pro Benchmark SELECTED - Windows ONNX + Android Rules
 
+# 手动触发专用：不在 push 时自动运行，需要时在 Actions 页面手动 Run workflow。
 on:
-  push:
-    branches: [main]
-    paths:
-      - '.github/workflows/dededi-benchmark-pro-v2.yml'
-      - '.github/workflows/windows.yml'
-      - 'dedede-build.sh'
-      - '错别字.txt'
   workflow_dispatch: {}
 
 permissions:
@@ -53,7 +47,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .benchmark-pro-model/HCAM_V2_5CHAR_INT8_PT.onnx
-          key: win-onnx-15f0af5c03857ac2b049ac9f02cfe1dde2fba11ea639e191ca6453cb9a6e75cc
+          key: win-onnx-0331956749c267c5f7022c9b842057067660babe090d1fe87005eb56c6dc480f
       - name: Download original unchanged benchmark datasets
         shell: bash
         run: |
@@ -128,11 +122,11 @@ jobs:
               raise ValueError('温度或阈值超出 APP 允许范围')
           
           
-          # Provenance: Google Drive ID observed in successful Windows GitHub Actions
-          # (Windows x64 build 2026-10-12); expected SHA is read from windows.yml.
-          WINDOWS_ONNX_ID = '1RApK3KpMDIWG6fkro6c8YhVwpcooB-d3'
+          # Provenance: HCAM V2 5-char V4 model shared from the author's Drive folder
+          # (HCAM_V2_5CHAR_V4_EXTVAL1000_FASTBATCH); expected SHA is read from windows.yml.
+          WINDOWS_ONNX_ID = '1tBMLBqDctTO_rxXhwlmrAMP6iHxYqRYX'
           WINDOWS_MODEL_FILE = 'HCAM_V2_5CHAR_INT8_PT.onnx'
-          WINDOWS_SHA = '15f0af5c03857ac2b049ac9f02cfe1dde2fba11ea639e191ca6453cb9a6e75cc'
+          WINDOWS_SHA = '0331956749c267c5f7022c9b842057067660babe090d1fe87005eb56c6dc480f'
           
           
           def sha256_file(path):
