@@ -2,8 +2,8 @@
 # HCAM V2 PTE independent build. Run in a checkout of qilimary/Dedede-App.
 # Optional --prepare-only generates the Android project without invoking Gradle.
 set -euo pipefail
-MODEL_ID='1ZBngTzZoebWGFqesqx6v_o7BCxbP-t9-'
-MODEL_SHA='0992ec1bc5c3725dcdb2dcef6591d7811caf8762146dd7064d1fe57007247418'
+MODEL_ID='1mBXuaUNVLh_vHNMRkgcLL4JlMIb-K9Qw'
+MODEL_SHA='15b431068a31ff6c9483ca8df5e0d095c6dbdb0b53f80ea9dd98d9d7d9361b6a'
 TOKENIZER_ID='1CEryzzuhemAB0oAQpy-vshA2XP7nOqwQ'
 TOKENIZER_SHA='bed4387895500314ffba9608340c56069ca6df8635029535b9becdef8ce7ddf0'
 CACHE='.model-cache-pte'
@@ -16,7 +16,7 @@ if ! echo "$TOKENIZER_SHA  $CACHE/tokenizer.json" | sha256sum -c --status 2>/dev
 fi
 echo "$MODEL_SHA  $CACHE/model.bin" | sha256sum -c
 echo "$TOKENIZER_SHA  $CACHE/tokenizer.json" | sha256sum -c
-test "$(stat -c%s "$CACHE/model.bin")" -eq 122934784
+test "$(stat -c%s "$CACHE/model.bin")" -eq 122917632
 test "$(stat -c%s "$CACHE/tokenizer.json")" -eq 327784
 cp "$CACHE/model.bin" hcam_model.bin
 cp "$CACHE/tokenizer.json" hcam_tokenizer.json
@@ -5432,13 +5432,13 @@ cat > "app/src/main/res/layout/activity_main.xml" <<'DEDEDE_SOURCE_EOF'
                     <TextView android:id="@+id/labelDe3" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="得" android:textSize="15sp" android:textStyle="bold" android:textColor="@color/text_primary"/>
                     <EditText android:id="@+id/editThreshDe3" android:layout_width="0dp" android:layout_weight="1" android:layout_height="42dp" android:minWidth="0dp" android:padding="0dp" android:text="0.75" android:contentDescription="得字阈值" android:textColor="@color/text_primary" android:textSize="13sp" android:inputType="numberDecimal" android:maxLength="5" android:singleLine="true" android:gravity="center" android:background="@null"/>
                 </LinearLayout>
-                <LinearLayout android:id="@+id/paramZuo" android:layout_width="0dp" android:layout_height="42dp" android:layout_weight="1" android:orientation="horizontal" android:gravity="center_vertical">
-                    <TextView android:id="@+id/labelZuo" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="做" android:textSize="15sp" android:textStyle="bold" android:textColor="@color/text_primary"/>
-                    <EditText android:id="@+id/editThreshZuo" android:layout_width="0dp" android:layout_weight="1" android:layout_height="42dp" android:minWidth="0dp" android:padding="0dp" android:text="0.75" android:contentDescription="做字阈值" android:textColor="@color/text_primary" android:textSize="13sp" android:inputType="numberDecimal" android:maxLength="5" android:singleLine="true" android:gravity="center" android:background="@null"/>
-                </LinearLayout>
                 <LinearLayout android:id="@+id/paramZuo4" android:layout_width="0dp" android:layout_height="42dp" android:layout_weight="1" android:orientation="horizontal" android:gravity="center_vertical">
                     <TextView android:id="@+id/labelZuo4" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="作" android:textSize="15sp" android:textStyle="bold" android:textColor="@color/text_primary"/>
                     <EditText android:id="@+id/editThreshZuo4" android:layout_width="0dp" android:layout_weight="1" android:layout_height="42dp" android:minWidth="0dp" android:padding="0dp" android:text="0.75" android:contentDescription="作字阈值" android:textColor="@color/text_primary" android:textSize="13sp" android:inputType="numberDecimal" android:maxLength="5" android:singleLine="true" android:gravity="center" android:background="@null"/>
+                </LinearLayout>
+                <LinearLayout android:id="@+id/paramZuo" android:layout_width="0dp" android:layout_height="42dp" android:layout_weight="1" android:orientation="horizontal" android:gravity="center_vertical">
+                    <TextView android:id="@+id/labelZuo" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="做" android:textSize="15sp" android:textStyle="bold" android:textColor="@color/text_primary"/>
+                    <EditText android:id="@+id/editThreshZuo" android:layout_width="0dp" android:layout_weight="1" android:layout_height="42dp" android:minWidth="0dp" android:padding="0dp" android:text="0.75" android:contentDescription="做字阈值" android:textColor="@color/text_primary" android:textSize="13sp" android:inputType="numberDecimal" android:maxLength="5" android:singleLine="true" android:gravity="center" android:background="@null"/>
                 </LinearLayout>
                 </LinearLayout>
             </LinearLayout>
