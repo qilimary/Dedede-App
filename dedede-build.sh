@@ -1789,6 +1789,7 @@ public class MainActivity extends AppCompatActivity {
             addProtectedTargetPattern("[“‘\"「『]的地得做(作)(?=[”’\"」』])");
             addProtectedTargetPattern("(地)(?=图)");
             addProtectedTargetPattern("地热(的)(?=利用)");
+            // 连续“得得得”的保护不在这里写规则，改由内置白名单常驻保护（见 loadTypoMap 中的内置白名单数组）。
             addRule("(给|为)([^，,。；;！？!?：:\n]{1,24}?)(让坐)(?!下|在|到|着|落|稳)", new String[][]{{null, "让座"}});
             addRule("(?:(?<=[一二两三四五六七八九十百千万这那几某0-9买换有要带借拿送租弄])|^)(个)()(电脑)(?!游戏|软件|程序|系统|应用|品牌|型号|配件|主板|屏幕|键盘|鼠标|电源|机箱|硬盘|显卡|内存|接口|文件|病毒|桌面|窗口|图标|账户|账号|网站|网络|课程|专业|公司|商店|维修|问题|高手|天才|爱好者|玩家|用户|工程师|技术|知识|操作|设置|配置|版本|模拟器|控制器)(?=$|[^\u4E00-\u9FFF]|[的了着过是在被把让给对和与同或就也都还很太真会能可要想走跑跳吃喝咬叫哭笑我看你他她它们这那买卖送坏出装用])", new String[][]{{"台", null}});
             addRule("(大概|大约)([^，。；！？、\\n]{1,15}?)(左右|上下)", new String[][]{{null, ""}, {"", null}});
@@ -2675,7 +2676,8 @@ public class MainActivity extends AppCompatActivity {
             String line;
             while ((line = reader.readLine()) != null) parseTypoLine(line, words, exclusions);
         } catch (Exception error) { throw new IllegalStateException("错词库加载失败",error); }
-        for (String word : new String[]{"舒的", "怎的", "能的", "您的"}) { words.put(word, word); exclusions.remove(word); }
+        // 内置白名单：命中即整词保护（错词库、语法、量词、模型都不再改动该词）。“得得得”为连续拟声/叠音保护。
+        for (String word : new String[]{"舒的", "怎的", "能的", "您的", "得得得"}) { words.put(word, word); exclusions.remove(word); }
         try {
             JSONObject custom = new JSONObject(context.getSharedPreferences("DededeConfig", MODE_PRIVATE).getString("custom_typos", "{}")); Iterator<String> keys = custom.keys();
             while (keys.hasNext()) { String source = keys.next(); if (source.isEmpty()) continue;
