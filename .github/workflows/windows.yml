@@ -44,7 +44,7 @@ jobs:
       uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
       with:
         path: windows/assets/models/HCAM_V2_5CHAR_INT8_PT.onnx
-        key: dedede-model-15f0af5c03857ac2b049ac9f02cfe1dde2fba11ea639e191ca6453cb9a6e75cc
+        key: dedede-model-0331956749c267c5f7022c9b842057067660babe090d1fe87005eb56c6dc480f
         enableCrossOsArchive: true
     - name: Build Windows and installer
       shell: pwsh

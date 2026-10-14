@@ -29,7 +29,7 @@ jobs:
     - uses: actions/cache@v4
       with:
         path: .model-cache-pte
-        key: hcam-v2-pte-0992ec1b-bed43878
+        key: hcam-v2-pte-15b43106-bed43878
     - name: Cache test signing key
       uses: actions/cache@v4
       with:
