@@ -62,10 +62,10 @@ jobs:
         $install=Join-Path $env:RUNNER_TEMP 'Dedede Installer Check'
         $log=Join-Path $env:GITHUB_WORKSPACE 'windows/dist/install-test.log'
         $setup=Start-Process 'windows/dist/Dedede-Windows-Setup.exe' -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/SP-','/TASKS=desktopicon',('/DIR="'+$install+'"'),('/LOG="'+$log+'"') -PassThru
-        if(-not $setup.WaitForExit(180000)){Stop-Process -Id $setup.Id -Force;throw 'Installer timeout.'}
+        if(-not($setup.WaitForExit(180000))){Stop-Process -Id $setup.Id -Force;throw 'Installer timeout.'}
         if($setup.ExitCode -notin @(0,3010)){throw "Installer exit code $($setup.ExitCode)"}
         $runtime=Start-Process "$install/Dedede-Launcher.exe" -ArgumentList '--check-runtime' -PassThru
-        if(-not $runtime.WaitForExit(60000)){Stop-Process -Id $runtime.Id -Force;throw 'Runtime check timeout.'}
+        if(-not($runtime.WaitForExit(60000))){Stop-Process -Id $runtime.Id -Force;throw 'Runtime check timeout.'}
         $runtime.WaitForExit()
         $runtimeFiles=@('vcruntime140.dll','vcruntime140_1.dll','msvcp140.dll','msvcp140_1.dll')|ForEach-Object {
           $file=Get-Item (Join-Path $env:SystemRoot "System32/$_") -ErrorAction SilentlyContinue
@@ -81,7 +81,7 @@ jobs:
         & "$env:GITHUB_WORKSPACE/windows/scripts/check_shortcuts.ps1" -InstallDirectory $install -Report "$env:GITHUB_WORKSPACE/windows/dist/shortcut-check.json"
         $report=Join-Path $env:GITHUB_WORKSPACE 'windows/dist/installed-smoke.json'
         $app=Start-Process "$install/Dedede-Launcher.exe" -ArgumentList '--safe-render','--smoke-test',('"'+$report+'"') -PassThru
-        if(-not $app.WaitForExit(180000)){Stop-Process -Id $app.Id -Force;throw 'Installed app timeout.'}
+        if(-not($app.WaitForExit(180000))){Stop-Process -Id $app.Id -Force;throw 'Installed app timeout.'}
         if($app.ExitCode -ne 0 -or -not(Test-Path $report) -or -not((Get-Content $report -Raw|ConvertFrom-Json).passed)){throw 'Installed model/OCR check failed.'}
     - name: Render actual Windows UI
       shell: pwsh
@@ -104,12 +104,20 @@ jobs:
     - name: Stage installer
       shell: bash
       run: |
-        mkdir -p delivery
-        cp windows/dist/Dedede-Windows-Setup.exe windows/dist/Dedede-Windows-Setup.zip delivery/
+        mkdir -p delivery-exe delivery-zip
+        cp windows/dist/Dedede-Windows-Setup.exe delivery-exe/
+        cp windows/dist/Dedede-Windows-Setup.zip delivery-zip/
     - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
       with:
-        name: Installer-${{ matrix.label }}
-        path: delivery/*
+        name: Installer-EXE-${{ matrix.label }}
+        path: delivery-exe/*
+        if-no-files-found: error
+        retention-days: 30
+        compression-level: 0
+    - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+      with:
+        name: Installer-ZIP-${{ matrix.label }}
+        path: delivery-zip/*
         if-no-files-found: error
         retention-days: 30
         compression-level: 0
@@ -136,7 +144,7 @@ jobs:
     steps:
     - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
       with:
-        pattern: Installer-Windows
+        pattern: Installer-*
         path: installers
         merge-multiple: true
     - name: Publish direct downloads
