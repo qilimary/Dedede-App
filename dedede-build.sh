@@ -2677,7 +2677,7 @@ public class MainActivity extends AppCompatActivity {
             while ((line = reader.readLine()) != null) parseTypoLine(line, words, exclusions);
         } catch (Exception error) { throw new IllegalStateException("错词库加载失败",error); }
         // 内置白名单：命中即整词保护（错词库、语法、量词、模型都不再改动该词）。“得得得”为连续拟声/叠音保护。
-        for (String word : new String[]{"舒的", "怎的", "能的", "您的", "得得得"}) { words.put(word, word); exclusions.remove(word); }
+        for (String word : new String[]{"舒的", "怎的", "能的", "您的", "得得得", "得吃", "得逞", "说的"}) { words.put(word, word); exclusions.remove(word); }
         try {
             JSONObject custom = new JSONObject(context.getSharedPreferences("DededeConfig", MODE_PRIVATE).getString("custom_typos", "{}")); Iterator<String> keys = custom.keys();
             while (keys.hasNext()) { String source = keys.next(); if (source.isEmpty()) continue;
