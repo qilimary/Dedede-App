@@ -2,6 +2,17 @@
 # HCAM V2 PTE independent build. Run in a checkout of qilimary/Dedede-App.
 # Optional --prepare-only generates the Android project without invoking Gradle.
 set -euo pipefail
+# ====================== Android 版本构建开关 ======================
+# 【只改下一行】normal = 仅普通版（原图标+蓝色）
+#               lan    = 仅兰特供版（lan.png+浅粉色）
+#               both   = 同时构建两版（默认；建议本次使用）
+# 以后新增或修改纠错功能，继续只维护本 dedede-build.sh。
+BUILD_MODE=both
+# ===============================================================
+case "$BUILD_MODE" in
+  normal|lan|both) ;;
+  *) echo "错误：BUILD_MODE 只能填 normal、lan 或 both" >&2; exit 2 ;;
+esac
 MODEL_ID='1mBXuaUNVLh_vHNMRkgcLL4JlMIb-K9Qw'
 MODEL_SHA='15b431068a31ff6c9483ca8df5e0d095c6dbdb0b53f80ea9dd98d9d7d9361b6a'
 TOKENIZER_ID='1CEryzzuhemAB0oAQpy-vshA2XP7nOqwQ'
@@ -2677,7 +2688,7 @@ public class MainActivity extends AppCompatActivity {
             while ((line = reader.readLine()) != null) parseTypoLine(line, words, exclusions);
         } catch (Exception error) { throw new IllegalStateException("错词库加载失败",error); }
         // 内置白名单：命中即整词保护（错词库、语法、量词、模型都不再改动该词）。“得得得”为连续拟声/叠音保护。
-        for (String word : new String[]{"舒的", "怎的", "能的", "您的", "得得得", "得吃", "得逞", "说的"}) { words.put(word, word); exclusions.remove(word); }
+        for (String word : new String[]{"舒的", "怎的", "能的", "您的", "得得得", "得吃", "得逞", "说的", "折射得"}) { words.put(word, word); exclusions.remove(word); }
         try {
             JSONObject custom = new JSONObject(context.getSharedPreferences("DededeConfig", MODE_PRIVATE).getString("custom_typos", "{}")); Iterator<String> keys = custom.keys();
             while (keys.hasNext()) { String source = keys.next(); if (source.isEmpty()) continue;
@@ -5847,9 +5858,115 @@ cp generated_security/key-part-a.cpp generated_security/key-part-b.cpp app/src/m
 cp sys_core_p.dat sys_vocab_p.dat sys_typo.dat app/src/main/assets/
 cp app_icon.png app/src/main/res/mipmap-xxxhdpi/ic_launcher.png
 python3 protect_rules.py
-if [[ "${1:-}" == "--prepare-only" ]]; then exit 0; fi
-if ! gradle assembleRelease --stacktrace --console=plain > build_output.log 2>&1; then
-  tail -n 300 build_output.log
-  exit 1
+
+# =================== Android 普通版 / 兰特供版 ====================
+# 两个版本复用上方生成的同一套 Java、XML、规则与模型。
+# 仅在构建前改动所需颜色和图标；以后添加功能无须复制第二份源码。
+apply_android_skin() {
+  local skin="$1"
+  python3 - "$skin" <<'DEDEDE_SKIN_PY'
+from pathlib import Path
+import re
+import shutil
+import sys
+
+skin = sys.argv[1]
+if skin not in ('normal', 'lan'):
+    raise SystemExit('无效皮肤版本：' + skin)
+res = Path('app/src/main/res')
+
+def replace_exact(relative, old, new):
+    path = res / relative
+    source = path.read_text(encoding='utf-8')
+    found = source.count(old)
+    if found != 1:
+        raise RuntimeError(f'{path}：目标内容应有 1 处，实际 {found} 处：{old}')
+    path.write_text(source.replace(old, new, 1), encoding='utf-8')
+
+def change_button(relative, button_id, original, replacement, add_text_color=False):
+    path = res / relative
+    source = path.read_text(encoding='utf-8')
+    pattern = re.compile(r'<Button\b[^>]*\bandroid:id="@\+id/' + re.escape(button_id) + r'"[^>]*>', re.S)
+    matches = list(pattern.finditer(source))
+    if len(matches) != 1:
+        raise RuntimeError(f'{path}：按钮 {button_id} 应有 1 处，实际 {len(matches)} 处')
+    match = matches[0]
+    tag = match.group()
+    if tag.count(original) != 1:
+        raise RuntimeError(f'{path}：按钮 {button_id} 的默认样式不符')
+    tag = tag.replace(original, replacement, 1)
+    if add_text_color:
+        if 'android:textColor=' in tag:
+            raise RuntimeError(f'{path}：按钮 {button_id} 已设置文字颜色，停止覆盖')
+        tag = tag[:-2] + ' android:textColor="#59364A"/>' if tag.endswith('/>') else tag[:-1] + ' android:textColor="#59364A">'
+    path.write_text(source[:match.start()] + tag + source[match.end():], encoding='utf-8')
+
+if skin == 'lan':
+    # 兰特供版的粉色仅影响指定四处控件，其余颜色保持原样。
+    replace_exact('drawable/bg_check_gradient.xml',
+                  '<solid android:color="#2196F3"/>', '<solid android:color="#F4A9C7"/>')
+    replace_exact('drawable/circle_btn_bg.xml',
+                  '<solid android:color="#03A9F4"/>', '<solid android:color="#F4A9C7"/>')
+    replace_exact('drawable/circle_bg.xml',
+                  '<solid android:color="#2196F3"/>', '<solid android:color="#F4A9C7"/>')
+    change_button('layout/activity_main.xml', 'btnCheck',
+                  'android:textColor="#ECF5FF"', 'android:textColor="#59364A"')
+    change_button('layout/layout_floating.xml', 'btnFloatCheck',
+                  'android:backgroundTint="#2196F3"', 'android:backgroundTint="#F4A9C7"',
+                  add_text_color=True)
+
+icon = Path('lan.png' if skin == 'lan' else 'app_icon.png')
+if not icon.is_file() or icon.stat().st_size < 32 or icon.read_bytes()[:8] != b'\x89PNG\r\n\x1a\n':
+    raise RuntimeError(f'找不到有效的 PNG 图标：{icon}（应放仓库根目录）')
+shutil.copyfile(icon, res / 'mipmap-xxxhdpi/ic_launcher.png')
+print(f'Android 皮肤已配置：{skin}，图标：{icon}')
+DEDEDE_SKIN_PY
+}
+
+case "$BUILD_MODE" in
+  normal) android_variants=(normal) ;;
+  lan)    android_variants=(lan) ;;
+  both)   android_variants=(normal lan) ;;
+esac
+
+# --prepare-only 保持原有含义：仅生成工程，不运行 Gradle。
+# both 模式的预备工程为普通版，实际构建时才分别生成两种 APK。
+if [[ "${1:-}" == "--prepare-only" ]]; then
+  apply_android_skin "${android_variants[0]}"
+  exit 0
 fi
-cp app/build/outputs/apk/release/app-release.apk Dedede-HCAM-V2-PTE.apk
+
+mkdir -p dist
+# 避免切换 BUILD_MODE 后混入上次构建留下的另一版本文件。
+rm -f dist/Dedede-Normal.apk dist/Dedede-Lan.apk dist/Dedede-Normal.zip dist/Dedede-Lan.zip
+for skin in "${android_variants[@]}"; do
+  echo "====== 开始构建 Android ${skin} 版 ======" 
+  apply_android_skin "$skin"
+  if ! gradle --no-daemon --rerun-tasks assembleRelease --stacktrace --console=plain > "build_${skin}.log" 2>&1; then
+    tail -n 300 "build_${skin}.log"
+    exit 1
+  fi
+  test -s app/build/outputs/apk/release/app-release.apk
+  if [[ "$skin" == normal ]]; then
+    cp app/build/outputs/apk/release/app-release.apk dist/Dedede-Normal.apk
+  else
+    cp app/build/outputs/apk/release/app-release.apk dist/Dedede-Lan.apk
+  fi
+done
+
+# 兼容旧工作流原有的 APK 路径。双版本时旧路径默认放普通版。
+if [[ -f dist/Dedede-Normal.apk ]]; then
+  cp dist/Dedede-Normal.apk Dedede-HCAM-V2-PTE.apk
+else
+  cp dist/Dedede-Lan.apk Dedede-HCAM-V2-PTE.apk
+fi
+
+# 额外提供 ZIP 备份；dist/*.apk 是可以直接安装的原始 APK。
+python3 - <<'DEDEDE_ZIP_PY'
+from pathlib import Path
+from zipfile import ZipFile, ZIP_STORED
+for apk in sorted(Path('dist').glob('Dedede-*.apk')):
+    with ZipFile(apk.with_suffix('.zip'), 'w', compression=ZIP_STORED) as z:
+        z.write(apk, arcname=apk.name)
+print('已完成 APK 和 ZIP：', ', '.join(p.name for p in sorted(Path('dist').iterdir())))
+DEDEDE_ZIP_PY
