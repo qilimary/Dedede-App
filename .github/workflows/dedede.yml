@@ -21,28 +21,29 @@ concurrency:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 90
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up Java 17
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
         with:
           distribution: temurin
           java-version: '17'
 
       - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v4
+        uses: gradle/actions/setup-gradle@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6.4.0
         with:
           gradle-version: '8.14.3'
 
       # 修复：旧 SDK tools 包已经下架
       - name: Set up Android SDK
-        uses: android-actions/setup-android@v4
+        uses: android-actions/setup-android@be39fa834029ff78f1a44aa3bb0819b8fc2bd8fd # v4.0.4
         with:
+          cmdline-tools-version: '14742923'
           packages: 'platform-tools'
 
       - name: Install Android SDK packages
@@ -50,12 +51,12 @@ jobs:
           sdkmanager --install "platforms;android-36" "build-tools;36.0.0" "ndk;27.0.12077973" "cmake;3.22.1"
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: '3.11'
 
       - name: Cache verified models
-        uses: actions/cache@v4
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .model-cache-pte
           key: dedede-hcam-pte-15b431068a31ff6c9483ca8df5e0d095c6dbdb0b53f80ea9dd98d9d7d9361b6a
@@ -75,6 +76,7 @@ jobs:
           bash dedede-build.sh
 
       - name: Verify selected APK and ZIP files
+        id: verify
         shell: bash
         run: |
           set -euo pipefail
@@ -103,16 +105,53 @@ jobs:
             grep -qx 'AndroidManifest.xml' <<< "$contents"
             grep -Eq '^classes([0-9]+)?\.dex$' <<< "$contents"
 
-            echo "Verified $apk and $zip"
+            expected=com.app.dededi.pte
+            if [[ "$version" == Lan ]]; then expected="$expected.lan"; fi
+            actual=$("$ANDROID_HOME/build-tools/36.0.0/aapt" dump badging "$apk" | sed -n "s/^package: name='\([^']*\)'.*/\1/p")
+            test "$actual" = "$expected"
+            echo "${version,,}=true" >> "$GITHUB_OUTPUT"
+            echo "Verified $apk and $zip ($actual)"
           done
 
-      - name: Upload APKs and ZIPs to Actions
-        uses: actions/upload-artifact@v4
+      - name: Upload Normal APK
+        if: steps.verify.outputs.normal == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: Dedede-Android-APKs
-          path: dist/*
+          name: Dedede-Normal-APK
+          path: dist/Dedede-Normal.apk
           if-no-files-found: error
           retention-days: 30
+          compression-level: 0
+
+      - name: Upload Normal ZIP
+        if: steps.verify.outputs.normal == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: Dedede-Normal-ZIP
+          path: dist/Dedede-Normal.zip
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+
+      - name: Upload Lan APK
+        if: steps.verify.outputs.lan == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: Dedede-Lan-APK
+          path: dist/Dedede-Lan.apk
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+
+      - name: Upload Lan ZIP
+        if: steps.verify.outputs.lan == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: Dedede-Lan-ZIP
+          path: dist/Dedede-Lan.zip
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
 
       - name: Publish directly downloadable APKs
         if: github.ref == 'refs/heads/main'
@@ -124,11 +163,21 @@ jobs:
           tag=android-variants-latest
 
           if ! gh release view "$tag" >/dev/null 2>&1; then
-            gh release create "$tag" --target "$GITHUB_SHA" --title 'Dedede Android' --notes '普通版与兰特供版；APK 可直接安装，ZIP 为备用包。'
+            gh release create "$tag" --target "$GITHUB_SHA" --title 'Dedede Android' --notes '普通版与兰特供版可独立安装，数据互不影响；APK 可直接安装，ZIP 为备用包。'
           fi
 
-          for asset in Dedede-Normal.apk Dedede-Lan.apk Dedede-Normal.zip Dedede-Lan.zip; do
-            gh release delete-asset "$tag" "$asset" --yes >/dev/null 2>&1 || true
-          done
-
+          # Replace selected assets first; keep the previous release if upload fails.
           gh release upload "$tag" dist/* --clobber
+          for asset in Dedede-Normal.apk Dedede-Lan.apk Dedede-Normal.zip Dedede-Lan.zip; do
+            if [[ ! -f "dist/$asset" ]]; then
+              gh release delete-asset "$tag" "$asset" --yes >/dev/null 2>&1 || true
+            fi
+          done
+          {
+            echo '### Android 下载'
+            echo '普通版与兰特供版可同时安装；点击 APK 链接直接下载，ZIP 为备用。'
+            for file in dist/*; do
+              name=$(basename "$file")
+              echo "- [$name](https://github.com/$GITHUB_REPOSITORY/releases/download/$tag/$name)"
+            done
+          } >> "$GITHUB_STEP_SUMMARY"

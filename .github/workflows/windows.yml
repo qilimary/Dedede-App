@@ -94,18 +94,7 @@ jobs:
           throw 'UI preview timed out. A hung app must fail the build; otherwise a broken installer would be published.'
         }
         if($app.ExitCode -ne 0){
-          # Print the underlying assertion/exception before the wrapper failure.
-          # Exit code 1 alone cannot distinguish an interaction failure from a startup crash.
-          $details=Join-Path $out 'preview-error.log'
-          if(Test-Path $details){
-            Write-Host 'Windows UI verification details:'
-            Get-Content $details -Raw | Write-Host
-          }else{
-            $startup=Join-Path $env:LOCALAPPDATA 'Dedede/startup.log'
-            if(Test-Path $startup){Get-Content $startup -Tail 100 | Write-Host}
-            else{Write-Host 'No application error log was produced.'}
-          }
-          throw "Windows UI verification failed with exit code $($app.ExitCode). See the details above and the Checks-and-previews artifact."
+          throw "UI preview crashed with exit code $($app.ExitCode). A crashing app must fail the build; see preview-error.log in the Checks-and-previews artifact."
         }
         foreach($file in @('01-workspace.png','07-dark.png','08-focus-mode.png','09-corrected-focus.png','ui-checks.json')){
           if(-not(Test-Path (Join-Path $out $file))){throw "UI verification output missing: $file"}
@@ -165,7 +154,7 @@ jobs:
       run: |
         set -euo pipefail
         cat > release-notes.md <<'NOTES'
-        Windows 10/11 x64 离线安装程序。EXE 可直接安装；ZIP 内为同一完整安装程序。当前用户安装，提供启动诊断与兼容启动。版本 1.2.7，完善改后文本编辑、实时复核与阅读设置，改进稳定性与资源使用；同步当前安卓规则。
+        Windows 10/11 x64 离线安装程序。EXE 可直接安装；ZIP 内为同一完整安装程序。当前用户安装，提供启动诊断与兼容启动。版本 1.2.6，完善改后文本编辑、实时复核与阅读设置，改进稳定性与资源使用；同步当前安卓规则。
         NOTES
         test -s installers/Dedede-Windows-Setup.exe
         test -s installers/Dedede-Windows-Setup.zip
