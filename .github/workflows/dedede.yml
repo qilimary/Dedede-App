@@ -39,8 +39,11 @@ jobs:
         with:
           gradle-version: '8.14.3'
 
+      # 修复：旧 SDK tools 包已经下架
       - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
+        uses: android-actions/setup-android@v4
+        with:
+          packages: 'platform-tools'
 
       - name: Install Android SDK packages
         run: |
@@ -58,67 +61,52 @@ jobs:
           key: dedede-hcam-pte-15b431068a31ff6c9483ca8df5e0d095c6dbdb0b53f80ea9dd98d9d7d9361b6a
 
       - name: Install build dependencies
-        run: |
-          python -m pip install gdown==5.2.0 pycryptodome==3.20.0
+        run: python -m pip install gdown==5.2.0 pycryptodome==3.20.0
 
-      # 构建模式由 dedede-build.sh 中的 BUILD_MODE 控制
+      # 版本选择仍由 SH 中的 BUILD_MODE 控制
       # normal = 普通版
       # lan    = 兰特供版
-      # both   = 双版本
-      - name: Build Android
+      # both   = 两个版本
+      - name: Build Android versions
         shell: bash
         run: |
           set -euo pipefail
           bash -n dedede-build.sh
           bash dedede-build.sh
 
-      - name: Verify APK and ZIP files
+      - name: Verify selected APK and ZIP files
         shell: bash
         run: |
           set -euo pipefail
-
-          mode=$(awk -F= '/^BUILD_MODE=/{print $2;exit}' dedede-build.sh)
-          mode="${mode%%#*}"
-          mode="${mode//[[:space:]]/}"
-
+          mode=$(sed -n 's/^BUILD_MODE=\([^[:space:]#]*\).*/\1/p' dedede-build.sh | head -n 1)
           case "$mode" in
-            normal) variants=(Normal) ;;
-            lan) variants=(Lan) ;;
-            both) variants=(Normal Lan) ;;
-            *)
-              echo "Invalid BUILD_MODE: $mode"
-              exit 1
-              ;;
+            normal) versions=(Normal) ;;
+            lan)    versions=(Lan) ;;
+            both)   versions=(Normal Lan) ;;
+            *) echo "Unknown BUILD_MODE: $mode" >&2; exit 1 ;;
           esac
 
           shopt -s nullglob
           apks=(dist/*.apk)
+          test "${#apks[@]}" -eq "${#versions[@]}"
 
-          if [[ ${#apks[@]} -ne ${#variants[@]} ]]; then
-            echo "APK count mismatch."
-            ls -lah dist/ || true
-            exit 1
-          fi
-
-          for variant in "${variants[@]}"; do
-            apk="dist/Dedede-${variant}.apk"
-            zip="dist/Dedede-${variant}.zip"
+          for version in "${versions[@]}"; do
+            apk="dist/Dedede-${version}.apk"
+            zip="dist/Dedede-${version}.zip"
 
             test -s "$apk"
             test -s "$zip"
-
             unzip -tqq "$apk"
             unzip -tqq "$zip"
 
-            entries=$(unzip -Z1 "$apk")
-            grep -qx 'AndroidManifest.xml' <<< "$entries"
-            grep -Eq '^classes([0-9]+)?\.dex$' <<< "$entries"
+            contents=$(unzip -Z1 "$apk")
+            grep -qx 'AndroidManifest.xml' <<< "$contents"
+            grep -Eq '^classes([0-9]+)?\.dex$' <<< "$contents"
 
-            echo "Verified: $apk"
+            echo "Verified $apk and $zip"
           done
 
-      # Actions 备用压缩包
-      - name: Upload Android artifacts
+      - name: Upload APKs and ZIPs to Actions
         uses: actions/upload-artifact@v4
         with:
           name: Dedede-Android-APKs
@@ -126,34 +114,21 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-      # Releases 发布独立 APK 和 ZIP
-      - name: Publish APK downloads
+      - name: Publish directly downloadable APKs
         if: github.ref == 'refs/heads/main'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-
-          tag="android-variants-latest"
+          tag=android-variants-latest
 
           if ! gh release view "$tag" >/dev/null 2>&1; then
-            gh release create "$tag" \
-              --target "$GITHUB_SHA" \
-              --title "Dedede Android" \
-              --notes "普通版与兰特供版。APK 可直接安装，ZIP 为备用压缩包。"
+            gh release create "$tag" --target "$GITHUB_SHA" --title 'Dedede Android' --notes '普通版与兰特供版；APK 可直接安装，ZIP 为备用包。'
           fi
 
-          for asset in \
-            Dedede-Normal.apk \
-            Dedede-Lan.apk \
-            Dedede-Normal.zip \
-            Dedede-Lan.zip
-          do
-            gh release delete-asset "$tag" "$asset" \
-              --yes >/dev/null 2>&1 || true
+          for asset in Dedede-Normal.apk Dedede-Lan.apk Dedede-Normal.zip Dedede-Lan.zip; do
+            gh release delete-asset "$tag" "$asset" --yes >/dev/null 2>&1 || true
           done
 
           gh release upload "$tag" dist/* --clobber
-
-          echo "Android APKs published successfully."
