@@ -881,7 +881,7 @@ public class FloatingService extends Service {
     private SharedPreferences sp;
     private boolean restoringFloatInput, floatSyncDirty;
     private long floatDraftRevision;
-    private final Runnable hideStatusRunnable = () -> { if (!destroyed && statusContainer != null) statusContainer.setVisibility(View.INVISIBLE); };
+    private final Runnable hideStatusRunnable = () -> { if (!destroyed && statusContainer != null) statusContainer.setVisibility(View.GONE); };
     private final Runnable errorStatusFlushRunnable = () -> {
         StringBuilder display = new StringBuilder();
         synchronized (errorStatusLock) {
@@ -911,7 +911,7 @@ public class FloatingService extends Service {
         if (!shared.text.equals(text)) {
             restoringFloatInput = true;
             try { editFloatInput.setText(shared.text); } finally { restoringFloatInput = false; }
-            currentHistoryFileId = null; lastCorrectedText = ""; MainActivity.hasNewFloatResult = false;
+            currentHistoryFileId = null; lastCorrectedText = ""; MainActivity.hasNewFloatResult = false; MainActivity.pendingFloatSourceText = null;
             if (!destroyed) showStatus("其他窗口已更新文本，已同步最新内容。", true);
         }
     }
@@ -921,7 +921,7 @@ public class FloatingService extends Service {
         if (shared.text.equals(editFloatInput.getText().toString())) return;
         restoringFloatInput = true;
         try { editFloatInput.setText(shared.text); } finally { restoringFloatInput = false; }
-        currentHistoryFileId = null; lastCorrectedText = ""; MainActivity.hasNewFloatResult = false;
+        currentHistoryFileId = null; lastCorrectedText = ""; MainActivity.hasNewFloatResult = false; MainActivity.pendingFloatSourceText = null;
     }
 
     @Override public int onStartCommand(Intent intent, int flags, int startId) {
@@ -994,7 +994,7 @@ public class FloatingService extends Service {
                 }
                 currentHistoryFileId = null;
                 lastCorrectedText = "";
-                MainActivity.hasNewFloatResult = false;
+                MainActivity.hasNewFloatResult = false; MainActivity.pendingFloatSourceText = null;
                 if (s.length() > 0 && !sp.getBoolean("is_fast_mode", false)) MainActivity.warmProEngineAsync(FloatingService.this);
                 AppExecutors.MAIN.removeCallbacks(syncTextRunnable);
                 AppExecutors.MAIN.postDelayed(syncTextRunnable, 400);
@@ -1155,7 +1155,7 @@ public class FloatingService extends Service {
         float tZuo=MainActivity.parseFloatSafe(sp.getString("pro_th4","0.75"),Float.NaN),tZuo4=MainActivity.parseFloatSafe(sp.getString("pro_th5","0.75"),Float.NaN);
         if (!fast) MainActivity.noteProCorrectionStart(this);
         lastCorrectedText = "";
-        MainActivity.hasNewFloatResult = false;
+        MainActivity.hasNewFloatResult = false; MainActivity.pendingFloatSourceText = null;
         final long generation = ++inferenceGeneration;
         isChecking = true; isInterruptRequested = false; btnFloatSwitch.setEnabled(false); lastErrorShownAt = 0;
         synchronized (errorStatusLock) { visibleErrorLines.clear(); errorStatusFlushScheduled = false; }
@@ -1178,7 +1178,7 @@ public class FloatingService extends Service {
                 });
                 if (result == null || isInterruptRequested || destroyed || generation != inferenceGeneration) { finishInterrupted(generation); return; }
                 lastCorrectedText = result.cleanText;
-                MainActivity.pendingFloatBlocks = result.blocks; MainActivity.pendingFloatTimeMs = result.elapsedMs; MainActivity.pendingFloatFileId = fileId; MainActivity.hasNewFloatResult = true;
+                MainActivity.pendingFloatBlocks = result.blocks; MainActivity.pendingFloatTimeMs = result.elapsedMs; MainActivity.pendingFloatFileId = fileId; MainActivity.pendingFloatSourceText = text; MainActivity.hasNewFloatResult = true;
                 HistoryStore.saveBlocks(this, fileId, result.blocks, result.elapsedMs);
                 AppExecutors.MAIN.post(() -> { if (MainActivity.instance != null && !MainActivity.instance.isFinishing()) MainActivity.instance.onFloatResultReady(); });
                 finishAfterLastErrorIsVisible(result, generation);
@@ -1692,11 +1692,12 @@ public class MainActivity extends AppCompatActivity {
     private static volatile TypoIndex typoIndex = TypoIndex.build(new HashMap<>(), new HashSet<>(), new HashMap<>());
     private static final Pattern TYPO_FIELDS = Pattern.compile("\\s+");
     public static TypoIndex currentTypoIndex() { return typoIndex; }
-    public static volatile boolean typoMapLoaded, isCleanDialogOpen, isEditorOpen, isWaitingForFloatResult, hasNewFloatResult;
+    public static volatile boolean typoMapLoaded, isCleanDialogOpen, isEditorOpen, hasNewFloatResult;
     private static volatile boolean processSessionInitialized;
     public static List<List<TextBlock>> allSentencesBlocks = new ArrayList<>(), pendingFloatBlocks = new ArrayList<>();
     public static long lastTimeMs, pendingFloatTimeMs;
     public static String pendingFloatFileId;
+    public static volatile String pendingFloatSourceText;
 
     public interface TextCleanCallback { void onCleaned(String text); }
     public interface TextExtractCallback { void onStart(); void onProgress(int progress, int max); void onExtracted(String text); }
@@ -3209,7 +3210,7 @@ public class MainActivity extends AppCompatActivity {
     private final Stack<InputEdit> inputUndoStack = new Stack<>(), inputRedoStack = new Stack<>();
     private final InputCounts inputCounts = new InputCounts();
     private final Handler inputSyncHandler = new Handler(Looper.getMainLooper());
-    private boolean mainSyncDirty, inputEditorSyncDirty;
+    private boolean mainSyncDirty, inputEditorSyncDirty, applyingExternalDraft;
     private long historyRestoreGeneration;
     private final Runnable inputEditorSync = () -> {
         if (!inputEditorSyncDirty || expandedInputEditText == null) return;
@@ -4116,7 +4117,10 @@ public class MainActivity extends AppCompatActivity {
                 cancelImport();
                 if (!isRestoringHistory) invalidateDisplayedResultForInputChange();
                 if (editable.length() > 0 && !currentIsFast) warmProEngineAsync(MainActivity.this);
-                tvWordCount.setText(visibleCount + " 字"); mainSyncDirty = true;
+                tvWordCount.setText(visibleCount + " 字");
+                // The external draft already lives in DraftSync; never republish an old copy later.
+                if (applyingExternalDraft) return;
+                mainSyncDirty = true;
                 inputSyncHandler.removeCallbacks(update); inputSyncHandler.postDelayed(update, 400);
             }
         });
@@ -4437,35 +4441,69 @@ public class MainActivity extends AppCompatActivity {
         super.onDestroy();
     }
 
+    // Text from the floating window is a new document, not a manual edit of the
+    // previous main-screen result. Never display the previous result alongside it.
+    private void acceptExternalDraft(String text) {
+        if (text == null || text.equals(inputText.getText().toString())) return;
+        historyRestoreGeneration++;
+        if (isCheckingMain) cancelMainCheck();
+        allSentencesBlocks.clear();
+        isManuallyEditedOut = false;
+        lastEditorSpannable = null;
+        currentClauseLinks.clear();
+        lastSavedHistoryFileId = null;
+        showJumpHintForCurrentResult = false;
+        pendingFreshJumpHintDecision = false;
+        setResultStaleWarning(false);
+        outputText.setText("");
+        btnCopy.setEnabled(false);
+        btnCheck.setText("开始纠错");
+        btnCheck.setEnabled(true);
+        btnSaveTxt.setEnabled(!text.isEmpty());
+        // Drop any deferred publish from before the external handoff.
+        inputSyncHandler.removeCallbacksAndMessages(null);
+        mainSyncDirty = false;
+        boolean wasRestoring = isRestoringHistory;
+        isRestoringHistory = true;
+        applyingExternalDraft = true;
+        try { inputText.setText(text); }
+        finally { applyingExternalDraft = false; isRestoringHistory = wasRestoring; }
+    }
     public void onFloatResultReady() {
-        if (!hasNewFloatResult || !isWaitingForFloatResult) return;
-        hasNewFloatResult = false; isWaitingForFloatResult = false; isManuallyEditedOut = false; if (pendingFloatFileId != null) lastSavedHistoryFileId = pendingFloatFileId;
+        // An asynchronously completed float result can arrive while the activity is
+        // visible. Accept it only for the exact current original text.
+        if (!hasNewFloatResult || isCheckingMain || isEditorOpen || isInputEditorOpen
+                || inputText == null || pendingFloatSourceText == null
+                || !pendingFloatSourceText.equals(inputText.getText().toString())
+                || !pendingFloatSourceText.equals(DraftSync.read(sp).text)) return;
+        hasNewFloatResult = false; pendingFloatSourceText = null; isManuallyEditedOut = false; if (pendingFloatFileId != null) lastSavedHistoryFileId = pendingFloatFileId;
         allSentencesBlocks = new ArrayList<>(pendingFloatBlocks); lastTimeMs = pendingFloatTimeMs; pendingFloatBlocks = new ArrayList<>(); pendingFloatFileId = null;
         String sync = sp.getString("sync_text", ""); if (!sync.equals(inputText.getText().toString())) { boolean old = isRestoringHistory; isRestoringHistory = true; inputText.setText(sync); isRestoringHistory = old; }
         markFreshCorrectionResult(); setResultStaleWarning(false); renderFinalBlocks(); btnCopy.setEnabled(true); btnCheck.setEnabled(true); btnCheck.setText("继续纠错"); btnSaveTxt.setEnabled(true); scrollView.post(() -> scrollView.fullScroll(View.FOCUS_UP));
     }
 
     @Override protected void onResume() {
-        super.onResume(); String sync = DraftSync.read(sp).text; if (!isInputEditorOpen && !sync.equals(inputText.getText().toString())) { invalidateDisplayedResultForInputChange(sync); boolean old = isRestoringHistory; isRestoringHistory = true; inputText.setText(sync); isRestoringHistory = old; }
+        super.onResume(); String sync = DraftSync.read(sp).text;
+        if (!isInputEditorOpen && !isEditorOpen) acceptExternalDraft(sync);
         boolean fast = sp.getBoolean("is_fast_mode", false); if (fast != currentIsFast || rgMode.getCheckedRadioButtonId() == -1) { currentIsFast = fast; rgMode.check(fast ? R.id.rbFast : R.id.rbPro); loadSettings(fast); }
-        if (hasNewFloatResult && isWaitingForFloatResult) onFloatResultReady();
+        if (hasNewFloatResult) onFloatResultReady();
     }
 
     @Override protected void onNewIntent(Intent intent) { super.onNewIntent(intent); setIntent(intent); handleIntent(intent); }
 
     private void handleIntent(Intent intent) {
         if (intent == null) return;
-        boolean fromFloatJump = intent.getBooleanExtra("FROM_FLOAT_JUMP", false);
         if (Intent.ACTION_SEND.equals(intent.getAction()) && intent.getType() != null) {
             if ("text/plain".equals(intent.getType())) {
-                String text = intent.getStringExtra(Intent.EXTRA_TEXT); if (text != null) checkAndPromptCleanup(this, text, cleaned -> { lastSavedHistoryFileId = null; inputText.setText(cleaned); DraftSync.publish(sp, cleaned); });
+                String text = intent.getStringExtra(Intent.EXTRA_TEXT); if (text != null) checkAndPromptCleanup(this, text, cleaned -> { acceptExternalDraft(cleaned); DraftSync.publish(sp, cleaned); });
             } else if (intent.getType().startsWith("image/")) {
                 android.net.Uri uri = intent.getParcelableExtra(Intent.EXTRA_STREAM); if (uri != null) importFiles(java.util.Collections.singletonList(uri));
             }
         } else if (intent.hasExtra("SYNC_TEXT")) {
-            String text = intent.getStringExtra("SYNC_TEXT"); if (text != null && !text.equals(inputText.getText().toString())) { invalidateDisplayedResultForInputChange(text); boolean old = isRestoringHistory; isRestoringHistory = true; inputText.setText(text); isRestoringHistory = old; DraftSync.publish(sp, text); }
+            String text = intent.getStringExtra("SYNC_TEXT");
+            if (text != null) { acceptExternalDraft(text); DraftSync.publish(sp, text); }
         }
-        if (fromFloatJump) { isWaitingForFloatResult = true; if (hasNewFloatResult) onFloatResultReady(); }
+        if (hasNewFloatResult) onFloatResultReady();
     }
 
     @Override protected void onActivityResult(int requestCode, int resultCode, Intent data) {
@@ -5585,7 +5623,7 @@ DEDEDE_SOURCE_EOF
 mkdir -p "app/src/main/res/layout"
 cat > "app/src/main/res/layout/layout_floating.xml" <<'DEDEDE_SOURCE_EOF'
 <?xml version="1.0" encoding="utf-8"?>
-<RelativeLayout xmlns:android="http://schemas.android.com/apk/res/android" android:id="@+id/floatRoot" android:layout_width="wrap_content" android:layout_height="wrap_content" android:padding="8dp">
+<RelativeLayout xmlns:android="http://schemas.android.com/apk/res/android" android:id="@+id/floatRoot" android:layout_width="wrap_content" android:layout_height="wrap_content" android:padding="0dp">
     <LinearLayout android:id="@+id/panelInput" android:layout_width="240dp" android:layout_height="wrap_content" android:orientation="vertical" android:background="@color/card_bg" android:padding="10dp" android:visibility="gone">
         <LinearLayout android:id="@+id/panelTopBar" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:gravity="center_vertical" android:layout_marginBottom="6dp">
             <TextView android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:text="悬浮台" android:textSize="13sp" android:textColor="@color/text_primary" android:textStyle="bold"/>
@@ -5606,7 +5644,7 @@ cat > "app/src/main/res/layout/layout_floating.xml" <<'DEDEDE_SOURCE_EOF'
         <ImageView android:layout_width="24dp" android:layout_height="24dp" android:layout_gravity="center" android:src="@drawable/ic_dedede_fg"/>
         <ProgressBar android:id="@+id/circleSpin" android:layout_width="match_parent" android:layout_height="match_parent" android:visibility="invisible" android:indeterminateTint="#FFFFFF"/>
     </FrameLayout>
-    <LinearLayout android:id="@+id/statusContainer" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_below="@id/btnCircle" android:background="#A0000000" android:orientation="vertical" android:visibility="invisible" android:minWidth="80dp" android:layout_marginTop="4dp">
+    <LinearLayout android:id="@+id/statusContainer" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_below="@id/btnCircle" android:background="#A0000000" android:orientation="vertical" android:visibility="gone" android:minWidth="80dp" android:layout_marginTop="4dp">
         <TextView android:id="@+id/tvStatus" android:layout_width="wrap_content" android:layout_height="wrap_content" android:maxWidth="300dp" android:maxLines="3" android:ellipsize="end" android:textColor="#FFFFFF" android:textSize="11sp" android:paddingStart="6dp" android:paddingEnd="6dp" android:paddingTop="3dp" android:paddingBottom="3dp"/>
         <ProgressBar android:id="@+id/floatProgressBar" style="?android:attr/progressBarStyleHorizontal" android:layout_width="match_parent" android:layout_height="2dp" android:progressTint="#2196F3" android:max="100" android:progress="0" android:visibility="gone"/>
     </LinearLayout>
