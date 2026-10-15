@@ -96,11 +96,11 @@ jobs:
         if($app.ExitCode -ne 0){
           throw "UI preview crashed with exit code $($app.ExitCode). A crashing app must fail the build; see preview-error.log in the Checks-and-previews artifact."
         }
-        if(-not(Test-Path "$out/07-dark.png")){
-          Write-Warning 'UI preview finished without producing 07-dark.png. Continuing because render assertions are diagnostic only.'
-        } else {
-          Write-Host 'UI preview completed successfully.'
+        foreach($file in @('01-workspace.png','07-dark.png','08-focus-mode.png','09-corrected-focus.png','ui-checks.json')){
+          if(-not(Test-Path (Join-Path $out $file))){throw "UI verification output missing: $file"}
         }
+        if((Get-Content "$out/ui-checks.json" -Raw|ConvertFrom-Json).passed -le 0){throw 'UI assertions did not complete.'}
+        Write-Host 'UI preview and interaction checks completed successfully.'
     - name: Stage installer
       shell: bash
       run: |
@@ -154,7 +154,7 @@ jobs:
       run: |
         set -euo pipefail
         cat > release-notes.md <<'NOTES'
-        Windows 10/11 x64 离线安装程序。EXE 可直接安装；ZIP 内为同一完整安装程序。当前用户安装，提供启动诊断与兼容启动。版本 1.2.3，同步当前安卓规则。
+        Windows 10/11 x64 离线安装程序。EXE 可直接安装；ZIP 内为同一完整安装程序。当前用户安装，提供启动诊断与兼容启动。版本 1.2.6，完善改后文本编辑、实时复核与阅读设置，改进稳定性与资源使用；同步当前安卓规则。
         NOTES
         test -s installers/Dedede-Windows-Setup.exe
         test -s installers/Dedede-Windows-Setup.zip
