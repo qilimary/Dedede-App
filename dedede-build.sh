@@ -50,8 +50,8 @@ android {
         applicationId "com.app.dededi.pte"
         minSdk 24
         targetSdk 36
-        versionCode 35
-        versionName "4.1.1-PTE"
+        versionCode 36
+        versionName "4.1.2-PTE"
         ndk { abiFilters "arm64-v8a" }
         externalNativeBuild { cmake { cppFlags ""; arguments "-DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON" } }
     }
@@ -301,7 +301,6 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Locale;
-import java.util.concurrent.ThreadLocalRandom;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -333,34 +332,38 @@ public final class CorrectionCore {
         final String group1;
         final String group2;
         final String group3;
+        final String[] gaps = new String[4];
 
-        GrammarHit(MainActivity.GramRule rule, int end, String group1, String group2, String group3) {
+        GrammarHit(MainActivity.GramRule rule, Matcher match, String sentence) {
             this.rule = rule;
-            this.end = end;
-            this.group1 = group1;
-            this.group2 = group2;
-            this.group3 = group3;
+            this.end = match.end();
+            this.group1 = match.group(1);
+            this.group2 = match.group(2);
+            this.group3 = match.group(3);
+            int at = match.start();
+            for (int i = 1; i <= 3; i++) {
+                int start = match.start(i);
+                gaps[i - 1] = start >= at ? sentence.substring(at, start) : "";
+                if (start >= at) at = match.end(i);
+            }
+            gaps[3] = sentence.substring(at, end);
         }
     }
 
-    private static GrammarHit[] collectGrammarHits(String sentence, boolean fastMode) {
+    private static GrammarHit[] collectGrammarHits(String sentence, boolean fastMode, boolean[] protectedPositions) {
         GrammarHit[] hits = new GrammarHit[sentence.length()];
         for (MainActivity.GramRule rule : MainActivity.gramRules) {
             if (fastMode && rule.professionalOnly) continue;
-            Matcher matcher = rule.pattern.matcher(sentence).useTransparentBounds(true);
+            Matcher matcher = rule.pattern.matcher(sentence).useTransparentBounds(true).useAnchoringBounds(false);
             int searchStart = 0;
             while (searchStart < sentence.length()) {
                 matcher.region(searchStart, sentence.length());
                 if (!matcher.find()) break;
                 int matchStart = matcher.start();
-                if (hits[matchStart] == null) {
-                    hits[matchStart] = new GrammarHit(
-                            rule,
-                            matcher.end(),
-                            matcher.group(1),
-                            matcher.group(2),
-                            matcher.group(3)
-                    );
+                boolean protectedHit = false;
+                for (int i = matchStart; i < matcher.end(); i++) if (protectedPositions[i]) { protectedHit = true; break; }
+                if (hits[matchStart] == null && !protectedHit) {
+                    hits[matchStart] = new GrammarHit(rule, matcher, sentence);
                 }
                 searchStart = matchStart + 1;
             }
@@ -387,14 +390,15 @@ public final class CorrectionCore {
             String sentence = sentences.get(sentenceIndex);
             if (sentence.isEmpty()) continue;
 
-            GrammarHit[] grammarHits = collectGrammarHits(sentence, fastMode);
+            boolean[] protectedPositions = dictionary.protectedPositions(sentence);
+            GrammarHit[] grammarHits = collectGrammarHits(sentence, fastMode, protectedPositions);
             List<MainActivity.TextBlock> intermediate = new ArrayList<>(Math.max(16, sentence.length() / 4));
             StringBuilder plain = new StringBuilder();
             int cursor = 0;
             while (cursor < sentence.length()) {
                 if (listener != null && listener.isCancelled()) return null;
 
-                MainActivity.TypoMatch typoMatch = dictionary.find(sentence, cursor);
+                MainActivity.TypoMatch typoMatch = dictionary.find(sentence, cursor, protectedPositions);
                 if (typoMatch != null) {
                     flushPlain(intermediate, plain);
                     boolean real = !typoMatch.source.equals(typoMatch.correction);
@@ -414,7 +418,7 @@ public final class CorrectionCore {
                     String group1 = grammarHit.group1;
                     String group2 = grammarHit.group2;
                     String group3 = grammarHit.group3;
-                    String[] selected = grammarHit.rule.options[ThreadLocalRandom.current().nextInt(grammarHit.rule.options.length)];
+                    String[] selected = grammarHit.rule.options[0];
                     String replacement1 = selected[0] != null ? selected[0] : group1;
                     String replacement3 = selected.length > 1 && selected[1] != null ? selected[1] : group3;
                     // Numeric normalization can consume the same quantifier first (e.g. 2个电脑).
@@ -425,17 +429,15 @@ public final class CorrectionCore {
                                 && "电脑".equals(computer.group3) && "台".equals(computer.rule.options[0][0])) replacement3 = "台";
                     }
                     String explanation = selected.length > 2 && selected[2] != null ? selected[2] : "";
-                    boolean group1Error = !group1.equals(replacement1) || (!explanation.isEmpty() && selected[0] != null);
-                    boolean group3Error = !group3.equals(replacement3) || (!explanation.isEmpty() && selected.length > 1 && selected[1] != null);
 
-                    // 相邻冲突标点作为一个整体纠错：随机保留其中一侧。
+                    // 相邻冲突标点作为一个整体纠错：保留句末/分句标点，与桌面端一致。
                     // 这样删除一侧后，修正后的全文会把红色可点击标记落在实际保留下来的标点上，
                     // 而不是因为“删除结果长度为 0”错误地借用前一个汉字作为视觉锚点。
                     boolean punctuationConflict = "标点多余".equals(explanation) && group2.isEmpty()
                             && ((group1.matches("[，、]+") && group3.matches("[。；：]"))
                             || (group1.matches("[。；：]") && group3.matches("[，、]+")));
                     if (punctuationConflict && (replacement1.isEmpty() ^ replacement3.isEmpty())) {
-                        String kept = replacement1.isEmpty() ? replacement3 : replacement1;
+                        String kept = group1.matches("[，、]+") ? group3 : group1;
                         // 若逗号/顿号一侧本身重复，只保留一个，避免“，，。”随机后留下“，，”。
                         if (kept.length() > 1 && kept.matches("[，、]+")) kept = kept.substring(0, 1);
                         String originalPunctuation = group1 + group3;
@@ -448,29 +450,20 @@ public final class CorrectionCore {
                         continue;
                     }
 
-                    if (group1Error) {
-                        MainActivity.TextBlock block = new MainActivity.TextBlock(group1, replacement1, true, 1.0f, 6);
-                        block.exp = explanation;
-                        intermediate.add(block);
-                        errorCount++;
-                        if (listener != null) listener.onError("发现错误：" + group1 + " → " + (replacement1.isEmpty() ? "(删除)" : replacement1) + " | 共 " + errorCount + " 处", true);
-                    } else appendNormalText(intermediate, group1);
-
+                    // 非捕获部分也可能被规则删除；必须记录下来，确保逐项/全部还原不丢字。
+                    errorCount = appendGrammarChange(intermediate, grammarHit.gaps[0], "", explanation, errorCount, listener);
+                    errorCount = appendGrammarChange(intermediate, group1, replacement1, explanation, errorCount, listener);
+                    errorCount = appendGrammarChange(intermediate, grammarHit.gaps[1], "", explanation, errorCount, listener);
                     appendNormalText(intermediate, group2);
-
-                    if (group3Error) {
-                        MainActivity.TextBlock block = new MainActivity.TextBlock(group3, replacement3, true, 1.0f, 6);
-                        block.exp = explanation;
-                        intermediate.add(block);
-                        errorCount++;
-                        if (listener != null) listener.onError("发现错误：" + group3 + " → " + (replacement3.isEmpty() ? "(删除)" : replacement3) + " | 共 " + errorCount + " 处", true);
-                    } else appendNormalText(intermediate, group3);
+                    errorCount = appendGrammarChange(intermediate, grammarHit.gaps[2], "", explanation, errorCount, listener);
+                    errorCount = appendGrammarChange(intermediate, group3, replacement3, explanation, errorCount, listener);
+                    errorCount = appendGrammarChange(intermediate, grammarHit.gaps[3], "", explanation, errorCount, listener);
 
                     cursor = grammarHit.end;
                     continue;
                 }
 
-                if (cursor > 0 && cursor + 1 < sentence.length()) {
+                if (!protectedPositions[cursor] && cursor > 0 && cursor + 1 < sentence.length()) {
                     char number = sentence.charAt(cursor - 1), quantifier = sentence.charAt(cursor), noun = sentence.charAt(cursor + 1);
                     if (MainActivity.KNOWN_QUANTS.indexOf(quantifier) >= 0 && MainActivity.NUMS.indexOf(number) >= 0) {
                         MainActivity.QuantifierRule rule = MainActivity.quantRules.get(noun);
@@ -552,6 +545,13 @@ public final class CorrectionCore {
     }
 
     private static int progressInterval(int length) { return length > 100000 ? 1200 : (length > 30000 ? 700 : 350); }
+    private static int appendGrammarChange(List<MainActivity.TextBlock> blocks, String original, String replacement, String explanation, int count, Listener listener) {
+        if (original.equals(replacement)) { appendNormalText(blocks, original); return count; }
+        MainActivity.TextBlock block = new MainActivity.TextBlock(original, replacement, true, 1.0f, 6);
+        block.exp = explanation; blocks.add(block); count++;
+        if (listener != null) listener.onError("发现错误：" + original + " → " + (replacement.isEmpty() ? "(删除)" : replacement) + " | 共 " + count + " 处", true);
+        return count;
+    }
     private static boolean isTarget(char c) { return FiveCharInference.target(c); }
     private static void flushPlain(List<MainActivity.TextBlock> blocks, StringBuilder plain) {
         if (plain.length() == 0) return;
@@ -589,7 +589,11 @@ public final class CorrectionCore {
         StringBuilder current = new StringBuilder();
         for (int i = 0; i < text.length(); i++) {
             char c = text.charAt(i); current.append(c);
-            if (c == '。' || c == '！' || c == '？' || c == '!' || c == '?' || c == '\n') { firstPass.add(current.toString()); current.setLength(0); }
+            if (c == '。' || c == '！' || c == '？' || c == '!' || c == '?' || c == '\n') {
+                // 相邻标点留在同一段，重复/冲突标点规则才能看到完整输入。
+                if (c != '\n') while (i + 1 < text.length() && "。！？!?，、；：”’\"」』".indexOf(text.charAt(i + 1)) >= 0) current.append(text.charAt(++i));
+                firstPass.add(current.toString()); current.setLength(0);
+            }
         }
         if (current.length() > 0) firstPass.add(current.toString());
         List<String> result = new ArrayList<>(firstPass.size());
@@ -1807,10 +1811,10 @@ public class MainActivity extends AppCompatActivity {
             // 连续“得得得”的保护不在这里写规则，改由内置白名单常驻保护（见 loadTypoMap 中的内置白名单数组）。
             addRule("(给|为)([^，,。；;！？!?：:\n]{1,24}?)(让坐)(?!下|在|到|着|落|稳)", new String[][]{{null, "让座"}});
             addRule("(?:(?<=[一二两三四五六七八九十百千万这那几某0-9买换有要带借拿送租弄])|^)(个)()(电脑)(?!游戏|软件|程序|系统|应用|品牌|型号|配件|主板|屏幕|键盘|鼠标|电源|机箱|硬盘|显卡|内存|接口|文件|病毒|桌面|窗口|图标|账户|账号|网站|网络|课程|专业|公司|商店|维修|问题|高手|天才|爱好者|玩家|用户|工程师|技术|知识|操作|设置|配置|版本|模拟器|控制器)(?=$|[^\u4E00-\u9FFF]|[的了着过是在被把让给对和与同或就也都还很太真会能可要想走跑跳吃喝咬叫哭笑我看你他她它们这那买卖送坏出装用])", new String[][]{{"台", null}});
-            addRule("(大概|大约)([^，。；！？、\\n]{1,15}?)(左右|上下)", new String[][]{{null, ""}, {"", null}});
+            addRule("(大概|大约)((?:有|是|持续了|持续|需要|花了|花费了|耗时|等了)?[ 　]*[0-9零〇一二两三四五六七八九十百千万亿]+(?:\\.[0-9]+)?[ 　]*(?:亿元|万元|亿|万|千|平方公里|平方米|立方米|公里|千米|厘米|毫米|千克|公斤|小时|分钟|个人|个月|岁|元|人|名|位|个|天|年|月|日|米|吨|斤|克|次|台|辆|本|件|层|楼|%|％)?(?:出头)?[ 　]*)(左右|上下)(?=$|[的，,。；;！？!?：:\\n])", new String[][]{{null, ""}});
             addRule("(?<!不)(超过|高于|高过|高达|多达)([ 　]*(?:[0-9]+(?:\\.[0-9]+)?|[零〇一二两三四五六七八九十百千万亿]+)[ 　]*(?:元|人|名|个|岁|天|年|米|公里|千克|公斤|吨|次|台|辆|本|%|％)?[ 　]*)(以上)(?=$|[的，,。；;！？!?：:\\n])", new String[][]{{null, ""}});
             addRule("(?<!不)(低于|少于|不足)([ 　]*(?:[0-9]+(?:\\.[0-9]+)?|[零〇一二两三四五六七八九十百千万亿]+)[ 　]*(?:元|人|名|个|岁|天|年|米|公里|千克|公斤|吨|次|台|辆|本|%|％)?[ 　]*)(以下)(?=$|[的，,。；;！？!?：:\\n])", new String[][]{{null, ""}});
-            addRule("(截至|截止到)([^，。；！？、\\n]{1,15}?)(为止)", new String[][]{{null, ""}, {"", null}});
+            addRule("(截至|截止到)([^，,。；;！？!?：:、\\n]{1,15}?)(为止)", new String[][]{{null, ""}, {"", null}});
             // 回归删除："涉及到"在实际文本中大量合法使用（10误改/0正确），不再删除"到"。
             addRule("(付诸|诉诸|见诸)( *)(于)", new String[][]{{null, ""}});
             addRule("(互相|相互)( *)(厮打|角逐|探讨|商榷)", new String[][]{{"", null}});
@@ -1820,19 +1824,19 @@ public class MainActivity extends AppCompatActivity {
             addRule("(靠的是)([^，,。；;！？!?：:\n]{1,24}?)(取得的|获得的|实现的|达成的)(?=[，,。；;！？!?：:\n]|$)", new String[][]{{null, "", "句式杂糅"}});
             addRule("(成分是|主要成分是)([^，,。；;！？!?：:\n]{1,24}?)(配制而成的)(?=[，,。；;！？!?：:\n]|$)", new String[][]{{null, "", "句式杂糅"}});
             addRule("(成分有|主要成分有)([^，,。；;！？!?：:\n]{1,24}?)(配制而成的)(?=[，,。；;！？!?：:\n]|$)", new String[][]{{null, "", "句式杂糅"}});
-            addRule("(大约|大概|约|近|将近|差不多|超|超过|超出|达|高达|达到)( *)([0-9一二两三四五六七八九十百千万亿]+ *左右|[0-9一二两三四五六七八九十百千万亿]+ *上下)", new String[][]{{"有", null}, {"", null}});
-            addRule("(几(?:十|百|千|万|亿)?|十几|几十|百余|千余|万余|亿余|数十|数百|数千|数万|数十万|数百万|数千万|数亿|上百|上千|上万|上亿|上百万|上千万|成百上千|成千上万|二三十|三四十|四五十|五六十|六七十|七八十|八九十)([ 　]*[^，。；！？、\\n的地得着了过在又后前上下左右]{0,4}?[ 　]*)(左右|上下)(?!划|移动|摇|摆|晃|浮|跳|走|看|张望|转|翻|起伏|震动|颠簸|滑|游|飞|跑|滚|上下班|班|文|铺|楼|车|床|台|手|脚|眼|打量|扫视|观察|攀爬|穿梭|升降|下沉|下降|上升|落|沉|坠)", new String[][]{{null, ""}});
+            // “达到145万左右”等可能是正常估计，不把谓语擅自改成“有”。
+            addRule("(几(?:十|百|千|万|亿)?|十几|几十|百余|千余|万余|亿余|数十|数百|数千|数万|数十万|数百万|数千万|数亿|上百|上千|上万|上亿|上百万|上千万|成百上千|成千上万|二三十|三四十|四五十|五六十|六七十|七八十|八九十)([ 　]*(?:亿元|万元|公里|千米|厘米|平方米|千克|公斤|小时|分钟|个人|元|人|名|位|个|岁|年|月|日|天|米|斤|克|吨|次|台|辆|本|件)?[ 　]*)(左右|上下)(?!划|移动|摇|摆|晃|浮|跳|走|看|张望|转|翻|起伏|震动|颠簸|滑|游|飞|跑|滚|上下班|班|文|铺|楼|车|床|台|手|脚|眼|打量|扫视|观察|攀爬|穿梭|升降|下沉|下降|上升|落|沉|坠)(?=$|[的，,。；;！？!?：:\\n])", new String[][]{{null, "", "重复啰嗦"}});
 
             // 只保留需要跨词/跨字泛化的语病规则；固定短词替换交给错词库。
             // “多/余/来/几”等已经表示约数，再叠加“左右/上下”属于重复限定。
             // 中间允许跨过“个、人、岁、名、位、公里”等短数量单位，因此“20多个人左右”也能覆盖。
-            addRule("([0-9一二两三四五六七八九十百千万亿]+(?:多|余|来)|[0-9]+几|[一二两三四五六七八九]十几)([ 　]*[^，。；！？、\\n的地得着了过在又后前上下左右]{0,8}?[ 　]*)(左右|上下)(?!划|移动|摇|摆|晃|浮|跳|走|看|张望|转|翻|起伏|震动|颠簸|滑|游|飞|跑|滚|上下班|班|文|铺|楼|车|床|台|手|脚|眼|打量|扫视|观察|攀爬|穿梭|升降|下沉|下降|上升|落|沉|坠)", new String[][]{{null, "", "重复啰嗦"}});
+            addRule("([0-9一二两三四五六七八九十百千万亿]+(?:多|余|来)|[0-9]+几|[一二两三四五六七八九]十几)([ 　]*(?:亿元|万元|公里|千米|厘米|平方米|千克|公斤|小时|分钟|个人|元|人|名|位|个|岁|年|月|日|天|米|斤|克|吨|次|台|辆|本|件)?[ 　]*)(左右|上下)(?!划|移动|摇|摆|晃|浮|跳|走|看|张望|转|翻|起伏|震动|颠簸|滑|游|飞|跑|滚|上下班|班|文|铺|楼|车|床|台|手|脚|眼|打量|扫视|观察|攀爬|穿梭|升降|下沉|下降|上升|落|沉|坠)(?=$|[的，,。；;！？!?：:\\n])", new String[][]{{null, "", "重复啰嗦"}});
             // “约/大约/大概/将近/接近 + 数字 + 多/余/来”：双重约数，只保留一种约数标记。
             addRule("(约|大约|大概|将近|接近)([ 　]*[0-9一二两三四五六七八九十百千万亿两零〇]+[ 　]*)(多|余|来)(?=[个人名位只条头匹辆部台口尾座把本次场局件张岁年月日天小时分钟秒米公里斤公斤千克克吨亩公顷元万元亿元%％度])", new String[][]{{"", null, "重复啰嗦"}});
             // “大概/大约/约（是/有）近/接近/将近 + 数字”：两个近似标记叠加，删除后一个。
             addRule("(大概|大约|约)([ 　]*(?:是|有)?[ 　]*)(近|接近|将近)(?=[ 　]*[0-9一二两三四五六七八九十百千万亿两零〇])", new String[][]{{null, "", "重复啰嗦"}});
             // “约/近/将近/差不多 + 明确数字 + 单位 + 左右/上下”：要求中间出现数字，降低“近”的词义歧义。
-            addRule("(约|将近|差不多|(?<!附)近)([ 　]*[0-9一二两三四五六七八九十百千万亿]+[ 　]*[^，。；！？、\\n]{0,8}?[ 　]*)(左右|上下)(?!划|移动|摇|摆|晃|浮|跳|走|看|张望|转|翻|起伏|震动|颠簸|滑|游|飞|跑|滚|上下班|班|文|铺|楼|车|床|台|手|脚|眼|打量|扫视|观察|攀爬|穿梭|升降|下沉|下降|上升|落|沉|坠)", new String[][]{{null, "", "重复啰嗦"}});
+            addRule("(约|将近|差不多|(?<!附)近)([ 　]*[0-9零〇一二两三四五六七八九十百千万亿]+(?:\\.[0-9]+)?[ 　]*(?:亿元|万元|亿|万|千|平方公里|平方米|立方米|公里|千米|厘米|毫米|千克|公斤|小时|分钟|个人|个月|岁|元|人|名|位|个|天|年|月|日|米|吨|斤|克|次|台|辆|本|件|层|楼|%|％)?(?:出头)?[ 　]*)(左右|上下)(?=$|[的，,。；;！？!?：:\\n])", new String[][]{{null, "", "重复啰嗦"}});
 
             // “不少于/不低于……以上”及“不超过/不高于……以内/以下”：上下限表达重复；要求中间明确出现数字。
             addRule("(不少于|不低于)([^，,。；;！？!?：:\n]{0,12}?[0-9一二两三四五六七八九十百千万亿两]+[^，,。；;！？!?：:\n]{0,8}?)(以上)(?=[，,。；;！？!?：:\n]|$)", new String[][]{{null, "", "重复啰嗦"}});
@@ -1843,7 +1847,7 @@ public class MainActivity extends AppCompatActivity {
             // “分为/分成……部分组成(构成)”：两套构成句式杂糅。
             addRule("(分为|分成)([^由，。；！？\\n]{1,30}?)(部分(?:所)?(?:组成|构成))(?=[，。；！？、\\n的]|$)", new String[][]{{null, "部分", "句式杂糅"}});
             // “包括/包含……组成(构成)”：要求中间明确出现“数量+结构单位”，并在分句末收束，避免把“蛋白质的组成”等名词结构误判。
-            addRule("(包括|包含)([^，。；！？\\n]{0,30}?(?:[0-9一二两三四五六七八九十百千万几两]+|若干|数个|多个|若干个)(?:个|项|类|种)?[^，。；！？\\n]{0,10}?(?:部分|模块|方面|环节|阶段|要素|因素|成分|元素|成员|项目|类别|类型|内容))([ 　]*(?:所)?(?:组成|构成))(?=[，,。；;！？!?：:\\n]|$)", new String[][]{{null, "", "句式杂糅"}});
+            addRule("(包括|包含)([^，,。；;！？!?：:\\n]{0,30}?(?:[0-9一二两三四五六七八九十百千万几两]+|若干|数个|多个|若干个)(?:个|项|类|种)?[^，,。；;！？!?：:\\n]{0,10}?(?:部分|模块|方面|环节|阶段|要素|因素|成分|元素|成员|项目|类别|类型|内容))([ 　]*(?:所)?(?:组成|构成))(?=[，,。；;！？!?：:\\n]|$)", new String[][]{{null, "", "句式杂糅"}});
             // “根据/依据/据 + 信息源 + 显示/表明……”：两套引述句式杂糅；只在信息源明确且谓语收束分句时处理。
             String evidenceSource = "调查|研究|统计|数据|资料|报告|监测|测算|实验|分析|结果|图表|报道|通报|公告|问卷|普查|专家|学者|机构|实际|情况|状况|现实|现状|形势|经验|常识";
             // “根据数据显示看 / 根据调查表明来看”：统一成“从……来看”。
@@ -1893,8 +1897,7 @@ public class MainActivity extends AppCompatActivity {
             addRule("(高达)([ 　]*(?:[0-9]+(?:\\.[0-9]+)?|[一二两三四五六七八九十百千万亿两数几]+)(?:多|余|来)?[ 　]*(?:元|万元|亿元|人|名|位|个|件|项|例|起|次|家|户|吨|千克|公斤|克|米|公里|平方米|平方公里|亩|公顷|年|月|天|小时|分钟|秒|%|％))([ 　]*(?:之巨|之多))(?=[，,。；;！？!?：:\n]|$)", new String[][]{{null, "", "重复啰嗦"}});
 
             addRule("(原因是)((?!由)[^，,。；;！？!?：:\n]{1,28}?)(所?造成的|所?导致的|所?引起的|造成|导致|引起)(?=[，,。；;！？!?：:\n]|$)", new String[][]{{null, "", "句式杂糅"}});
-            addRule("(由于)([^，。；！？、\\n]{1,15}?)(的结果)", new String[][]{{null, ""}, {"", null}});
-            addRule("(是因为)([^，。；！？、\\n]{1,15}?)(的原因)", new String[][]{{null, ""}, {"", null}});
+            addRule("(是因为)([^，,。；;！？!?：:、\\n]{1,15}?)(的原因)", new String[][]{{null, ""}, {"", null}});
             addRule("(围绕(?:[ 　]*以)?)([^，,。；;！？!?：:\\n]{1,24}?)(为中心)(?=[，,。；;！？!?：:\\n]|$)", new String[][]{{"以", null, "句式杂糅"}});
             addRule("(围绕(?:[ 　]*以)?)([^，,。；;！？!?：:\\n]{1,24}?)(为主题)(?=[，,。；;！？!?：:\\n]|$)", new String[][]{{"以", null, "句式杂糅"}});
             addRule("(围绕(?:[ 　]*以)?)([^，,。；;！？!?：:\\n]{1,24}?)(为核心|为目标)(?=[，,。；;！？!?：:\\n]|$)", new String[][]{{"以", null, "句式杂糅"}});
@@ -1921,19 +1924,19 @@ public class MainActivity extends AppCompatActivity {
             addRule("(目的是)( *)(为了)", new String[][]{{"是", null}, {null, ""}});
             addRule("((?:大多|主要|大都|基本|基本上)(?:是)?以)([^，。；！？、\n]{1,20}?)(为主)", new String[][]{{"以", null, "句式杂糅"}});
             addRule("(有)([^，,。；;！？!?：:\\n]{0,24}?(?:[0-9一二两三四五六七八九十百千万几两]+|若干|数个|多个|若干个)(?:个|项|类|种)?[^，,。；;！？!?：:\\n]{0,10}?(?:部分|模块|方面|环节|阶段|要素|因素|成分|元素|成员|项目|类别|类型|内容))([ 　]*(?:组成|构成))(?=[，,。；;！？!?：:\\n]|$)", new String[][]{{"由", null, "搭配不当"}});
-            addRule("(深受)([^，。；！？、\\n]{0,10}?)(所)(?=喜爱|欢迎|爱戴|好评|青睐|瞩目)", new String[][]{{null, ""}});
-            addRule("(最高|最低|最多|最少)([^，。；！？、\\n]{1,15}?)(以上|以下|左右|上下)", new String[][]{{null, ""}});
+            addRule("(深受)([^，,。；;！？!?：:、\\n]{0,10}?)(所)(?=喜爱|欢迎|爱戴|好评|青睐|瞩目)", new String[][]{{null, ""}});
+            addRule("(最高|最低|最多|最少)((?:有|是|为|达到)?[ 　]*[0-9零〇一二两三四五六七八九十百千万亿]+(?:\\.[0-9]+)?[ 　]*(?:亿元|万元|亿|万|千|平方公里|平方米|立方米|公里|千米|厘米|毫米|千克|公斤|小时|分钟|个人|岁|元|人|名|位|个|天|年|月|日|米|吨|斤|克|次|台|辆|本|件|层|楼|%|％)?[ 　]*)(以上|以下|左右|上下)(?=$|[的，,。；;！？!?：:\\n])", new String[][]{{null, ""}});
             addRule("(关键在于|关键是)([^。！？\\n]{1,20}?)(是十分重要的|是很重要的|起到重要作用|决定性的)", new String[][]{{"", null}, {null, ""}});
             // 2026-10 回归修复：排除逗号冒号，避免“……避免接触放射性物质,尽量不要做X线片”跨分句误删“不要”造成语义反转。
             addRule("(切忌)([^，,。；！？、：:\\n]{1,15}?)(不要|不可)", new String[][]{{"千万", null}, {null, ""}});
             addRule("(避免|防止|严防)([^，,。；！？、：:\\n]{1,15}?)(不要)(?!脸|命|紧)", new String[][]{{null, ""}});
-            addRule("(防止)([^，。；！？、\\n]{1,15}?)(不再)", new String[][]{{null, "再次"}});
-            addRule("(防止)([^，。；！？、\\n]{1,15}?)(不被)", new String[][]{{null, "被"}});
+            addRule("(防止)([ 　]*(?:事故|交通事故|火灾|悲剧|灾难|类似事故|类似事件|此类事件|同类事件)[ 　]*)(不再)(?=[ 　]*发生)", new String[][]{{null, "再次"}});
+
             addRule("(令人|让人|叫人)( *)(堪忧)", new String[][]{{"", null}, {null, "担忧"}});
             addRule("(首当其冲)(的? *)(问题|任务|事情|要务|条件)", new String[][]{{"首要", null}, {"最重要", null}});
-            addRule("(改善|改变|加强)([^，。；！？、\\n]{0,8}?)(水平|素养)", new String[][]{{"提高", null}});
-            addRule("(加快|加速)([^，。；！？、\\n]{0,8}?)(效率)", new String[][]{{"提高", null}});
-            addRule("(缓解|减缓)([^，。；！？、\\n]{0,8}?)(态度|立场)", new String[][]{{"缓和", null}});
+            addRule("(改善|改变|加强)([^，,。；;！？!?：:、\\n]{0,8}?)(水平|素养)", new String[][]{{"提高", null}});
+            addRule("(加快|加速)([^，,。；;！？!?：:、\\n]{0,8}?)(效率)", new String[][]{{"提高", null}});
+            addRule("(缓解|减缓)([^，,。；;！？!?：:、\\n]{0,8}?)(态度|立场)", new String[][]{{"缓和", null}});
             addRule("(悬殊)( *)(很大|极大|特别大|非常大)", new String[][]{{null, ""}, {"差距", null}});
             addRule("(?<![\u4E00-\u9FFFA-Za-z0-9])(通过)([^，,。；;！？!?：:\\n]{1,24}?)([，,][ 　]*使)(?!用|得|劲|坏|命|绊|眼|性|气|然)", new String[][]{{null, "，", "仅处理带逗号的典型“通过……，使……”主语残缺，改为“通过……，主语……”结构"}});
             addRule("(令人|让人|叫人)( *)(贻笑大方)", new String[][]{{"", null}});
@@ -1951,7 +1954,6 @@ public class MainActivity extends AppCompatActivity {
             addRule("(难言之隐)(的? *)(苦衷|事情|原因)", new String[][]{{null, ""}});
             addRule("(责无旁贷)(的? *)(责任|义务)", new String[][]{{null, ""}});
             addRule("(真知灼见)(的? *)(意见|看法|见解)", new String[][]{{null, ""}});
-            addRule("(推断)([^。；;！？!?：:\n]{0,12}?)(很有可能会|极有可能会|有可能会|大概率会|也许会|或许会|可能会|大概会|恐怕会|兴许会|应该会|很有可能|极有可能|有可能|大概率|也许|或许|可能|大概|恐怕|兴许|没准|说不定|应该(?=是|在|有|已经|正在|会|能|可以|已|将|到了|来了|去了|回来了|离开了|发生了|出现了|成为|属于|存在|结束|开始|完成|到达|返回|回到))", new String[][]{{"推测", null, "表达重复"}, {null, "", "表达重复/冲突"}});
             addRule("(至少|起码|最少)([^，。；！？、\n]{1,15}?)(以上)", new String[][]{{null, "", "重复啰嗦"}, {"", null, "重复啰嗦"}});
 
             // pycorrector 的经典示例包含“因该→应该、让坐→让座”，但本应用不做无条件替换：
@@ -1982,7 +1984,7 @@ public class MainActivity extends AppCompatActivity {
             addRule("(达到)([ 　]*(?:了|过)?[ 　]*(?:世界|全国|省级|市级|本届|年度|联赛|赛季)?[ 　]*)(冠军)(?=$|[了后，,。；;！？!?：:\\n])", new String[][]{{"获得", null, "搭配不当"}});
             addRule("((?:这|那|该|此|某|一|几|每|多|两|数)?(?:篇|份|部|本|则|段)?(?:系列)?(?:新闻报道|调查报告|研究报告|年度报告|分析报告|工作报告|数据报告|专题报道|专题报告|新闻稿|文学作品|影视作品|文艺作品|艺术作品|优秀作品|文学著作|影视剧|纪录片|电视剧|动画片|报告|文章|论文|作文|散文|小说|电影|影片|纪录|剧作|诗歌|作品|文献|资料|材料|数据|新闻|报道|专著|书籍|白皮书|调研|调查|访谈|研究|论述|图表|统计|纪录片))([ 　]*(?:(?:深刻(?:地)?|真实(?:地)?|如实(?:地)?|准确(?:地)?|客观(?:地)?|充分(?:地)?|全面(?:地)?|集中(?:地)?|清晰(?:地)?|鲜明(?:地)?|生动(?:地)?|直接|间接|深入(?:地)?|详细(?:地)?|较好(?:地)?|很好(?:地)?|直观(?:地)?|真实而深刻(?:地)?|不同程度地|在一定程度上|从不同角度|比较真实(?:地)?)[ 　]*){0,2})(反应)(?=[ 　]*(?:了|出了?|着)?[ 　]*(?:社会(?:生活|现状|现实|问题|矛盾|风貌|变化|需求|情况)?|时代(?:风貌|特征|背景|变化)?|现实(?:生活|情况|问题)?|生活(?:现状|困境|状态)?|民生|民情|民意|人性|人心|人们的|群众的|人民的|历史(?:事实|真相|变迁|情况)?|事实|真相|现象|问题|矛盾|弊端|状况|情况|形势|趋势|特点|特征|需求|心声|诉求|观点|态度|情绪|影响|成效|成果|变化|困难|困境|面貌|风貌|差异|实际))", new String[][]{{null, "反映"}});
             addRule("((?:当前|如今|现在|当下|目前|国内|全球|国际|世界|我国|本国|各国|欧洲|亚洲|本地|地方|区域|整体)?(?:经济|就业|国际|政治|安全|市场|国际政治|地区安全|国际安全|经济发展|经济增长|社会|社会经济|外交|外交安全|军事|金融|行业|企业经营|劳动就业|财政|治安|发展|外部经济|粮食安全|网络安全))([ 　]*)(形式)(?=[ 　]*(?:十分|非常|特别|较为|日益|相当|愈发|极其|越来越|比较|依然|仍然|持续|更加|格外|异常|严峻得令人担忧)?(?:严峻|不容乐观|紧张|复杂多变|扑朔迷离))", new String[][]{{null, "形势"}});
-            addRule("(截止)([ 　]*)(昨日|昨天|前日|昨晚|昨夜|上周末|上个月底|去年底|上月底|去年年末|本月初|上周五|上周日|本月一日)(?=[ 　]*[，,。；;！？!?：:\\n]|[ 　]*(?:已|已经|共有|累计|目前|共计))", new String[][]{{"截至", null}});
+            addRule("(截止)([ 　]*)(昨日|昨天|前日|昨晚|昨夜|上周末|上个月底|去年底|上月底|去年年末|本月初|上周五|上周日|本月一日|今日|今天|年底|月底)(?=[ 　]*[，,]?[ 　]*(?:已|已经|共有|累计|目前|共计|合计|总计|达到|实现|完成|登记|统计|确认|发现|录得))", new String[][]{{"截至", null}});
             addRule("(?<=[一二两三四五六七八九十百千万几这那多少0-9])(头)([ \\u3000]*(?:(?:白色|黑色|白|黑|高大)(?:的)?[ \\u3000]*))(马)(?=$|[是也已正会能将，,。；;！？!?：:\\n])", new String[][]{{"匹", null, "搭配不当"}});
             addRule("(?<=[一二两三四五六七八九十百千万几这那多少0-9])(条|支)([ \\u3000]*(?:(?:白色|黑色|灰色|大|小)(?:的)?[ \\u3000]*)?)(天鹅|大白鹅|小白鹅|白鹅|黑鹅|灰鹅|鹅)(?=$|[是也已正会能将，,。；;！？!?：:\\n])", new String[][]{{"只", null, "搭配不当"}});
             addRule("(?<=[一二两三四五六七八九十百千万几这那多少0-9])(枚)([ \\u3000]*(?:(?:漂亮|鲜艳|红色|白色)(?:的)?[ \\u3000]*)?)(玫瑰花|菊花|百合花)(?=$|[是也已正会能将，,。；;！？!?：:\\n])", new String[][]{{"朵", null, "搭配不当"}});
@@ -2011,7 +2013,7 @@ public class MainActivity extends AppCompatActivity {
             // Chinese conditional correction; context restrictions based on LanguageTool zh rules.
             // Only matched grammar spans are changed; fixed typo replacements stay in 错别字.txt.
             addRule("(?<![第零〇一二两三四五六七八九十百千万亿0-9A-Za-z])(二)()((?:个(?=孩子|人|苹果|问题|办法|包子))|(?:本(?=书|小说|教材|杂志|漫画|字典))|(?:部(?=电影|电视剧|小说|作品))|(?:辆(?=车|汽车|自行车|卡车|轿车))|(?:只(?=猫|狗|鸟|鸡|鸭|鹅|兔子))|(?:张(?=桌子|纸|照片|车票|门票))|(?:台(?=电脑|电视|机器|设备)))", new String[][]{{"两", null}});
-            addRule("(?<![第零〇一二两三四五六七八九十百千万亿0-9A-Za-z])(二)()(三)(?=个|只|本|位|人|辆|台|条|件|次|天|周|小时|分钟|岁|公里|千米|米|斤|公斤|元)", new String[][]{{"两", null}});
+            // “二三天”与“两三天”均可表达约数，不自动统一字面形式。
             addRule("(被)([ 　]*(?:大家|同学们|同事们|老师们|选民|代表们|股东|股东们|董事会|委员会|评委|网友们|学生们|人们)[ 　]*)(当选为)(?=[^，,。；;！？!?：:\\n]{1,16}(?:[，,。；;！？!?：:\\n]|$))", new String[][]{{null, "选为", "搭配不当"}});
             addRule("(由)([ 　]*(?:他|她|他们|她们|大家|我们|你们|负责人|领导|班长|队长|老师|经理|校长|主席|主任|委员|将军|首领|组长|代表|专家|成员|学生|学者)(?:等人)?[ 　]*)(为首)(?=的)", new String[][]{{"以", null, "句式杂糅"}});
             addRule("(?<=[一二两三四五六七八九十几这那])(片)([ \\u3000]*(?:(?:精彩|优秀|重要|著名|学术|长篇|短篇)(?:的)?[ \\u3000]*)?)(文章|论文|作文|散文|报告)(?=$|[的了呀呢吧。，,；;！？!?:：\\n])", new String[][]{{"篇", null, "搭配不当"}});
@@ -2144,35 +2146,39 @@ public class MainActivity extends AppCompatActivity {
             addProfessionalRule("((?:并没有|没有|远没有)[ 　]*想象)([ 　]*)([地得])(?=[ 　]*" + imaginedDegree + ")", new String[][]{{null, "的", "‘没有想象的那么/这么……’是名词化比较结构，应用‘的’"}});
 
             String locations = "家|家里|家中|家外|卧室|卧房|厨房|客厅|卫生间|洗手间|厕所|茅房|阳台|书房|餐厅|饭厅|浴室|走廊|走道|院子|庭院|地|车|超市|商场|商店|菜市场|农贸市场|便利店|小卖部|饭店|酒店|旅馆|宾馆|招待所|餐馆|食堂|咖啡厅|咖啡馆|酒吧|网吧|电影院|戏院|剧院|银行|邮局|理发店|药店|诊所|门|商铺|店|医院|学校|幼儿园|小学|中学|初中|高中|大学|教室|图书馆|操场|宿舍|办公楼|公司|办公室|工厂|厂里|车间|会议室|派出所|警察局|公安局|消防队|法院|政府|监狱|看守所|基地|营地|阵地|车站|火车站|高铁站|地铁站|公交站|客运站|飞机场|机场|码头|港口|停车场|加油站|收费站|高速上|马路上|街上|路上|十字路口|桥上|桥下|隧道里|铁轨上|公园|动物园|植物园|游乐场|游乐园|广场|体育馆|体育场|游泳池|健身房|博物馆|展览馆|美术馆|海|沙滩|海岸|山上|山下|山顶|树林|森林|湖边|河边|江边|水里|田里|农田|地里|村|乡|农村|城里|城市|市区|郊区|景区|野外|这里|那里|哪里|这儿|那儿|哪儿|上面|下面|里面|外面|上边|下边|里边|外边|左边|右边|前面|后面|旁边|附近|远处|高处|低处|深处|内部|外部|中心|中间|顶上|底下|背后|面前";
-            addRule("(再)( *)(" + locations + ")", new String[][]{{"在", null}});
-            addRule("(在)( *)(次|度)(?![0-9一二两三四五六七八九十])", new String[][]{{"再", null}});
+            addRule("((?:我|你|您|他|她|它|我们|你们|他们|她们|大家|自己|谁|还|正|已经|仍然))([ 　]*)(再)(?=[ 　]*(?:" + locations + ")(?:里|内|中|外)?(?:[，,。；;！？!?：:\n]|$|办公|工作|休息|睡觉|学习|等待|吃饭|住宿|开会))", new String[][]{{null, "在"}});
+            addRule("(在)( *)(次|度)(?=$|[，,。；;！？!?：:\\n]|出现|发生|出发|进入|返回|离开|重逢|见面|来到|出席|参加|强调|说明|提醒|提出|拒绝|尝试|确认|检查|上涨|下降|提高|降低|获得|失去|当选|获奖|夺冠|冲高|回落)", new String[][]{{"再", null}});
             addRule("(在)( *)(三)(?=考虑|叮嘱|强调|犹豫|确认|要求|请求|推辞|声明|警告|追问|申明)", new String[][]{{"再", null}});
-            addRule("(截止)( *)(目前|今日|今天|现在|年底|月底)", new String[][]{{"截至", null}});
-            addRule("(可是|但是)([^，。；！？\\n]{2,15}?， *)(可是|但是)", new String[][]{{null, ""}});
-            addRule("(而且)([^，。；！？\\n]{2,15}?， *)(而且)", new String[][]{{null, ""}});
-            addRule("(因此|所以)([^，。；！？\\n]{2,15}?， *)(因此|所以)", new String[][]{{null, ""}});
+            addRule("(截止)( *)(目前|现在)", new String[][]{{"截至", null}});
+
+
+
 
             // 2026-10 全量基准回归（20套/68,607句）：数字转汉字规则误改460处、仅1处正确，已删除。
             // "4名官员/5次下潜/7楼/8点"等阿拉伯数字用法在新闻与统计文体中完全规范，不再强制转换。
             String[] weekdays = {"", "一", "二", "三", "四", "五", "六", "日"};
-            for (int i = 1; i <= 7; i++) addRule("(星期|周|礼拜)( *)(" + i + ")(?![0-9])", new String[][]{{null, weekdays[i]}});
+            for (int i = 1; i <= 7; i++) addRule("(?<![0-9零〇一二两三四五六七八九十百千万亿第])(星期|周|礼拜)( *)(" + i + ")(?=$|[\\s，,。；;！？!?：:、”’）)]|上午|下午|晚上|早上|凌晨|中午|早晨|晚间|见面|开会|放假|休息|上班)", new String[][]{{null, weekdays[i]}});
             String[] lunarDays = {"", "初一", "初二", "初三", "初四", "初五", "初六", "初七", "初八", "初九", "初十", "十一", "十二", "十三", "十四", "十五", "十六", "十七", "十八", "十九", "二十", "二十一", "二十二", "二十三", "二十四", "二十五", "二十六", "二十七", "二十八", "二十九", "三十"};
-            for (int i = 1; i <= 30; i++) addRule("(正月|腊月|冬月)( *)(" + i + ")(?![0-9])", new String[][]{{null, lunarDays[i]}});
+            for (int i = 1; i <= 30; i++) addRule("(正月|腊月|冬月)( *)(" + i + ")(?=日|号|$|[\\s，,。；;！？!?：:、”’）)]|上午|下午|晚上|早上|凌晨|中午|早晨|晚间|见面|开会|放假|休息|上班)", new String[][]{{null, lunarDays[i]}});
             String[] simple = {"", "一", "二", "三", "四", "五", "六", "七", "八", "九", "十"};
-            for (int i = 1; i <= 10; i++) addRule("(初)( *)(" + i + ")(?![0-9])", new String[][]{{null, simple[i]}});
+            for (int i = 1; i <= 10; i++) addRule("(?<![起当最年月])(初)( *)(" + i + ")(?=日|号|$|[\\s，,。；;！？!?：:、”’）)]|上午|下午|晚上|早上|凌晨|中午|早晨|晚间|见面|开会|放假|休息|上班)", new String[][]{{null, simple[i]}});
             // 同上回归："8点/7楼/3班"单独数字转换全部为合法用法（0正确/约30误改），连同"达→有"两规则一并删除。
 
-            addRule("(?:(?<=数万|几万|上万)|(?<=数十万|数百万))(名)([^，。；！？、\\n]{0,8}?)(人群)", new String[][]{{"人的", ""}});
-            addRule("(减少|降低|缩短|下降|减小|缩小)([^，。；！？、\\n]{0,15}?[0-9十百千万亿两半])(倍)", new String[][]{{null, "倍", "下降/减小等不能用倍数表示"}});
+            addRule("(?:(?<=数万|几万|上万)|(?<=数十万|数百万))(名)([^，,。；;！？!?：:、\\n]{0,8}?)(人群)", new String[][]{{"人的", ""}});
+            addRule("(减少|降低|缩短|下降|减小|缩小)([^，,。；;！？!?：:、\\n]{0,15}?[0-9十百千万亿两半])(倍)", new String[][]{{null, "倍", "下降/减小等不能用倍数表示"}});
             addRule("(随便|随意)( *)(苟同)", new String[][]{{"", null}});
             addRule("(非常|十分|极其|特别|尤其)( *)(酷爱|惨重|硕大|嗜好|痛恨|严禁)", new String[][]{{"", null}});
             addRule("(发自内心的?|从内心里的?|打心眼里的?)( *)(由衷)", new String[][]{{"", null}});
             // 2026-10 回归修复：“人民币二亿元”等金融法律计数惯例不改。
-            addRule("(?<!一张|打出|胡了)(?<![李王张赵刘陈杨黄])(?<![0-9一二三四五六七八九十百千万亿第])(?<!人民币)(二)()(万|千|亿)(?!五|两|响|五千里长征)", new String[][]{{"两", null}});
-            addRule("(?<=[0-9一二三四五六七八九十两零〇]{1,4}月[0-9一二三四五六七八九十两零〇]{1,4}[日号]?)(前)()(去|往|来|报到|汇报|报名|登记|申请|找)", new String[][]{{"之前", null}});
+            // “二万元”等金融计数属于合法表达，保留原文。
+            // “再这里/再那里”后接活动动词时可确定为介词；不处理“再后面”等合法方位表达。
+            addRule("(再)()(这里|那里|这儿|那儿|此处|此地|这边|那边|车上)(?=浪费|继续|工作|学习|休息|等待|停留|逗留|碍|吃|喝|睡|办公)", new String[][]{{"在", null}});
+            // 只在明确的引语结构中修正“说到”，保留“说到这个话题”等表达。
+            addRule("(?<=[他她时]|笑着|接着|转发)(说到)([ 　]*)([:：])(?=[“”‘])", new String[][]{{"说道", null}});
+            // “10月1日前往”并不必然表示截止日期，不能自动插入“之前”。
             addRule("(几个)([^的，。；！？、\\n]{0,8}?)(校长|老师|领导|教授|医生|警察|党员|干部)", new String[][]{{"几位", null}});
-            addRule("(出于)([^，。；！？、\\n]{1,15}?)(的决定)", new String[][]{{"", "决定"}});
-            addRule("(具有)([^的，。！？；…\\n]{0,20}?(?:消食|化积|润肠|通便|清热|解毒|活血|化瘀|消肿|止痛|健脾|养胃|安神|补血|益气|滋阴|补肾|祛风|除湿|润肺|化痰|止咳|平喘|抗氧|抗菌|抑菌|消炎)[^的，。！？；…\\n]{0,40}?)(?<!功效|作用|效果|功能|能力|疗效|特性|价值|意义)()(?=[，。！？；…\\n]|$)", new String[][]{{null, "的功效", "成分残缺，补充宾语"}});
+            addRule("(出于)([^，,。；;！？!?：:、\\n]{1,15}?)(的决定)", new String[][]{{"", "决定"}});
+            addRule("(具有)([ 　]*(?:消食|化积|润肠|通便|清热|解毒|活血|化瘀|消肿|止痛|健脾|养胃|安神|补血|益气|滋阴|补肾|祛风|除湿|润肺|化痰|止咳|平喘|抗氧化|抗菌|抑菌|消炎)(?:[、和及与 　]*(?:消食|化积|润肠|通便|清热|解毒|活血|化瘀|消肿|止痛|健脾|养胃|安神|补血|益气|滋阴|补肾|祛风|除湿|润肺|化痰|止咳|平喘|抗氧化|抗菌|抑菌|消炎))*[ 　]*)()(?=[，,。；;！？!?：:\\n]|$)", new String[][]{{null, "的功效", "成分残缺，补充宾语"}});
 
             // 口语省略宾语：如“打自由的，……”的“的”指代某种玩法，不是状语“地”。
             // 只覆盖选玩法/选物品后的句末或停顿，避免保护“自由的探索”等需纠错的用法。
@@ -2250,7 +2256,7 @@ public class MainActivity extends AppCompatActivity {
             addProtectedTargetPattern("(地)(?=一声)");
             // "梦幻般地起伏"：般+地+动词为状语结构。
             addProtectedTargetPattern("(?:般)(地)(?=[ 　]*(?:起伏|交错|流动|涌动|浮现|蔓延|展开|延伸|旋转|飞舞|飘荡|摇摆|闪烁|跳动|变化))");
-            quantRules.put('牛', new QuantifierRule("头", "头")); quantRules.put('马', new QuantifierRule("匹", "匹")); quantRules.put('狗', new QuantifierRule("只", "只条")); quantRules.put('猫', new QuantifierRule("只", "只")); quantRules.put('猪', new QuantifierRule("头", "头口")); quantRules.put('羊', new QuantifierRule("只", "只")); quantRules.put('鸡', new QuantifierRule("只", "只")); quantRules.put('鸭', new QuantifierRule("只", "只")); quantRules.put('鹅', new QuantifierRule("只", "只")); quantRules.put('鸟', new QuantifierRule("只", "只")); quantRules.put('鱼', new QuantifierRule("条", "条尾")); quantRules.put('门', new QuantifierRule("扇", "扇")); quantRules.put('车', new QuantifierRule("辆", "辆部台"));
+            quantRules.put('牛', new QuantifierRule("头", "头")); quantRules.put('马', new QuantifierRule("匹", "匹")); quantRules.put('狗', new QuantifierRule("只", "只条")); quantRules.put('猫', new QuantifierRule("只", "只")); quantRules.put('猪', new QuantifierRule("头", "头口只")); quantRules.put('羊', new QuantifierRule("只", "只头")); quantRules.put('鸡', new QuantifierRule("只", "只")); quantRules.put('鸭', new QuantifierRule("只", "只")); quantRules.put('鹅', new QuantifierRule("只", "只")); quantRules.put('鸟', new QuantifierRule("只", "只")); quantRules.put('鱼', new QuantifierRule("条", "条尾")); quantRules.put('门', new QuantifierRule("扇", "扇部")); quantRules.put('车', new QuantifierRule("辆", "辆部台座个"));
         } catch (Throwable error) { rulesAttempted=false;gramRules.clear();quantRules.clear();protectedTargetPatterns.clear();throw new IllegalStateException("语法规则加载失败",error); }
     }
 
@@ -2279,10 +2285,14 @@ public class MainActivity extends AppCompatActivity {
         final boolean[] customs;
         final Map<String, String[]> exclusions;
         final int maxLength;
+        final String[] protectedWords;
         private TypoIndex(int[] roots, int[] first, int[] edges, int[] terminal, char[] labels,
                           String[] sources, String[] corrections, boolean[] customs, Map<String, String[]> exclusions, int maxLength) {
             this.roots = roots; this.first = first; this.edges = edges; this.terminal = terminal; this.labels = labels;
             this.sources = sources; this.corrections = corrections; this.customs = customs; this.exclusions = exclusions; this.maxLength = maxLength;
+            List<String> protectedList = new ArrayList<>();
+            for (int i = 0; i < sources.length; i++) if (customs[i]) protectedList.add(sources[i]);
+            protectedWords = protectedList.toArray(new String[0]);
         }
         static TypoIndex build(Map<String, String> words, Set<String> custom, Map<String, String[]> exceptions) {
             String[] sources = words.keySet().toArray(new String[0]); Arrays.sort(sources);
@@ -2324,19 +2334,28 @@ public class MainActivity extends AppCompatActivity {
             }
             return false;
         }
-        public TypoMatch find(String text, int index) {
-            if (index < 0 || index >= text.length()) return null;
-            return findLongest(text, index, index, 0);
+        boolean[] protectedPositions(String text) {
+            boolean[] positions = new boolean[text.length()];
+            for (String word : protectedWords) for (int at = text.indexOf(word); at >= 0; at = text.indexOf(word, at + 1))
+                Arrays.fill(positions, at, at + word.length(), true);
+            return positions;
         }
-        private TypoMatch findLongest(String text, int start, int cursor, int node) {
+        public TypoMatch find(String text, int index) { return find(text, index, null); }
+        TypoMatch find(String text, int index, boolean[] protectedPositions) {
+            if (index < 0 || index >= text.length()) return null;
+            return findLongest(text, index, index, 0, protectedPositions);
+        }
+        private TypoMatch findLongest(String text, int start, int cursor, int node, boolean[] protectedPositions) {
             if (cursor < text.length()) {
                 int next = child(node, text.charAt(cursor));
-                if (next != 0) { TypoMatch longer = findLongest(text, start, cursor + 1, next); if (longer != null) return longer; }
+                if (next != 0) { TypoMatch longer = findLongest(text, start, cursor + 1, next, protectedPositions); if (longer != null) return longer; }
             }
             int entry = terminal[node] - 1;
-            if (entry < 0 || isFalsePositiveTypo(text, start, sources[entry])) return null;
+            if (entry < 0 || (!customs[entry] && isFalsePositiveTypo(text, start, sources[entry]))) return null;
+            if (!customs[entry] && !sources[entry].equals(corrections[entry]) && protectedPositions != null)
+                for (int i = start; i < start + sources[entry].length(); i++) if (protectedPositions[i]) return null;
             if (excluded(text, start, entry)) return new TypoMatch(sources[entry], sources[entry], customs[entry]);
-            if (!sources[entry].equals(corrections[entry]) && conflicts(text, start, sources[entry], corrections[entry])) return null;
+            if (!customs[entry] && !sources[entry].equals(corrections[entry]) && conflicts(text, start, sources[entry], corrections[entry])) return null;
             return new TypoMatch(sources[entry], corrections[entry], customs[entry]);
         }
         boolean conflicts(String sentence, int index, String source, String correction) {
@@ -2691,7 +2710,7 @@ public class MainActivity extends AppCompatActivity {
             String line;
             while ((line = reader.readLine()) != null) parseTypoLine(line, words, exclusions);
         } catch (Exception error) { throw new IllegalStateException("错词库加载失败",error); }
-        // 内置白名单：命中即整词保护（错词库、语法、量词、模型都不再改动该词）。“得得得”为连续拟声/叠音保护。
+        // 内置白名单：匹配整词后保护其中的五字，不截断前面开始的更长错词；用户白名单另有跨词保护。
         for (String word : new String[]{"舒的", "怎的", "能的", "您的", "得得得", "得吃", "得逞", "说的", "折射得"}) { words.put(word, word); exclusions.remove(word); }
         try {
             JSONObject custom = new JSONObject(context.getSharedPreferences("DededeConfig", MODE_PRIVATE).getString("custom_typos", "{}")); Iterator<String> keys = custom.keys();
