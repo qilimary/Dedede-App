@@ -50,8 +50,8 @@ android {
         applicationId "com.app.dededi.pte"
         minSdk 24
         targetSdk 36
-        versionCode 34
-        versionName "4.1-PTE"
+        versionCode 35
+        versionName "4.1.1-PTE"
         ndk { abiFilters "arm64-v8a" }
         externalNativeBuild { cmake { cppFlags ""; arguments "-DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON" } }
     }
@@ -744,21 +744,25 @@ public class FilePickerActivity extends Activity {
         if (uris.isEmpty()) { finish(); return; }
         Toast.makeText(this, "正在处理导入文件，请稍候...", Toast.LENGTH_SHORT).show();
         AppExecutors.IO.execute(() -> {
-            StringBuilder combined = new StringBuilder();
+            StringBuilder combined = new StringBuilder(); String failure = "";
             for (int i = 0; i < uris.size(); i++) {
-                String text = MainActivity.extractTextFromUriSync(this, uris.get(i), null);
-                if (text != null) combined.append(text);
-                if (i < uris.size() - 1) combined.append("\n\n---------------------------------\n\n");
+                if (isDestroyed() || isFinishing()) return;
+                String text = MainActivity.extractTextFromUriSync(getApplicationContext(), uris.get(i), null);
+                if (text != null && !text.trim().isEmpty()) {
+                    if (combined.length() > 0) combined.append("\n\n---------------------------------\n\n");
+                    combined.append(text);
+                } else failure = MainActivity.getLastExtractError();
             }
-            String finalText = combined.toString();
+            String finalText = combined.toString(), detail = failure;
             AppExecutors.MAIN.post(() -> {
+                if (isDestroyed() || isFinishing()) return;
                 if (!finalText.trim().isEmpty()) {
                     Intent serviceIntent = new Intent(this, FloatingService.class);
                     serviceIntent.putExtra("IMPORTED_TEXT", finalText);
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) ContextCompat.startForegroundService(this, serviceIntent);
                     else startService(serviceIntent);
                 } else {
-                    String detail = MainActivity.getLastExtractError(); Toast.makeText(this, detail.isEmpty() ? "无法读取文件内容或内容为空" : "导入失败：" + detail, Toast.LENGTH_LONG).show();
+                    Toast.makeText(this, detail.isEmpty() ? "无法读取文件内容或内容为空" : "导入失败：" + detail, Toast.LENGTH_LONG).show();
                 }
                 finish();
             });
@@ -2730,7 +2734,7 @@ public class MainActivity extends AppCompatActivity {
     private static final Pattern WORD_TEXT_PATTERN = Pattern.compile("<w:t[^>]*>(.*?)</w:t>", Pattern.DOTALL);
     private static final Pattern PPT_TEXT_PATTERN = Pattern.compile("<a:t[^>]*>(.*?)</a:t>", Pattern.DOTALL);
 
-    private static volatile String lastExtractError = "";
+    private static final ThreadLocal<String> lastExtractError = new ThreadLocal<String>() { @Override protected String initialValue() { return ""; } };
     private static final long OCR_TIMEOUT_SECONDS = 120L;
     private static final long MAX_OCR_PIXELS = 20_000_000L;
     private static final int OCR_SINGLE_PASS_MAX_HEIGHT = 4200;
@@ -2770,7 +2774,7 @@ public class MainActivity extends AppCompatActivity {
         return local;
     }
 
-    public static String getLastExtractError() { return lastExtractError == null ? "" : lastExtractError; }
+    public static String getLastExtractError() { return lastExtractError.get(); }
 
     private static String describeExtractError(Throwable throwable) {
         Throwable root = throwable;
@@ -2869,37 +2873,33 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    public static void extractTextFromUriAsync(Context context, android.net.Uri uri, TextExtractCallback callback) {
-        AppExecutors.MAIN.post(() -> { if (callback != null) callback.onStart(); });
-        AppExecutors.IO.execute(() -> {
-            String result = extractTextFromUriSync(context, uri, callback);
-            AppExecutors.MAIN.post(() -> { if (callback != null) callback.onExtracted(result); });
-        });
-    }
-
     public static String extractTextFromUriSync(Context context, android.net.Uri uri, TextExtractCallback callback) {
         Bitmap bitmap = null;
-        lastExtractError = "";
+        lastExtractError.set("");
         try {
             if (uri == null) throw new IOException("文件地址为空");
             String mime = context.getContentResolver().getType(uri), name = getFileName(context, uri); if (name != null) name = name.toLowerCase(Locale.ROOT);
             if ((name != null && (name.endsWith(".jpg") || name.endsWith(".jpeg") || name.endsWith(".png") || name.endsWith(".bmp") || name.endsWith(".webp") || name.endsWith(".heic") || name.endsWith(".heif"))) || (mime != null && mime.startsWith("image/"))) {
+                synchronized (OCR_LOCK) {
                 bitmap = decodeBitmapFromUri(context, uri);
                 String result = performOcrOnBitmap(bitmap, context, callback);
-                if (result == null || result.trim().isEmpty()) lastExtractError = "图片读取成功，但没有识别到文字";
+                if (result == null || result.trim().isEmpty()) lastExtractError.set("图片读取成功，但没有识别到文字");
                 return result == null ? "" : result;
+                }
             }
             if ((name != null && name.endsWith(".pdf")) || "application/pdf".equals(mime)) {
+                synchronized (OCR_LOCK) {
                 String result = performOcrOnPdf(uri, context, callback);
-                if (result == null || result.trim().isEmpty()) lastExtractError = "PDF读取成功，但没有识别到文字";
+                if (result == null || result.trim().isEmpty()) lastExtractError.set("PDF读取成功，但没有识别到文字");
                 return result == null ? "" : result;
+                }
             }
             String result = extractTextFromUri(context, uri);
-            if (result == null || result.trim().isEmpty()) lastExtractError = "文件内容为空或格式不受支持";
+            if (result == null || result.trim().isEmpty()) lastExtractError.set("文件内容为空或格式不受支持");
             return result == null ? "" : result;
         } catch (Throwable throwable) {
             if (throwable instanceof ThreadDeath) throw (ThreadDeath) throwable;
-            lastExtractError = describeExtractError(throwable);
+            lastExtractError.set(describeExtractError(throwable));
             android.util.Log.e("DededeOCR", "文件识别失败: " + uri, throwable);
             return "";
         } finally { if (bitmap != null && !bitmap.isRecycled()) bitmap.recycle(); }
@@ -3138,8 +3138,8 @@ public class MainActivity extends AppCompatActivity {
                 else if (event == org.xmlpull.v1.XmlPullParser.TEXT && inText) result.append(parser.getText());
                 else if (event == org.xmlpull.v1.XmlPullParser.END_TAG) { if ("t".equals(tag) || "w:t".equals(tag)) inText = false; else if ("p".equals(tag) || "w:p".equals(tag)) result.append('\n'); }
             }
-        } catch (Exception ignored) { Matcher matcher = WORD_TEXT_PATTERN.matcher(xml); while (matcher.find()) result.append(matcher.group(1)); }
-        return decodeXmlEntities(result.toString());
+        } catch (Exception ignored) { result.setLength(0); Matcher matcher = WORD_TEXT_PATTERN.matcher(xml); while (matcher.find()) result.append(matcher.group(1)); return decodeXmlEntities(result.toString()); }
+        return result.toString();
     }
 
     private static String extractPptx(Context context, android.net.Uri uri) throws Exception {
@@ -4094,6 +4094,7 @@ public class MainActivity extends AppCompatActivity {
                 btnSaveTxt.setEnabled(editable.length() > 0);
                 boolean changed = actualChange; actualChange = false;
                 if (!changed) return;
+                cancelImport();
                 if (!isRestoringHistory) invalidateDisplayedResultForInputChange();
                 if (editable.length() > 0 && !currentIsFast) warmProEngineAsync(MainActivity.this);
                 tvWordCount.setText(visibleCount + " 字"); mainSyncDirty = true;
@@ -4194,7 +4195,7 @@ public class MainActivity extends AppCompatActivity {
             ClipboardManager clipboard = (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
             if (clipboard != null && clipboard.hasPrimaryClip() && clipboard.getPrimaryClip().getItemCount() > 0) { CharSequence value = clipboard.getPrimaryClip().getItemAt(0).getText(); if (value != null) checkAndPromptCleanup(this, value.toString(), cleaned -> { lastSavedHistoryFileId = null; inputText.setText(cleaned); DraftSync.publish(sp, cleaned); }); }
         });
-        btnClear.setOnClickListener(v -> { cancelMainCheck(); lastSavedHistoryFileId = null; inputText.setText(""); allSentencesBlocks.clear(); outputText.setText(""); isManuallyEditedOut = false; setResultStaleWarning(false); btnCopy.setEnabled(false); btnSaveTxt.setEnabled(false); isCheckingMain = false; });
+        btnClear.setOnClickListener(v -> { cancelImport(); cancelMainCheck(); lastSavedHistoryFileId = null; inputText.setText(""); allSentencesBlocks.clear(); outputText.setText(""); isManuallyEditedOut = false; setResultStaleWarning(false); btnCopy.setEnabled(false); btnSaveTxt.setEnabled(false); isCheckingMain = false; });
         btnCheck.setOnClickListener(v -> {
             InputMethodManager manager = (InputMethodManager) getSystemService(INPUT_METHOD_SERVICE); if (manager != null) manager.hideSoftInputFromWindow(v.getWindowToken(), 0);
             if (isCheckingMain) { cancelMainCheck(); return; }
@@ -4411,7 +4412,7 @@ public class MainActivity extends AppCompatActivity {
 
     @Override protected void onDestroy() {
         inputSyncHandler.removeCallbacksAndMessages(null);
-        isCheckingMain = false; inferenceGeneration++;
+        isCheckingMain = false; inferenceGeneration++; importGeneration++; importing = false;
         if (instance == this) instance = null;
         isEditorOpen = false; isInputEditorOpen = false;
         super.onDestroy();
@@ -4440,11 +4441,7 @@ public class MainActivity extends AppCompatActivity {
             if ("text/plain".equals(intent.getType())) {
                 String text = intent.getStringExtra(Intent.EXTRA_TEXT); if (text != null) checkAndPromptCleanup(this, text, cleaned -> { lastSavedHistoryFileId = null; inputText.setText(cleaned); DraftSync.publish(sp, cleaned); });
             } else if (intent.getType().startsWith("image/")) {
-                android.net.Uri uri = intent.getParcelableExtra(Intent.EXTRA_STREAM); if (uri != null) { Toast.makeText(this, "正在处理导入图片，请稍候...", Toast.LENGTH_SHORT).show(); extractTextFromUriAsync(this, uri, new TextExtractCallback() {
-                    @Override public void onStart() { progressBar.setVisibility(View.VISIBLE); progressBar.setProgress(0); }
-                    @Override public void onProgress(int progress, int max) { progressBar.setMax(max); progressBar.setProgress(progress); }
-                    @Override public void onExtracted(String text) { progressBar.setVisibility(View.INVISIBLE); if (text != null && !text.trim().isEmpty()) checkAndPromptCleanup(MainActivity.this, text, cleaned -> { lastSavedHistoryFileId = null; inputText.setText(cleaned); DraftSync.publish(sp, cleaned); saveHistory(cleaned, null); }); else { String detail = getLastExtractError(); Toast.makeText(MainActivity.this, detail.isEmpty() ? "无法读取图片文字" : "识图失败：" + detail, Toast.LENGTH_LONG).show(); } }
-                }); }
+                android.net.Uri uri = intent.getParcelableExtra(Intent.EXTRA_STREAM); if (uri != null) importFiles(java.util.Collections.singletonList(uri));
             }
         } else if (intent.hasExtra("SYNC_TEXT")) {
             String text = intent.getStringExtra("SYNC_TEXT"); if (text != null && !text.equals(inputText.getText().toString())) { invalidateDisplayedResultForInputChange(text); boolean old = isRestoringHistory; isRestoringHistory = true; inputText.setText(text); isRestoringHistory = old; DraftSync.publish(sp, text); }
@@ -4462,26 +4459,46 @@ public class MainActivity extends AppCompatActivity {
         if (requestCode == 101 && resultCode == RESULT_OK && data != null && data.getData() != null) saveSelectedDocument(data.getData());
     }
 
+    private volatile long importGeneration;
+    private boolean importing;
+
+    private void cancelImport() {
+        importGeneration++;
+        if (importing) { importing = false; if (!isCheckingMain) progressBar.setVisibility(View.INVISIBLE); }
+    }
+
     private void importSelectedFiles(Intent data) {
         List<android.net.Uri> uris = new ArrayList<>();
         if (data.getClipData() != null) { int count = data.getClipData().getItemCount(), limit = Math.min(count, 20); for (int i = 0; i < limit; i++) uris.add(data.getClipData().getItemAt(i).getUri()); if (count > 20) Toast.makeText(this, "最多支持选择20个文件，已截断前20个", Toast.LENGTH_SHORT).show(); }
         else if (data.getData() != null) uris.add(data.getData());
+        importFiles(uris);
+    }
+
+    private void importFiles(List<android.net.Uri> uris) {
         if (uris.isEmpty()) return;
-        Toast.makeText(this, "正在处理导入文件，请稍候...", Toast.LENGTH_SHORT).show(); progressBar.setVisibility(View.VISIBLE); progressBar.setProgress(0);
+        if (isCheckingMain) cancelMainCheck();
+        final long generation = ++importGeneration; importing = true;
+        Context app = getApplicationContext();
+        Toast.makeText(this, "正在处理导入文件，请稍候...", Toast.LENGTH_SHORT).show(); progressBar.setMax(100); progressBar.setVisibility(View.VISIBLE); progressBar.setProgress(0);
         AppExecutors.IO.execute(() -> {
-            StringBuilder combined = new StringBuilder();
+            StringBuilder combined = new StringBuilder(); String failure = ""; int failed = 0;
             for (int i = 0; i < uris.size(); i++) {
-                int fileIndex = i; String text = extractTextFromUriSync(this, uris.get(i), new TextExtractCallback() {
+                if (generation != importGeneration) return;
+                int fileIndex = i; String text = extractTextFromUriSync(app, uris.get(i), new TextExtractCallback() {
                     @Override public void onStart() {}
-                    @Override public void onProgress(int progress, int max) { int overall = fileIndex * 100 / uris.size() + progress * 100 / Math.max(1, max) / uris.size(); AppExecutors.MAIN.post(() -> progressBar.setProgress(overall)); }
+                    @Override public void onProgress(int progress, int max) { int overall = fileIndex * 100 / uris.size() + progress * 100 / Math.max(1, max) / uris.size(); AppExecutors.MAIN.post(() -> { if (generation == importGeneration && !isDestroyed()) progressBar.setProgress(overall); }); }
                     @Override public void onExtracted(String text) {}
                 });
-                if (text != null) combined.append(text); if (i < uris.size() - 1) combined.append("\n\n---------------------------------\n\n");
+                if (text != null && !text.trim().isEmpty()) {
+                    if (combined.length() > 0) combined.append("\n\n---------------------------------\n\n");
+                    combined.append(text);
+                } else { failed++; failure = getLastExtractError(); }
             }
-            String finalText = combined.toString(); AppExecutors.MAIN.post(() -> {
-                progressBar.setVisibility(View.INVISIBLE);
-                if (!finalText.trim().isEmpty()) checkAndPromptCleanup(this, finalText, cleaned -> { lastSavedHistoryFileId = null; inputText.setText(cleaned); DraftSync.publish(sp, cleaned); saveHistory(cleaned, null); Toast.makeText(this, "导入成功", Toast.LENGTH_SHORT).show(); });
-                else { String detail = getLastExtractError(); Toast.makeText(this, detail.isEmpty() ? "无法读取文件内容或未识别到文字" : "导入失败：" + detail, Toast.LENGTH_LONG).show(); }
+            String finalText = combined.toString(), detail = failure; int failedCount = failed; AppExecutors.MAIN.post(() -> {
+                if (generation != importGeneration || isDestroyed() || isFinishing()) return;
+                importing = false; progressBar.setVisibility(View.INVISIBLE);
+                if (!finalText.trim().isEmpty()) checkAndPromptCleanup(this, finalText, cleaned -> { if (generation != importGeneration || isDestroyed() || isFinishing()) return; lastSavedHistoryFileId = null; inputText.setText(cleaned); DraftSync.publish(sp, cleaned); saveHistory(cleaned, null); Toast.makeText(this, failedCount == 0 ? "导入成功" : "已导入可读取的文件；另有" + failedCount + "个文件为空或读取失败", Toast.LENGTH_LONG).show(); });
+                else { Toast.makeText(this, detail.isEmpty() ? "无法读取文件内容或未识别到文字" : "导入失败：" + detail, Toast.LENGTH_LONG).show(); }
             });
         });
     }
@@ -4544,6 +4561,7 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void doInference(boolean fastMode, float temperature) {
+        cancelImport(); progressBar.setMax(100);
         String text = inputText.getText().toString(); if (text.isEmpty()) { isCheckingMain = false; btnCheck.setText("开始纠错"); return; }
         final long generation = ++inferenceGeneration;
         final String historyFileId = lastSavedHistoryFileId;
@@ -4921,7 +4939,6 @@ final class RuleStrings {
         if (attempted) return;
         synchronized (RuleStrings.class) {
             if (attempted) return;
-            attempted = true;
             try {
                 String raw = SecureAsset.readUtf8(DededeApp.context(), "sys_rules.dat");
                 if (raw.isEmpty()) return;
@@ -4931,6 +4948,9 @@ final class RuleStrings {
                 values = loaded;
             } catch (Throwable error) {
                 SecureAsset.recordError("规则资源加载失败", error);
+            } finally {
+                // Publish completion only after values/error are visible to other threads.
+                attempted = true;
             }
         }
     }
@@ -5886,7 +5906,7 @@ def replace_exact(relative, old, new):
 def change_button(relative, button_id, original, replacement, add_text_color=False):
     path = res / relative
     source = path.read_text(encoding='utf-8')
-    pattern = re.compile(r'<Button\b[^>]*\bandroid:id="@\+id/' + re.escape(button_id) + r'"[^>]*>', re.S)
+    pattern = re.compile(r'<(?:Button|androidx\.appcompat\.widget\.AppCompatButton)\b[^>]*\bandroid:id="@\+id/' + re.escape(button_id) + r'"[^>]*>', re.S)
     matches = list(pattern.finditer(source))
     if len(matches) != 1:
         raise RuntimeError(f'{path}：按钮 {button_id} 应有 1 处，实际 {len(matches)} 处')
@@ -5901,18 +5921,44 @@ def change_button(relative, button_id, original, replacement, add_text_color=Fal
         tag = tag[:-2] + ' android:textColor="#59364A"/>' if tag.endswith('/>') else tag[:-1] + ' android:textColor="#59364A">'
     path.write_text(source[:match.start()] + tag + source[match.end():], encoding='utf-8')
 
+# Keep the normal package ID for upgrades; Lan gets its own data and permissions.
+project = Path('app/build.gradle')
+source = project.read_text(encoding='utf-8')
+package = 'com.app.dededi.pte.lan' if skin == 'lan' else 'com.app.dededi.pte'
+source, count = re.subn(r'applicationId "com\.app\.dededi\.pte(?:\.lan)?"',
+                        'applicationId "' + package + '"', source)
+if count != 1:
+    raise RuntimeError('应用标识配置异常，停止构建')
+project.write_text(source, encoding='utf-8')
+manifest = Path('app/src/main/AndroidManifest.xml')
+source = manifest.read_text(encoding='utf-8')
+source, count = re.subn(r'android:label="纠错 Pro(?: · 兰)?"',
+                        'android:label="' + ('纠错 Pro · 兰' if skin == 'lan' else '纠错 Pro') + '"', source)
+if count != 1:
+    raise RuntimeError('应用名称配置异常，停止构建')
+manifest.write_text(source, encoding='utf-8')
+
 if skin == 'lan':
-    # 兰特供版的粉色仅影响指定四处控件，其余颜色保持原样。
+    # 兰特供版独立安装；共用代码，只调整指定图标和配色。
     replace_exact('drawable/bg_check_gradient.xml',
-                  '<solid android:color="#2196F3"/>', '<solid android:color="#F4A9C7"/>')
+                  '<solid android:color="#2196F3"/>', '<solid android:color="#F69BC2"/>')
     replace_exact('drawable/circle_btn_bg.xml',
-                  '<solid android:color="#03A9F4"/>', '<solid android:color="#F4A9C7"/>')
+                  '<solid android:color="#03A9F4"/>', '<solid android:color="#F69BC2"/>')
     replace_exact('drawable/circle_bg.xml',
-                  '<solid android:color="#2196F3"/>', '<solid android:color="#F4A9C7"/>')
+                  '<solid android:color="#2196F3"/>', '<solid android:color="#F69BC2"/>')
+    change_button('layout/activity_main.xml', 'btnFont',
+                  'android:textColor="#2196F3"', 'android:textColor="#DE4E8C"')
+    change_button('layout/activity_main.xml', 'btnFloat',
+                  'android:textColor="#FFFFFF"', 'android:textColor="#59364A"')
+    for button in ('btnImport', 'btnPaste', 'btnClear', 'btnCopy', 'btnSaveTxt'):
+        change_button('layout/activity_main.xml', button,
+                      'android:backgroundTint="@color/btn_light_green_bg"', 'android:backgroundTint="#D9EEFF"')
+        change_button('layout/activity_main.xml', button,
+                      'android:textColor="@color/btn_light_green_text"', 'android:textColor="#214F78"')
     change_button('layout/activity_main.xml', 'btnCheck',
                   'android:textColor="#ECF5FF"', 'android:textColor="#59364A"')
     change_button('layout/layout_floating.xml', 'btnFloatCheck',
-                  'android:backgroundTint="#2196F3"', 'android:backgroundTint="#F4A9C7"',
+                  'android:backgroundTint="#2196F3"', 'android:backgroundTint="#F69BC2"',
                   add_text_color=True)
 
 icon = Path('lan.png' if skin == 'lan' else 'app_icon.png')
@@ -5942,7 +5988,7 @@ rm -f dist/Dedede-Normal.apk dist/Dedede-Lan.apk dist/Dedede-Normal.zip dist/Ded
 for skin in "${android_variants[@]}"; do
   echo "====== 开始构建 Android ${skin} 版 ======" 
   apply_android_skin "$skin"
-  if ! gradle --no-daemon --rerun-tasks assembleRelease --stacktrace --console=plain > "build_${skin}.log" 2>&1; then
+  if ! gradle --no-daemon assembleRelease --stacktrace --console=plain > "build_${skin}.log" 2>&1; then
     tail -n 300 "build_${skin}.log"
     exit 1
   fi
