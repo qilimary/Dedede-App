@@ -1,65 +1,98 @@
 
-name: 纠错 Pro PTE APK
-'on':
-  workflow_dispatch: {}
+name: Android - Normal and Lan
+
+on:
+  workflow_dispatch:
   push:
-    branches:
-    - main
+    branches: [main]
     paths:
-    - .github/workflows/dedede.yml
-    - dedede-build.sh
-    - app_icon.png
-    - 错别字.txt
+      - dedede-build.sh
+      - app_icon.png
+      - lan.png
+      - '错别字.txt'
+      - .github/workflows/android-variants.yml
+
 permissions:
-  contents: read
+  contents: write
+
 concurrency:
-  group: dedede-v2-pte-${{ github.ref }}
+  group: android-variants-${{ github.ref }}
   cancel-in-progress: true
+
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    timeout-minutes: 90
     steps:
-    - uses: actions/checkout@v4
-    - uses: actions/setup-python@v5
-      with:
-        python-version: '3.10'
-    - name: Install build dependencies
-      run: python -m pip install gdown==5.2.0 pycryptodome==3.20.0
-    - uses: actions/cache@v4
-      with:
-        path: .model-cache-pte
-        key: hcam-v2-pte-15b43106-bed43878
-    - name: Cache test signing key
-      uses: actions/cache@v4
-      with:
-        path: ~/.android/debug.keystore
-        key: dedede-v2-test-signing-pte-v1
-    - uses: actions/setup-java@v4
-      with:
-        distribution: temurin
-        java-version: '17'
-    - uses: android-actions/setup-android@v4
-    - name: Install Android SDK
-      run: sdkmanager "platforms;android-36" "build-tools;35.0.0" "ndk;27.0.12077973" "cmake;3.22.1"
-    - uses: gradle/actions/setup-gradle@v4
-      with:
-        gradle-version: '8.13'
-        cache-disabled: true
-    - name: Build independent PTE app
-      shell: bash
-      run: bash dedede-build.sh
-    - name: Upload APK
-      uses: actions/upload-artifact@v4
-      with:
-        name: Dedede-HCAM-V2-PTE
-        path: Dedede-HCAM-V2-PTE.apk
-        if-no-files-found: error
-        retention-days: 30
-    - name: Upload failure log
-      if: failure()
-      uses: actions/upload-artifact@v4
-      with:
-        name: build-log-pte
-        path: build_output.log
-        if-no-files-found: ignore
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.14.3'
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK
+        run: |
+          sdkmanager --install "platforms;android-36" "build-tools;36.0.0" "ndk;27.0.12077973" "cmake;3.22.1"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - uses: actions/cache@v4
+        with:
+          path: .model-cache-pte
+          key: dedede-hcam-pte-15b431068a31ff6c9483ca8df5e0d095c6dbdb0b53f80ea9dd98d9d7d9361b6a
+
+      - name: Install build requirements
+        run: |
+          python -m pip install gdown==5.2.0 pycryptodome==3.20.0
+
+      - name: Build selected variants
+        shell: bash
+        run: |
+          bash -n dedede-build.sh
+          bash dedede-build.sh
+
+      - name: Verify APK and ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          apks=(dist/*.apk)
+          test "${#apks[@]}" -ge 1
+          for apk in "${apks[@]}"; do
+            unzip -tqq "$apk"
+            unzip -Z1 "$apk" | grep -qx 'AndroidManifest.xml'
+            unzip -Z1 "$apk" | grep -Eq '^classes([0-9]+)?\.dex$'
+            test -s "${apk%.apk}.zip"
+          done
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Dedede-Android-APKs
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Publish direct APK downloads
+        if: github.ref == 'refs/heads/main'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag=android-variants-latest
+          if ! gh release view "$tag" >/dev/null 2>&1; then
+            gh release create "$tag" --target "$GITHUB_SHA" --title 'Dedede Android' --notes '普通版/兰特供版 APK 可直接安装；ZIP 是备用包。'
+          fi
+          for asset in Dedede-Normal.apk Dedede-Lan.apk Dedede-Normal.zip Dedede-Lan.zip; do
+            gh release delete-asset "$tag" "$asset" --yes >/dev/null 2>&1 || true
+          done
+          gh release upload "$tag" dist/* --clobber
