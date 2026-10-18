@@ -295,6 +295,189 @@ public final class AppExecutors {
 DEDEDE_SOURCE_EOF
 
 mkdir -p "app/src/main/java/com/app/dedede"
+cat > "app/src/main/java/com/app/dedede/Proofreader.java" <<'DEDEDE_SOURCE_EOF'
+package com.app.dedede;
+
+import java.io.*;
+import java.util.*;
+import java.util.function.BooleanSupplier;
+import java.util.regex.Pattern;
+
+/** Exact matches are collected globally before approximate matching. No segmentation/model dependency. */
+public final class Proofreader {
+    // sync_android.py exports these policy strings to Windows. Maintain the word lists here only.
+    public static final String POLICY_VERSION = "1";
+    public static final String LEFT = "我|你|他|她|它|您|我们|你们|他们|她们|大家|真是|真|太|很|十分|非常|格外|特别|确实|实在|简直|可谓|堪称|令人|让人|使人|感到|觉得|显得|变得|表现得|不禁|仍然|依然|已经|总是|一直|竟然|居然|于是|因此|所以|可是|但是|却|也|都|又";
+    public static final String RIGHT = "的|地|得|了|着|过|般|似的|一样|一般|啊|呀|吧|呢|吗|嘛|想|要|去|来|起来|下去";
+    public static final String DUP_LEFT = "今天|昨天|明天|刚才|现在|后来|于是|因此|所以|其实|不过|可是|但是|而且|然后|最近|当时|这次|这时|随后|目前|本来|原来|因为|如果|假如|既然|虽然|只要";
+    public static final String DUP_RIGHT = "今天|昨天|明天|刚才|现在|已经|正在|刚刚|刚|曾经|从来|一直|总是|终于|马上|即将|明明|确实|真的|真|都|也|又|还|就|才|只|正|先|再|不|没|别|很|太|更|最|是|有|要|会|能|想|去|来|说|看|听|吃|喝|做|走|跑|买|把|被|在|对|向|给|让|喜欢|觉得|认为|知道|希望|准备|打算|决定|需要|应该|必须|可以|愿意|敢|将|已|不曾|未曾";
+    public static final String PRONOUNS = "我你他她它您咱";
+    public static final String REPEATED_WORDS = "我们|你们|他们|她们|它们|咱们|您们|已经|正在|因为|所以|但是|而且|如果|虽然|于是|以及|还是|就是|是否|可以|能够|需要|必须|应该";
+    public static final String FUNCTION = "不无未非莫勿别难免没休的地得了着过在是也又还很和与而就都才要会能可给让被把将一二三四五六七八九十百千万亿零两";
+    public static final String CONFUSIONS = "及急即|己已巳|按安案暗|部步布|陈成程城诚承|声生升|再在|的地得|做作|形型|炭碳|副付幅|俱具惧|竟竞境|至致置志|名明鸣|知之支枝|当挡档|辩辨辫|厉励历利|释式试事势|愤奋|概慨|既即|烂滥|原源|密秘|霄宵消销|章彰张|穿川|伦轮仑|绝决觉|循寻巡|接结截|敷肤|屈曲|伸申深|恃持侍|坐座|供贡|恭躬|喧宣|谐协|途徒图|拔拨|惶皇煌|糊胡|祥详|抱报|胜盛|戛嘎|鸿洪宏|竭揭|暇瑕遐|衷中终|蹈滔涛|辙撤|拙绌|诲悔晦|诫戒|催摧|脉默|契锲|砾烁铄|尊遵|妄忘望|功工攻|弛驰|愈越|赅该|豪毫|缕屡|偶呕|楫辑揖|贻怡|崇祟|瞻赡|诌绉皱|惨残|廷庭|措错|筹愁|效笑|畴踌|粱梁|溯塑|躁燥噪";
+    private static final String[] LEFT_WORDS=LEFT.split("\\|"),RIGHT_WORDS=RIGHT.split("\\|"),
+        DUP_LEFT_WORDS=DUP_LEFT.split("\\|"),DUP_RIGHT_WORDS=DUP_RIGHT.split("\\|"),
+        REPEATS=REPEATED_WORDS.split("\\|"),CONFUSION_GROUPS=CONFUSIONS.split("\\|");
+    private static final Pattern CUE=Pattern.compile(".*(?:成语|四字词语|四字词|熟语)(?:[：: 　]|是|为|叫|叫作|写成|写作|应该是|应为|应写作){0,4}");
+    public static final class Edit {
+        public final int start,end;
+        public final String source,replacement,explanation;
+        Edit(int start,String source,String replacement,String explanation){this.start=start;this.end=start+source.length();this.source=source;this.replacement=replacement;this.explanation=explanation;}
+    }
+    private final Set<String> words=new HashSet<>();
+    private final Map<String,String> substitutions=new HashMap<>(),missing=new HashMap<>();
+    private final Set<Integer> fuzzyLengths=new HashSet<>();
+    private final int[] lengths;
+    public Proofreader(Reader input)throws IOException {
+        TreeSet<Integer> sizes=new TreeSet<>();
+        if(input!=null)try(BufferedReader reader=new BufferedReader(input)){
+            for(String raw;(raw=reader.readLine())!=null;){
+                String word=raw.replace("\ufeff","").trim();
+                if(word.length()<2||word.length()>64||!allHan(word)||!words.add(word))continue;
+                sizes.add(word.length());
+                if(word.length()<4||word.length()>8||word.codePointCount(0,word.length())!=word.length())continue;
+                fuzzyLengths.add(word.length());
+                for(int i=0;i<word.length();i++)unique(substitutions,word.substring(0,i)+"*"+word.substring(i+1),word);
+                for(int i=1;i+1<word.length();i++)unique(missing,word.substring(0,i)+word.substring(i+1),word);
+            }
+        }
+        lengths=new int[sizes.size()];int i=0;for(int size:sizes)lengths[i++]=size;
+    }
+    private static void unique(Map<String,String> index,String key,String word){String old=index.get(key);index.put(key,old==null||old.equals(word)?word:"");}
+    public int size(){return words.size();}
+    private static boolean han(char c){return c>='\u3400'&&c<='\u9fff'||c>='\uf900'&&c<='\ufaff';}
+    private static boolean hanCodePoint(int cp){return cp>=0x3400&&cp<=0x9fff||cp>=0xf900&&cp<=0xfaff||cp>=0x20000&&cp<=0x2fa1f||cp>=0x30000&&cp<=0x323af;}
+    private static boolean allHan(String s){for(int i=0;i<s.length();){int cp=s.codePointAt(i);if(!hanCodePoint(cp))return false;i+=Character.charCount(cp);}return true;}
+    public boolean[] exactPositions(String text){boolean[] mask=new boolean[text.length()];markExact(text,mask);return mask;}
+    public void markExact(String text,boolean[] mask){
+        for(int p=0;p<text.length();p++){
+            if(!hanCodePoint(text.codePointAt(p)))continue;
+            for(int size:lengths){if(p+size>text.length())break;if(words.contains(text.substring(p,p+size)))Arrays.fill(mask,p,p+size,true);}
+        }
+    }
+    /** Protect quotations, titles and inline code before sentence splitting. */
+    public static boolean[] literalPositions(String text){
+        boolean[] mask=new boolean[text.length()];ArrayList<Character> closes=new ArrayList<>();int begin=-1;
+        String opens="《〈“‘「『\"'`",ends="》〉”’」』\"'`";
+        for(int i=0;i<text.length();i++){
+            char c=text.charAt(i);
+            if(!closes.isEmpty()&&c==closes.get(closes.size()-1)){
+                closes.remove(closes.size()-1);if(closes.isEmpty()){Arrays.fill(mask,begin,i+1,true);begin=-1;}continue;
+            }
+            int key=opens.indexOf(c);
+            if(c=='\''&&i>0&&i+1<text.length()&&asciiLetter(text.charAt(i-1))&&asciiLetter(text.charAt(i+1)))key=-1;
+            if(key>=0){if(closes.isEmpty())begin=i;closes.add(ends.charAt(key));}
+            if(c=='\n'&&!closes.isEmpty()){Arrays.fill(mask,begin,i,true);closes.clear();begin=-1;}
+        }
+        if(begin>=0)Arrays.fill(mask,begin,text.length(),true);return mask;
+    }
+    private static boolean asciiLetter(char c){return c>='a'&&c<='z'||c>='A'&&c<='Z';}
+    private static boolean any(boolean[] mask,int start,int end){for(int i=start;i<end;i++)if(mask[i])return true;return false;}
+    private static boolean suffix(String text,int end,String[] choices){for(String s:choices)if(end>=s.length()&&text.regionMatches(end-s.length(),s,0,s.length()))return true;return false;}
+    private static boolean prefix(String text,int start,String[] choices){for(String s:choices)if(text.startsWith(s,start))return true;return false;}
+    private static boolean left(String text,int start,String[] choices){return start==0||!han(text.charAt(start-1))||suffix(text,start,choices);}
+    private static boolean right(String text,int end){return end==text.length()||!han(text.charAt(end))||prefix(text,end,RIGHT_WORDS);}
+    private static boolean cue(String text,int start){int begin=start;while(begin>0&&start-begin<18&&"。！？!?；;\n".indexOf(text.charAt(begin-1))<0)begin--;return CUE.matcher(text.substring(begin,start)).matches();}
+    private static boolean confusable(char a,char b){for(String group:CONFUSION_GROUPS)if(group.indexOf(a)>=0&&group.indexOf(b)>=0)return true;return false;}
+    private static int difference(String a,String b){for(int i=0;i<a.length();i++)if(a.charAt(i)!=b.charAt(i))return i;return -1;}
+    private static int removedAt(String longer,String shorter){int i=0;while(i<shorter.length()&&longer.charAt(i)==shorter.charAt(i))i++;return i;}
+    private void candidates(String text,int start,int size,boolean[] exact,Map<String,String> targets,boolean explicit){
+        int end=start+size;String source=text.substring(start,end);
+        if(!left(text,start,LEFT_WORDS)&&!explicit||!right(text,end))return;
+        boolean protectedSpan=any(exact,start,end);
+        if(!protectedSpan&&fuzzyLengths.contains(size)){
+            Set<String> near=new HashSet<>();boolean ambiguous=false;
+            for(int i=0;i<size;i++){String w=substitutions.get(source.substring(0,i)+"*"+source.substring(i+1));if(w!=null){if(w.isEmpty())ambiguous=true;else near.add(w);}}
+            // Count ambiguity before confidence filtering. Never choose by registration order.
+            if(!ambiguous&&near.size()==1){String word=near.iterator().next();int diff=difference(source,word);
+                if(diff>=0&&(explicit||FUNCTION.indexOf(source.charAt(diff))<0&&FUNCTION.indexOf(word.charAt(diff))<0&&confusable(source.charAt(diff),word.charAt(diff))))targets.put(word,"成语疑似错字（唯一候选）");
+            }
+            if(explicit){Set<String> swaps=new HashSet<>();
+                for(int i=0;i+1<size;i++){if(source.charAt(i)==source.charAt(i+1))continue;String swapped=source.substring(0,i)+source.charAt(i+1)+source.charAt(i)+source.substring(i+2);if(words.contains(swapped))swaps.add(swapped);}
+                if(swaps.size()==1)targets.put(swaps.iterator().next(),"成语相邻字顺序疑似颠倒（唯一候选）");
+            }
+        }
+        if(fuzzyLengths.contains(size-1)){Set<String> extra=new HashSet<>();
+            for(int i=0;i<size;i++){
+                String word=source.substring(0,i)+source.substring(i+1);if(!words.contains(word)||exact[start+i])continue;
+                boolean repeated=i>0&&source.charAt(i)==source.charAt(i-1)||i+1<size&&source.charAt(i)==source.charAt(i+1);
+                // Delete an outside duplicate while leaving the complete original idiom unchanged.
+                if(protectedSpan){if(!repeated||!(source.startsWith(word)||source.endsWith(word)))continue;}
+                else if(!repeated&&(i==0||i==size-1||FUNCTION.indexOf(source.charAt(i))>=0))continue;
+                extra.add(word);
+            }
+            if(extra.size()==1)targets.put(extra.iterator().next(),"成语疑似多字（唯一候选）");
+        }
+        if(!protectedSpan&&explicit&&fuzzyLengths.contains(size+1)){
+            String word=missing.get(source);if(word!=null&&!word.isEmpty()){int insertion=removedAt(word,source);if(FUNCTION.indexOf(word.charAt(insertion))<0)targets.put(word,"成语疑似漏字（明确成语语境、唯一候选）");}
+        }
+    }
+    public static boolean altersExact(boolean[] mask,int start,String source,String replacement){
+        int prefix=0,suffix=0;
+        while(prefix<source.length()&&prefix<replacement.length()&&source.charAt(prefix)==replacement.charAt(prefix))prefix++;
+        while(suffix<source.length()-prefix&&suffix<replacement.length()-prefix&&source.charAt(source.length()-1-suffix)==replacement.charAt(replacement.length()-1-suffix))suffix++;
+        int begin=start+prefix,end=start+source.length()-suffix;
+        return any(mask,begin,end)||begin==end&&prefix<replacement.length()-suffix&&begin>0&&begin<mask.length&&mask[begin-1]&&mask[begin];
+    }
+    public Edit[] collect(String text,boolean[] custom,boolean[] exact,boolean[] literals,boolean idioms,boolean repetition){return collect(text,custom,exact,literals,idioms,repetition,()->false);}
+    public Edit[] collect(String text,boolean[] custom,boolean[] exact,boolean[] literals,boolean idioms,boolean repetition,BooleanSupplier cancelled){
+        ArrayList<Edit> pending=new ArrayList<>();
+        for(int p=0;p<text.length();p++){
+            if((p&255)==0&&cancelled.getAsBoolean())return null;
+            if(!han(text.charAt(p)))continue;
+            boolean explicit=idioms&&cue(text,p);
+            if(idioms&&(explicit||left(text,p,LEFT_WORDS)))for(int size=3;size<=9&&p+size<=text.length();size++){
+                if(any(custom,p,p+size)||any(literals,p,p+size))continue;
+                String source=text.substring(p,p+size);if(!allHan(source)||words.contains(source))continue;
+                Map<String,String> targets=new HashMap<>();candidates(text,p,size,exact,targets,explicit);
+                if(targets.size()==1){String replacement=targets.keySet().iterator().next();pending.add(new Edit(p,source,replacement,targets.get(replacement)));}
+            }
+            if(!repetition)continue;
+            char c=text.charAt(p);int end=p+1;
+            if(PRONOUNS.indexOf(c)>=0&&(p==0||text.charAt(p-1)!=c))while(end<text.length()&&text.charAt(end)==c)end++;
+            if(PRONOUNS.indexOf(c)>=0&&end-p>=2&&(p==0||text.charAt(p-1)!=c)&&left(text,p,DUP_LEFT_WORDS)&&prefix(text,end,DUP_RIGHT_WORDS)&&!any(custom,p,end)&&!any(exact,p,end)&&!any(literals,p,end))pending.add(new Edit(p,text.substring(p,end),String.valueOf(c),"代词连续重复（句首或时间/关联语境）"));
+            for(String word:REPEATS){
+                if(c!=word.charAt(0))continue;int stop=p+word.length()*2;
+                if(stop>text.length()||!text.startsWith(word+word,p)||!left(text,p,DUP_LEFT_WORDS)||stop==text.length()||!han(text.charAt(stop)))continue;
+                while(text.startsWith(word,stop))stop+=word.length();
+                if(stop<text.length()&&han(text.charAt(stop))&&!any(custom,p,stop)&&!any(exact,p,stop)&&!any(literals,p,stop))pending.add(new Edit(p,text.substring(p,stop),word,"虚词连续重复（无停顿）"));
+            }
+        }
+        pending.sort((a,b)->a.start!=b.start?Integer.compare(a.start,b.start):Integer.compare(b.end,a.end));
+        boolean[] conflicts=new boolean[pending.size()];
+        for(int i=0;i<pending.size();i++){Edit a=pending.get(i);
+            for(int j=i+1;j<pending.size()&&pending.get(j).start<a.end;j++){Edit b=pending.get(j);int end=Math.max(a.end,b.end);
+                String one=a.replacement+text.substring(a.end,end),two=text.substring(a.start,b.start)+b.replacement+text.substring(b.end,end);
+                if(!one.equals(two)){conflicts[i]=true;conflicts[j]=true;}
+            }
+        }
+        Edit[] hits=new Edit[text.length()];int takenEnd=0;
+        for(int i=0;i<pending.size();i++){Edit edit=pending.get(i);if(!conflicts[i]&&edit.start>=takenEnd){hits[edit.start]=edit;takenEnd=edit.end;}}
+        return hits;
+    }
+}
+DEDEDE_SOURCE_EOF
+
+mkdir -p "app/src/main/java/com/app/dedede"
+cat > "app/src/main/java/com/app/dedede/ProofreaderAssets.java" <<'DEDEDE_SOURCE_EOF'
+package com.app.dedede;
+import java.io.IOException;
+import java.io.StringReader;
+final class ProofreaderAssets {
+    private static Proofreader instance;
+    private ProofreaderAssets() {}
+    static synchronized Proofreader get() throws IOException {
+        if (instance != null) return instance;
+        boolean present = false;
+        for (String name : DededeApp.context().getAssets().list("")) if ("sys_idioms.dat".equals(name)) present = true;
+        // Missing is optional. Authentication/corruption failures must still report their real error.
+        instance = new Proofreader(present ? new StringReader(SecureAsset.readUtf8(DededeApp.context(), "sys_idioms.dat")) : null);
+        return instance;
+    }
+}
+DEDEDE_SOURCE_EOF
+
+mkdir -p "app/src/main/java/com/app/dedede"
 cat > "app/src/main/java/com/app/dedede/CorrectionCore.java" <<'DEDEDE_SOURCE_EOF'
 package com.app.dedede;
 import java.util.ArrayList;
@@ -350,7 +533,7 @@ public final class CorrectionCore {
         }
     }
 
-    private static GrammarHit[] collectGrammarHits(String sentence, boolean fastMode, boolean[] protectedPositions) {
+    private static GrammarHit[] collectGrammarHits(String sentence, boolean fastMode, boolean[] protectedPositions, boolean[] exactPositions) {
         GrammarHit[] hits = new GrammarHit[sentence.length()];
         for (MainActivity.GramRule rule : MainActivity.gramRules) {
             if (fastMode && rule.professionalOnly) continue;
@@ -362,6 +545,10 @@ public final class CorrectionCore {
                 int matchStart = matcher.start();
                 boolean protectedHit = false;
                 for (int i = matchStart; i < matcher.end(); i++) if (protectedPositions[i]) { protectedHit = true; break; }
+                String[] option = rule.options[0];
+                String replacement = (option[0] != null ? option[0] : matcher.group(1)) + matcher.group(2)
+                        + (option.length > 1 && option[1] != null ? option[1] : matcher.group(3));
+                if (Proofreader.altersExact(exactPositions, matchStart, matcher.group(), replacement)) protectedHit = true;
                 if (hits[matchStart] == null && !protectedHit) {
                     hits[matchStart] = new GrammarHit(rule, matcher, sentence);
                 }
@@ -379,6 +566,14 @@ public final class CorrectionCore {
         MainActivity.ensureRulesLoaded();
         final MainActivity.TypoIndex dictionary = MainActivity.currentTypoIndex();
         long startTime = android.os.SystemClock.elapsedRealtime();
+        final Proofreader proofreader = ProofreaderAssets.get();
+        final boolean[] exactAll = proofreader.exactPositions(text);
+        final boolean[] customAll = dictionary.protectedPositions(text);
+        final Proofreader.Edit[] proofEdits = proofreader.collect(text, customAll, exactAll, Proofreader.literalPositions(text), true, true, () -> listener != null && listener.isCancelled());
+        if (proofEdits == null) return null;
+        final boolean[] blockedAll = customAll.clone();
+        for (Proofreader.Edit edit : proofEdits) if (edit != null) Arrays.fill(blockedAll, edit.start, edit.end, true);
+        int sentenceOffset = 0;
         List<String> sentences = splitText(text);
         List<List<MainActivity.TextBlock>> allBlocks = new ArrayList<>(sentences.size());
         StringBuilder fullCleanText = new StringBuilder(text.length());
@@ -388,10 +583,14 @@ public final class CorrectionCore {
         for (int sentenceIndex = 0; sentenceIndex < sentences.size(); sentenceIndex++) {
             if (listener != null && listener.isCancelled()) return null;
             String sentence = sentences.get(sentenceIndex);
+            int sentenceStart = sentenceOffset; sentenceOffset += sentence.length();
             if (sentence.isEmpty()) continue;
 
-            boolean[] protectedPositions = dictionary.protectedPositions(sentence);
-            GrammarHit[] grammarHits = collectGrammarHits(sentence, fastMode, protectedPositions);
+            boolean[] exactPositions = Arrays.copyOfRange(exactAll, sentenceStart, sentenceOffset);
+            boolean[] blockedPositions = Arrays.copyOfRange(blockedAll, sentenceStart, sentenceOffset);
+            boolean[] protectedPositions = blockedPositions.clone();
+            for (int i = 0; i < protectedPositions.length; i++) protectedPositions[i] |= exactPositions[i];
+            GrammarHit[] grammarHits = collectGrammarHits(sentence, fastMode, blockedPositions, exactPositions);
             List<MainActivity.TextBlock> intermediate = new ArrayList<>(Math.max(16, sentence.length() / 4));
             StringBuilder plain = new StringBuilder();
             int cursor = 0;
@@ -399,6 +598,12 @@ public final class CorrectionCore {
                 if (listener != null && listener.isCancelled()) return null;
 
                 MainActivity.TypoMatch typoMatch = dictionary.find(sentence, cursor, protectedPositions);
+                Proofreader.Edit proof = proofEdits[sentenceStart + cursor];
+                if (proof != null && proof.end <= sentenceOffset && (typoMatch == null || !typoMatch.custom)) {
+                    flushPlain(intermediate, plain);
+                    errorCount = appendGrammarChange(intermediate, proof.source, proof.replacement, proof.explanation, errorCount, listener);
+                    cursor += proof.source.length(); continue;
+                }
                 if (typoMatch != null) {
                     flushPlain(intermediate, plain);
                     boolean real = !typoMatch.source.equals(typoMatch.correction);
@@ -490,6 +695,12 @@ public final class CorrectionCore {
             }
             flushPlain(intermediate, plain);
 
+            int originalPosition = sentenceStart;
+            for (MainActivity.TextBlock block : intermediate) {
+                if (block.type == 0) for (int i = originalPosition; i < originalPosition + block.original.length(); i++)
+                    if (exactAll[i]) { block.type = 2; break; }
+                originalPosition += block.original.length();
+            }
             boolean candidateTarget = false;
             if (!fastMode) for (MainActivity.TextBlock block : intermediate) {
                 if (block.type == 0 && block.current.length() == 1 && isTarget(block.current.charAt(0))) { candidateTarget = true; break; }
@@ -5837,6 +6048,8 @@ def encrypt_asset(file_in: str, file_out: str, level: int, patch_zip_header: boo
 print('正在使用 AES-256-GCM 加固 HCAM、词表和规则文件...')
 encrypt_asset('hcam_model.bin', 'sys_core_p.dat', 1, False)
 encrypt_asset('错别字.txt', 'sys_typo.dat', 9, False)
+Path('sys_idioms.dat').unlink(missing_ok=True)  # Remove an old local dictionary if the root file was removed.
+encrypt_asset('成语.txt', 'sys_idioms.dat', 9, False)
 encrypt_asset('hcam_tokenizer.json', 'sys_vocab_p.dat', 9, False)
 print('AES-256-GCM 加固完成；每次构建均使用全新主密钥、盐和 Nonce。')
 DEDEDE_SOURCE_EOF
@@ -5933,6 +6146,8 @@ mkdir -p app/src/main/assets app/src/main/res/mipmap-xxxhdpi
 cp generated_security/GeneratedSecuritySeed.java app/src/main/java/com/app/dedede/
 cp generated_security/key-part-a.cpp generated_security/key-part-b.cpp app/src/main/cpp/
 cp sys_core_p.dat sys_vocab_p.dat sys_typo.dat app/src/main/assets/
+rm -f app/src/main/assets/sys_idioms.dat
+if [ -f sys_idioms.dat ]; then cp sys_idioms.dat app/src/main/assets/; fi
 cp app_icon.png app/src/main/res/mipmap-xxxhdpi/ic_launcher.png
 python3 protect_rules.py
 
