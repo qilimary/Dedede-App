@@ -50,8 +50,8 @@ android {
         applicationId "com.app.dededi.pte"
         minSdk 24
         targetSdk 36
-        versionCode 38
-        versionName "4.1.4-PTE"
+        versionCode 39
+        versionName "4.1.5-PTE"
         ndk { abiFilters "arm64-v8a" }
         externalNativeBuild { cmake { cppFlags ""; arguments "-DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON" } }
     }
@@ -324,7 +324,9 @@ public final class Proofreader {
     public static final class Edit {
         public final int start,end;
         public final String source,replacement,explanation;
-        Edit(int start,String source,String replacement,String explanation){this.start=start;this.end=start+source.length();this.source=source;this.replacement=replacement;this.explanation=explanation;}
+        public final boolean idiom;
+        Edit(int start,String source,String replacement,String explanation){this(start,source,replacement,explanation,false);}
+        Edit(int start,String source,String replacement,String explanation,boolean idiom){this.start=start;this.end=start+source.length();this.source=source;this.replacement=replacement;this.explanation=explanation;this.idiom=idiom;}
     }
     private final Set<String> words=new HashSet<>();
     private final Map<String,String> substitutions=new HashMap<>(),missing=new HashMap<>();
@@ -447,14 +449,14 @@ public final class Proofreader {
                 if(word.isEmpty()||candidate!=null&&!candidate.equals(word)){ambiguous=true;break;}
                 candidate=word;
             }
-            if(!ambiguous&&candidate!=null&&!functionExpansion(text,start,source,candidate)&&!changesQuantity(text,start,source,candidate))targets.put(candidate,"成语疑似错字（单字不同、唯一候选）");
+            if(!ambiguous&&candidate!=null&&!functionExpansion(text,start,source,candidate)&&!changesQuantity(text,start,source,candidate))targets.put(candidate,"");
         }
         // Keep insertion/deletion and transposition checks under their existing context limits.
         if(!structural)return;
         if(!protectedSpan&&explicit&&fuzzyLengths.contains(size)){
             Set<String> swaps=new HashSet<>();
             for(int i=0;i+1<size;i++){if(source.charAt(i)==source.charAt(i+1))continue;String swapped=source.substring(0,i)+source.charAt(i+1)+source.charAt(i)+source.substring(i+2);if(words.contains(swapped))swaps.add(swapped);}
-            if(swaps.size()==1)targets.put(swaps.iterator().next(),"成语相邻字顺序疑似颠倒（唯一候选）");
+            if(swaps.size()==1)targets.put(swaps.iterator().next(),"");
         }
         if(size>=5){Set<String> extra=new HashSet<>();
             for(int i=0;i<size;i++){
@@ -468,10 +470,10 @@ public final class Proofreader {
                     extra.add(word);
                 }
             }
-            if(extra.size()==1)targets.put(extra.iterator().next(),"成语疑似多字（唯一候选）");
+            if(extra.size()==1)targets.put(extra.iterator().next(),"");
         }
         if(!protectedSpan&&explicit&&fuzzyLengths.contains(size+1)&&contentCount(source)>=2){
-            String word=missing.get(source);if(word!=null&&!word.isEmpty()){int insertion=removedAt(word,source);if(FUNCTION.indexOf(word.charAt(insertion))<0)targets.put(word,"成语疑似漏字（明确成语语境、唯一候选）");}
+            String word=missing.get(source);if(word!=null&&!word.isEmpty()){int insertion=removedAt(word,source);if(FUNCTION.indexOf(word.charAt(insertion))<0)targets.put(word,"");}
         }
     }
     /** Keep mixed identifiers intact; explicit custom mappings still take precedence. */
@@ -511,7 +513,7 @@ public final class Proofreader {
                 if(any(custom,p,p+size)||any(literals,p,p+size))continue;
                 String source=text.substring(p,p+size);if(words.contains(source))continue;
                 targets.clear();candidates(text,p,source,exact,targets,explicit,structural,probe);
-                if(targets.size()==1){String replacement=targets.keySet().iterator().next();pending.add(new Edit(p,source,replacement,targets.get(replacement)));}
+                if(targets.size()==1){String replacement=targets.keySet().iterator().next();pending.add(new Edit(p,source,replacement,targets.get(replacement),true));}
             }}
             if(!repetition)continue;
             char c=text.charAt(p);int end=p+1;
@@ -688,7 +690,7 @@ public final class CorrectionCore {
                 Proofreader.Edit proof = proofEdits[sentenceStart + cursor];
                 if (proof != null && (typoMatch == null || !typoMatch.custom)) {
                     flushPlain(intermediate, plain);
-                    errorCount = appendProofChange(intermediate, proof.source, proof.replacement, proof.explanation, errorCount, listener);
+                    errorCount = appendProofChange(intermediate, proof.source, proof.replacement, proof.idiom, errorCount, listener);
                     skipUntil = proof.end;
                     cursor += proof.source.length(); continue;
                 }
@@ -844,13 +846,19 @@ public final class CorrectionCore {
     }
 
     private static int progressInterval(int length) { return length > 100000 ? 1200 : (length > 30000 ? 700 : 350); }
-    private static int appendProofChange(List<MainActivity.TextBlock> blocks, String source, String replacement, String explanation, int count, Listener listener) {
+    private static int appendProofChange(List<MainActivity.TextBlock> blocks, String source, String replacement, boolean idiom, int count, Listener listener) {
         // Keep only the changed characters in the review mark. A duplicate is a deletion, without a parenthetical note.
         int prefix=0,suffix=0;
-        while(prefix<source.length()&&prefix<replacement.length()&&source.charAt(prefix)==replacement.charAt(prefix))prefix++;
-        while(suffix<source.length()-prefix&&suffix<replacement.length()-prefix&&source.charAt(source.length()-1-suffix)==replacement.charAt(replacement.length()-1-suffix))suffix++;
+        if(source.length()>replacement.length()&&!idiom){
+            // Ordinary repetition keeps the suffix; idioms keep the prefix and delete later duplicates.
+            while(suffix<replacement.length()&&source.charAt(source.length()-1-suffix)==replacement.charAt(replacement.length()-1-suffix))suffix++;
+            while(prefix<replacement.length()-suffix&&source.charAt(prefix)==replacement.charAt(prefix))prefix++;
+        }else{
+            while(prefix<source.length()&&prefix<replacement.length()&&source.charAt(prefix)==replacement.charAt(prefix))prefix++;
+            while(suffix<source.length()-prefix&&suffix<replacement.length()-prefix&&source.charAt(source.length()-1-suffix)==replacement.charAt(replacement.length()-1-suffix))suffix++;
+        }
         appendProtectedText(blocks,source.substring(0,prefix));
-        count=appendGrammarChange(blocks,source.substring(prefix,source.length()-suffix),replacement.substring(prefix,replacement.length()-suffix),explanation,count,listener);
+        count=appendGrammarChange(blocks,source.substring(prefix,source.length()-suffix),replacement.substring(prefix,replacement.length()-suffix),"",count,listener);
         appendProtectedText(blocks,source.substring(source.length()-suffix));
         return count;
     }
@@ -4991,7 +4999,7 @@ public class MainActivity extends AppCompatActivity {
             for (TextBlock block : group) {
                 String original = escapeHtmlQuick(block.original), current = escapeHtmlQuick(block.current);
                 if (isActiveCorrection(block)) {
-                    errorCount[0]++; String note = block.type == 1 ? " (置信度:" + String.format(Locale.getDefault(), "%.2f", block.conf) + ")" : (block.type == 4 ? " (自定义)" : ""); if (!block.current.isEmpty() && block.exp != null && !block.exp.isEmpty()) note += " (" + block.exp + ")"; String oldColor = block.type == 6 ? "#E53935" : "#9E9E9E";
+                    errorCount[0]++; String note = block.type == 1 ? " (置信度:" + String.format(Locale.getDefault(), "%.2f", block.conf) + ")" : (block.type == 4 ? " (自定义)" : ""); String oldColor = block.type == 6 ? "#E53935" : "#9E9E9E";
                     if (block.current.equals(block.original)) html.append("<font color='#E53935'><b>").append(original).append("</b></font><font color='#9E9E9E'><small>").append(note).append("</small></font>");
                     else { html.append("<font color='").append(oldColor).append("'><s>").append(original).append("</s></font>");
                         if (!block.current.isEmpty()) html.append(" <font color='#E53935'><b>").append(current).append("</b></font><font color='#9E9E9E'><small>").append(note).append("</small></font>"); }
@@ -5232,7 +5240,6 @@ public class MainActivity extends AppCompatActivity {
         if (clickable) builder.setSpan(createEditSpan(block), range[0], range[1], range[2]);
         else { builder.setSpan(new ForegroundColorSpan(block.userModified && !block.current.equals(block.original) ? 0xFF4CAF50 : 0xFFE53935), range[0], range[1], range[2]); builder.setSpan(new android.text.style.TypefaceSpan("sans-serif-medium"), range[0], range[1], range[2]); }
         if (!block.current.isEmpty() && !block.userModified && block.type == 1) appendSmallNote(builder, "置信度: " + String.format(Locale.getDefault(), "%.2f", block.conf)); else if (!block.current.isEmpty() && !block.userModified && block.type == 4) appendSmallNote(builder, "自定义");
-        if (!block.current.isEmpty() && !block.userModified && block.exp != null && !block.exp.isEmpty()) appendSmallNote(builder, block.exp);
     }
 
     private void appendSmallNote(SpannableStringBuilder builder, String note) {
