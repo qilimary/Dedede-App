@@ -745,6 +745,18 @@ public final class CorrectionCore {
                         continue;
                     }
 
+                    // 缩减倍数涉及整个短语，不能按正则三组分别记录，否则清单会划两次、数字也会错位。
+                    // 一块 TextBlock 负责整段删除线、一次纠正、单击还原及计数。
+                    if ("下降/缩短等不能直接用倍数表示".equals(explanation)) {
+                        String originalPhrase = grammarHit.gaps[0] + group1 + grammarHit.gaps[1] + group2
+                                + grammarHit.gaps[2] + group3 + grammarHit.gaps[3];
+                        String correctedPhrase = replacement1 + group2 + replacement3;
+                        errorCount = appendGrammarChange(intermediate, originalPhrase, correctedPhrase,
+                                explanation, errorCount, listener);
+                        cursor = grammarHit.end;
+                        continue;
+                    }
+
                     // 非捕获部分也可能被规则删除；必须记录下来，确保逐项/全部还原不丢字。
                     errorCount = appendGrammarChange(intermediate, grammarHit.gaps[0], "", explanation, errorCount, listener);
                     errorCount = appendGrammarChange(intermediate, group1, replacement1, explanation, errorCount, listener);
@@ -2241,7 +2253,7 @@ public class MainActivity extends AppCompatActivity {
             addRule("(加快|加速)([^，,。；;！？!?：:、\\n]{0,8}?)(效率)", new String[][]{{"提高", null}});
             addRule("(缓解|减缓)([^，,。；;！？!?：:、\\n]{0,8}?)(态度|立场)", new String[][]{{"缓和", null}});
             addRule("(悬殊)( *)(很大|极大|特别大|非常大)", new String[][]{{null, ""}, {"差距", null}});
-            addRule("(?<![\u4E00-\u9FFFA-Za-z0-9])(通过)([^，,。；;！？!?：:\\n]{1,24}?)([，,][ 　]*使)(?!用|得|劲|坏|命|绊|眼|性|气|然)", new String[][]{{null, "，", "仅处理带逗号的典型“通过……，使……”主语残缺，改为“通过……，主语……”结构"}});
+            addRule("(?<![\u4E00-\u9FFFA-Za-z0-9])(通过)([^，,。；;！？!?：:\\n]{1,24}?)([，,][ 　]*使)(?!用|得|劲|坏|命|绊|眼|性|气|然)", new String[][]{{null, "，", "主语残缺"}});
             addRule("(令人|让人|叫人)( *)(贻笑大方)", new String[][]{{"", null}});
             addRule("(凯旋)( *)(而归)", new String[][]{{null, ""}});
             addRule("(可以|能够)( *)(堪称)", new String[][]{{"", null}});
@@ -2358,20 +2370,20 @@ public class MainActivity extends AppCompatActivity {
             // 回归中仍有失败的窄规则：间歇状态修饰动作、部分方式状语、质地性质结构、
             // 以及固定专名/术语修饰名词；其余旧规则交给模型判断。
             String intermittentAdverbs = "断断续续|时断时续|一阵一阵|一声一声|接连不断|连续不断|时有时无|忽高忽低|忽远忽近";
-            addProfessionalRule("(" + intermittentAdverbs + ")([ 　]*)([的得])(?=[ 　]*响(?=[着了过得个起下不又还并且而但却才就仍，,。；;！？!?：:、…\\n]|$))", new String[][]{{null, "地", "状态副词修饰动作“响”，应用“地”"}});
+            addProfessionalRule("(" + intermittentAdverbs + ")([ 　]*)([的得])(?=[ 　]*响(?=[着了过得个起下不又还并且而但却才就仍，,。；;！？!?：:、…\\n]|$))", new String[][]{{null, "地", ""}});
 
             String mannerModifiers = "耐心|认真|仔细|专心|用心|细心|热心|诚心|虚心|诚恳|礼貌|友好|冷静|平静|从容|谨慎|小心|努力|积极|主动|自觉";
             String mannerActions = "等待|倾听|听取|解释|说明|回答|答复|劝说|安慰|指导|教导|检查|核对|阅读|观察|处理|解决|分析|研究|学习|工作|准备|完成|记录|整理|操作|练习|思考|考虑|交流|沟通";
-            addProfessionalRule("(" + mannerModifiers + ")([ 　]*)(得)(?=[ 　]*(?:" + mannerActions + "))", new String[][]{{null, "地", "方式词修饰动作，应用“地”"}});
+            addProfessionalRule("(" + mannerModifiers + ")([ 　]*)(得)(?=[ 　]*(?:" + mannerActions + "))", new String[][]{{null, "地", ""}});
             addProfessionalRule("(请[ 　]*(?:" + mannerModifiers + "))([ 　]*)([的得])(?=[ 　]*(?:" + mannerActions + "))", new String[][]{{null, ""}});
-            addProfessionalRule("((?:他|她|它)[ 　]*准确)([ 　]*)([的得])(?=[ 　]*回答(?=[了着过，,。；;！？!?：:\\n]|$))", new String[][]{{null, "地", "“准确”修饰回答动作，应用“地”"}});
+            addProfessionalRule("((?:他|她|它)[ 　]*准确)([ 　]*)([的得])(?=[ 　]*回答(?=[了着过，,。；;！？!?：:\\n]|$))", new String[][]{{null, "地", ""}});
 
             String emotionActionModifiers = "高兴|开心|兴奋|激动";
             String emotionDynamicActions = "(?:跳(?:了|起|上|下)|笑(?:了|起|出|着)|喊(?:了|起|出)|说(?:道|着|了)|跑(?:了|起|出)|拍(?:起|着)|挥(?:了|起|着))";
             String emotionContinuation = "(?:不停|一直|连连|频频|不断|反复)";
             String emotionContinuationActions = "(?:跳|笑|喊|说|跑|拍|挥)";
             addProfessionalRule("(" + emotionActionModifiers + ")([ 　]*)(的)(?=[ 　]*" + emotionDynamicActions + ")", new String[][]{{null, "地", ""}});
-            addProfessionalRule("(" + emotionActionModifiers + ")([ 　]*)(的)(?=[ 　]*" + emotionContinuation + "[ 　]*" + emotionContinuationActions + ")", new String[][]{{null, "地", "情绪状态作状语并接持续动作，应用‘地’"}});
+            addProfessionalRule("(" + emotionActionModifiers + ")([ 　]*)(的)(?=[ 　]*" + emotionContinuation + "[ 　]*" + emotionContinuationActions + ")", new String[][]{{null, "地", ""}});
 
             // 保护规则只屏蔽模型对命中字的推理，不直接产生纠错记录。
             String resultVerbs = "(?:插|扎|勒|压|挤|卡|塞|夹|顶|硌|磨|裹|捆|缠|撑)";
@@ -2438,15 +2450,15 @@ public class MainActivity extends AppCompatActivity {
             addProtectedTargetPattern("反复(的)(?=[ 　]*(?:强调|提醒)(?:让|使|令))");
             addProtectedTargetPattern("(?:这是|那是)(?:小心翼翼|战战兢兢)(的)(?=[ 　]*(?:试探|回答)(?:[，,。；;！？!?：:\\n]|$))");
 
-            addProfessionalRule("(" + fixedModifiers + ")([ 　]*)([地得])(?=[ 　]*" + fixedNounHeads + ")", new String[][]{{null, "的", "专名或固定术语修饰名词，应用“的”"}});
-            addProfessionalRule("(质地)([ 　]*)([地得])(?=[ 　]*" + textureQualities + ")", new String[][]{{null, "的", "“质地”后的性质名词化结构应用“的”"}});
-            addProfessionalRule("(" + degreeStateHeads + "(?:很|太|真|特别|非常)?" + degreeAdjectives + ")([ 　]*)([的地])(?=[ 　]*" + degreeClauseSubjects + "(?:都|也)?" + degreeClauseSignals + ")", new String[][]{{null, "得", "程度或结果补语应用“得”"}});
-            addProfessionalRule("(拍立)([ 　]*)([的地])(?=[ 　]*(?:相纸|照片|相机|胶片|成像|产品|设备|机身|耗材|纸))", new String[][]{{null, "得", "固定词“拍立得”"}});
-            addProfessionalRule("(" + reduplicatedSimileStates + ")([ 　]*)([地得])(?=[ 　]*(?:像|如同|仿佛))", new String[][]{{null, "的", "叠词状态后接比喻，保留口语定式“……的像/如同……”"}});
-            addProfessionalRule("(" + serialMannerUnits + ")([ 　]*)([的得])(?=[ 　]*" + serialMannerActions + ")", new String[][]{{null, "地", "重复量词短语作方式状语，应用“地”"}});
+            addProfessionalRule("(" + fixedModifiers + ")([ 　]*)([地得])(?=[ 　]*" + fixedNounHeads + ")", new String[][]{{null, "的", ""}});
+            addProfessionalRule("(质地)([ 　]*)([地得])(?=[ 　]*" + textureQualities + ")", new String[][]{{null, "的", ""}});
+            addProfessionalRule("(" + degreeStateHeads + "(?:很|太|真|特别|非常)?" + degreeAdjectives + ")([ 　]*)([的地])(?=[ 　]*" + degreeClauseSubjects + "(?:都|也)?" + degreeClauseSignals + ")", new String[][]{{null, "得", ""}});
+            addProfessionalRule("(拍立)([ 　]*)([的地])(?=[ 　]*(?:相纸|照片|相机|胶片|成像|产品|设备|机身|耗材|纸))", new String[][]{{null, "得", ""}});
+            addProfessionalRule("(" + reduplicatedSimileStates + ")([ 　]*)([地得])(?=[ 　]*(?:像|如同|仿佛))", new String[][]{{null, "的", ""}});
+            addProfessionalRule("(" + serialMannerUnits + ")([ 　]*)([的得])(?=[ 　]*" + serialMannerActions + ")", new String[][]{{null, "地", ""}});
             // “高兴的差点跳起来”明确错误，纠为“得”；“高兴地差点……”可能有合法状语读法，不强制改。
-            addProfessionalRule("(" + emotionActionModifiers + ")([ 　]*)(的)(?=[ 　]*" + emotionDegreeSignals + "[^，,。；;！？!?：:\n]{0,14}" + emotionDegreeActions + ")", new String[][]{{null, "得", "程度/结果补语应用“得”"}});
-            addProfessionalRule("((?:并没有|没有|远没有)[ 　]*想象)([ 　]*)([地得])(?=[ 　]*" + imaginedDegree + ")", new String[][]{{null, "的", "‘没有想象的那么/这么……’是名词化比较结构，应用‘的’"}});
+            addProfessionalRule("(" + emotionActionModifiers + ")([ 　]*)(的)(?=[ 　]*" + emotionDegreeSignals + "[^，,。；;！？!?：:\n]{0,14}" + emotionDegreeActions + ")", new String[][]{{null, "得", ""}});
+            addProfessionalRule("((?:并没有|没有|远没有)[ 　]*想象)([ 　]*)([地得])(?=[ 　]*" + imaginedDegree + ")", new String[][]{{null, "的", ""}});
 
             String locations = "家|家里|家中|家外|卧室|卧房|厨房|客厅|卫生间|洗手间|厕所|茅房|阳台|书房|餐厅|饭厅|浴室|走廊|走道|院子|庭院|地|车|超市|商场|商店|菜市场|农贸市场|便利店|小卖部|饭店|酒店|旅馆|宾馆|招待所|餐馆|食堂|咖啡厅|咖啡馆|酒吧|网吧|电影院|戏院|剧院|银行|邮局|理发店|药店|诊所|门|商铺|店|医院|学校|幼儿园|小学|中学|初中|高中|大学|教室|图书馆|操场|宿舍|办公楼|公司|办公室|工厂|厂里|车间|会议室|派出所|警察局|公安局|消防队|法院|政府|监狱|看守所|基地|营地|阵地|车站|火车站|高铁站|地铁站|公交站|客运站|飞机场|机场|码头|港口|停车场|加油站|收费站|高速上|马路上|街上|路上|十字路口|桥上|桥下|隧道里|铁轨上|公园|动物园|植物园|游乐场|游乐园|广场|体育馆|体育场|游泳池|健身房|博物馆|展览馆|美术馆|海|沙滩|海岸|山上|山下|山顶|树林|森林|湖边|河边|江边|水里|田里|农田|地里|村|乡|农村|城里|城市|市区|郊区|景区|野外|这里|那里|哪里|这儿|那儿|哪儿|上面|下面|里面|外面|上边|下边|里边|外边|左边|右边|前面|后面|旁边|附近|远处|高处|低处|深处|内部|外部|中心|中间|顶上|底下|背后|面前";
             addRule("((?:我|你|您|他|她|它|我们|你们|他们|她们|大家|自己|谁|还|正|已经|仍然))([ 　]*)(再)(?=[ 　]*(?:" + locations + ")(?:里|内|中|外)?(?:[，,。；;！？!?：:\n]|$|办公|工作|休息|睡觉|学习|等待|吃饭|住宿|开会))", new String[][]{{null, "在"}});
@@ -5034,7 +5046,7 @@ public class MainActivity extends AppCompatActivity {
             for (TextBlock block : group) {
                 String original = escapeHtmlQuick(block.original), current = escapeHtmlQuick(block.current);
                 if (isActiveCorrection(block)) {
-                    errorCount[0]++; String note = block.type == 1 ? " (置信度:" + String.format(Locale.getDefault(), "%.2f", block.conf) + ")" : (block.type == 4 ? " (自定义)" : ""); String oldColor = block.type == 6 ? "#E53935" : "#9E9E9E";
+                    errorCount[0]++; String note = block.type == 1 ? " (置信度:" + String.format(Locale.getDefault(), "%.2f", block.conf) + ")" : (block.type == 4 ? " (自定义)" : (block.type == 6 && block.exp != null && !block.exp.isEmpty() ? " (" + escapeHtmlQuick(block.exp) + ")" : "")); String oldColor = block.type == 6 ? "#E53935" : "#9E9E9E";
                     if (block.current.equals(block.original)) html.append("<font color='#E53935'><b>").append(original).append("</b></font><font color='#9E9E9E'><small>").append(note).append("</small></font>");
                     else { html.append("<font color='").append(oldColor).append("'><s>").append(original).append("</s></font>");
                         if (!block.current.isEmpty()) html.append(" <font color='#E53935'><b>").append(current).append("</b></font><font color='#9E9E9E'><small>").append(note).append("</small></font>"); }
@@ -5275,6 +5287,7 @@ public class MainActivity extends AppCompatActivity {
         if (clickable) builder.setSpan(createEditSpan(block), range[0], range[1], range[2]);
         else { builder.setSpan(new ForegroundColorSpan(block.userModified && !block.current.equals(block.original) ? 0xFF4CAF50 : 0xFFE53935), range[0], range[1], range[2]); builder.setSpan(new android.text.style.TypefaceSpan("sans-serif-medium"), range[0], range[1], range[2]); }
         if (!block.current.isEmpty() && !block.userModified && block.type == 1) appendSmallNote(builder, "置信度: " + String.format(Locale.getDefault(), "%.2f", block.conf)); else if (!block.current.isEmpty() && !block.userModified && block.type == 4) appendSmallNote(builder, "自定义");
+        else if (!block.current.isEmpty() && !block.userModified && block.type == 6 && block.exp != null && !block.exp.isEmpty()) appendSmallNote(builder, block.exp);
     }
 
     private void appendSmallNote(SpannableStringBuilder builder, String note) {
