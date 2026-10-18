@@ -2468,7 +2468,42 @@ public class MainActivity extends AppCompatActivity {
             // 同上回归："8点/7楼/3班"单独数字转换全部为合法用法（0正确/约30误改），连同"达→有"两规则一并删除。
 
             addRule("(?:(?<=数万|几万|上万)|(?<=数十万|数百万))(名)([^，,。；;！？!?：:、\\n]{0,8}?)(人群)", new String[][]{{"人的", ""}});
-            addRule("(减少|降低|缩短|下降|减小|缩小)([^，,。；;！？!?：:、\\n]{0,15}?[0-9十百千万亿两半])(倍)", new String[][]{{null, "倍", "下降/减小等不能用倍数表示"}});
+            // 负向倍数表达：只转换紧接谓语、可以确定缩减倍数的数字；不猜测 1 倍、0.x 倍和约数。
+            // 使用静态规则，保持 Android 与 Windows 的规则导入器兼容。
+            String decreaseArabic = "(?:[2-9][0-9]*(?:\\.[0-9]+)?|1(?:[0-9]+|\\.(?:0*[1-9][0-9]*)))";
+            String decreaseScaled = "(?:[1-9][0-9]*(?:\\.[0-9]+)?(?:[十百千]?(?:万|亿)|十|百|千))";
+            String decreaseChinese = "(?:[二两三四五六七八九十百千万亿][零〇一二两三四五六七八九十百千万亿]*|一[十百千万亿][零〇一二两三四五六七八九十百千万亿]*)";
+            String decreaseEnd = "(?=$|[，,。；;！？!?：:、\\n]|而|但|却)";
+            addRule("(下降(?:了)?[ 　]*)()(100[ 　]*倍)" + decreaseEnd, new String[][]{{"降至原来的", "百分之一", "下降/缩短等不能直接用倍数表示"}});
+            addRule("(下降(?:了)?[ 　]*)(" + decreaseArabic + ")([ 　]*倍)" + decreaseEnd, new String[][]{{"降至原来的1/", "", "下降/缩短等不能直接用倍数表示"}});
+            addRule("(下降(?:了)?[ 　]*)()(两[ 　]*倍)" + decreaseEnd, new String[][]{{"降至原来的", "二分之一", "下降/缩短等不能直接用倍数表示"}});
+            addRule("(下降(?:了)?[ 　]*两)([百千万亿][零〇一二两三四五六七八九十百千万亿]*)([ 　]*倍)" + decreaseEnd, new String[][]{{"降至原来的二", "分之一", "下降/缩短等不能直接用倍数表示"}});
+            addRule("(下降(?:了)?[ 　]*)(" + decreaseScaled + "|" + decreaseChinese + ")([ 　]*倍)" + decreaseEnd, new String[][]{{"降至原来的", "分之一", "下降/缩短等不能直接用倍数表示"}});
+            addRule("(降低(?:了)?[ 　]*)()(100[ 　]*倍)" + decreaseEnd, new String[][]{{"降至原来的", "百分之一", "下降/缩短等不能直接用倍数表示"}});
+            addRule("(降低(?:了)?[ 　]*)(" + decreaseArabic + ")([ 　]*倍)" + decreaseEnd, new String[][]{{"降至原来的1/", "", "下降/缩短等不能直接用倍数表示"}});
+            addRule("(降低(?:了)?[ 　]*)()(两[ 　]*倍)" + decreaseEnd, new String[][]{{"降至原来的", "二分之一", "下降/缩短等不能直接用倍数表示"}});
+            addRule("(降低(?:了)?[ 　]*两)([百千万亿][零〇一二两三四五六七八九十百千万亿]*)([ 　]*倍)" + decreaseEnd, new String[][]{{"降至原来的二", "分之一", "下降/缩短等不能直接用倍数表示"}});
+            addRule("(降低(?:了)?[ 　]*)(" + decreaseScaled + "|" + decreaseChinese + ")([ 　]*倍)" + decreaseEnd, new String[][]{{"降至原来的", "分之一", "下降/缩短等不能直接用倍数表示"}});
+            addRule("(减少(?:了)?[ 　]*)()(100[ 　]*倍)" + decreaseEnd, new String[][]{{"减至原来的", "百分之一", "下降/缩短等不能直接用倍数表示"}});
+            addRule("(减少(?:了)?[ 　]*)(" + decreaseArabic + ")([ 　]*倍)" + decreaseEnd, new String[][]{{"减至原来的1/", "", "下降/缩短等不能直接用倍数表示"}});
+            addRule("(减少(?:了)?[ 　]*)()(两[ 　]*倍)" + decreaseEnd, new String[][]{{"减至原来的", "二分之一", "下降/缩短等不能直接用倍数表示"}});
+            addRule("(减少(?:了)?[ 　]*两)([百千万亿][零〇一二两三四五六七八九十百千万亿]*)([ 　]*倍)" + decreaseEnd, new String[][]{{"减至原来的二", "分之一", "下降/缩短等不能直接用倍数表示"}});
+            addRule("(减少(?:了)?[ 　]*)(" + decreaseScaled + "|" + decreaseChinese + ")([ 　]*倍)" + decreaseEnd, new String[][]{{"减至原来的", "分之一", "下降/缩短等不能直接用倍数表示"}});
+            addRule("(减小(?:了)?[ 　]*)()(100[ 　]*倍)" + decreaseEnd, new String[][]{{"减至原来的", "百分之一", "下降/缩短等不能直接用倍数表示"}});
+            addRule("(减小(?:了)?[ 　]*)(" + decreaseArabic + ")([ 　]*倍)" + decreaseEnd, new String[][]{{"减至原来的1/", "", "下降/缩短等不能直接用倍数表示"}});
+            addRule("(减小(?:了)?[ 　]*)()(两[ 　]*倍)" + decreaseEnd, new String[][]{{"减至原来的", "二分之一", "下降/缩短等不能直接用倍数表示"}});
+            addRule("(减小(?:了)?[ 　]*两)([百千万亿][零〇一二两三四五六七八九十百千万亿]*)([ 　]*倍)" + decreaseEnd, new String[][]{{"减至原来的二", "分之一", "下降/缩短等不能直接用倍数表示"}});
+            addRule("(减小(?:了)?[ 　]*)(" + decreaseScaled + "|" + decreaseChinese + ")([ 　]*倍)" + decreaseEnd, new String[][]{{"减至原来的", "分之一", "下降/缩短等不能直接用倍数表示"}});
+            addRule("(缩小(?:了)?[ 　]*)()(100[ 　]*倍)" + decreaseEnd, new String[][]{{"缩至原来的", "百分之一", "下降/缩短等不能直接用倍数表示"}});
+            addRule("(缩小(?:了)?[ 　]*)(" + decreaseArabic + ")([ 　]*倍)" + decreaseEnd, new String[][]{{"缩至原来的1/", "", "下降/缩短等不能直接用倍数表示"}});
+            addRule("(缩小(?:了)?[ 　]*)()(两[ 　]*倍)" + decreaseEnd, new String[][]{{"缩至原来的", "二分之一", "下降/缩短等不能直接用倍数表示"}});
+            addRule("(缩小(?:了)?[ 　]*两)([百千万亿][零〇一二两三四五六七八九十百千万亿]*)([ 　]*倍)" + decreaseEnd, new String[][]{{"缩至原来的二", "分之一", "下降/缩短等不能直接用倍数表示"}});
+            addRule("(缩小(?:了)?[ 　]*)(" + decreaseScaled + "|" + decreaseChinese + ")([ 　]*倍)" + decreaseEnd, new String[][]{{"缩至原来的", "分之一", "下降/缩短等不能直接用倍数表示"}});
+            addRule("(缩短(?:了)?[ 　]*)()(100[ 　]*倍)" + decreaseEnd, new String[][]{{"缩短至原来的", "百分之一", "下降/缩短等不能直接用倍数表示"}});
+            addRule("(缩短(?:了)?[ 　]*)(" + decreaseArabic + ")([ 　]*倍)" + decreaseEnd, new String[][]{{"缩短至原来的1/", "", "下降/缩短等不能直接用倍数表示"}});
+            addRule("(缩短(?:了)?[ 　]*)()(两[ 　]*倍)" + decreaseEnd, new String[][]{{"缩短至原来的", "二分之一", "下降/缩短等不能直接用倍数表示"}});
+            addRule("(缩短(?:了)?[ 　]*两)([百千万亿][零〇一二两三四五六七八九十百千万亿]*)([ 　]*倍)" + decreaseEnd, new String[][]{{"缩短至原来的二", "分之一", "下降/缩短等不能直接用倍数表示"}});
+            addRule("(缩短(?:了)?[ 　]*)(" + decreaseScaled + "|" + decreaseChinese + ")([ 　]*倍)" + decreaseEnd, new String[][]{{"缩短至原来的", "分之一", "下降/缩短等不能直接用倍数表示"}});
             addRule("(随便|随意)( *)(苟同)", new String[][]{{"", null}});
             addRule("(非常|十分|极其|特别|尤其)( *)(酷爱|惨重|硕大|嗜好|痛恨|严禁)", new String[][]{{"", null}});
             addRule("(发自内心的?|从内心里的?|打心眼里的?)( *)(由衷)", new String[][]{{"", null}});
