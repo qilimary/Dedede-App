@@ -50,8 +50,8 @@ android {
         applicationId "com.app.dededi.pte"
         minSdk 24
         targetSdk 36
-        versionCode 36
-        versionName "4.1.2-PTE"
+        versionCode 38
+        versionName "4.1.4-PTE"
         ndk { abiFilters "arm64-v8a" }
         externalNativeBuild { cmake { cppFlags ""; arguments "-DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON" } }
     }
@@ -306,18 +306,20 @@ import java.util.regex.Pattern;
 /** Exact matches are collected globally before approximate matching. No segmentation/model dependency. */
 public final class Proofreader {
     // sync_android.py exports these policy strings to Windows. Maintain the word lists here only.
-    public static final String POLICY_VERSION = "1";
-    public static final String LEFT = "我|你|他|她|它|您|我们|你们|他们|她们|大家|真是|真|太|很|十分|非常|格外|特别|确实|实在|简直|可谓|堪称|令人|让人|使人|感到|觉得|显得|变得|表现得|不禁|仍然|依然|已经|总是|一直|竟然|居然|于是|因此|所以|可是|但是|却|也|都|又";
+    public static final String POLICY_VERSION = "3";
+    public static final String LEFT = "我|你|他|她|它|您|咱|我们|你们|他们|她们|它们|咱们|您们|大家|真是|真|太|很|十分|非常|格外|特别|确实|实在|简直|可谓|堪称|令人|让人|使人|感到|觉得|显得|变得|表现得|不禁|仍然|依然|已经|总是|一直|竟然|居然|于是|因此|所以|可是|但是|却|也|都|又";
     public static final String RIGHT = "的|地|得|了|着|过|般|似的|一样|一般|啊|呀|吧|呢|吗|嘛|想|要|去|来|起来|下去";
     public static final String DUP_LEFT = "今天|昨天|明天|刚才|现在|后来|于是|因此|所以|其实|不过|可是|但是|而且|然后|最近|当时|这次|这时|随后|目前|本来|原来|因为|如果|假如|既然|虽然|只要";
     public static final String DUP_RIGHT = "今天|昨天|明天|刚才|现在|已经|正在|刚刚|刚|曾经|从来|一直|总是|终于|马上|即将|明明|确实|真的|真|都|也|又|还|就|才|只|正|先|再|不|没|别|很|太|更|最|是|有|要|会|能|想|去|来|说|看|听|吃|喝|做|走|跑|买|把|被|在|对|向|给|让|喜欢|觉得|认为|知道|希望|准备|打算|决定|需要|应该|必须|可以|愿意|敢|将|已|不曾|未曾";
     public static final String PRONOUNS = "我你他她它您咱";
     public static final String REPEATED_WORDS = "我们|你们|他们|她们|它们|咱们|您们|已经|正在|因为|所以|但是|而且|如果|虽然|于是|以及|还是|就是|是否|可以|能够|需要|必须|应该";
-    public static final String FUNCTION = "不无未非莫勿别难免没休的地得了着过在是也又还很和与而就都才要会能可给让被把将一二三四五六七八九十百千万亿零两";
-    public static final String CONFUSIONS = "及急即|己已巳|按安案暗|部步布|陈成程城诚承|声生升|再在|的地得|做作|形型|炭碳|副付幅|俱具惧|竟竞境|至致置志|名明鸣|知之支枝|当挡档|辩辨辫|厉励历利|释式试事势|愤奋|概慨|既即|烂滥|原源|密秘|霄宵消销|章彰张|穿川|伦轮仑|绝决觉|循寻巡|接结截|敷肤|屈曲|伸申深|恃持侍|坐座|供贡|恭躬|喧宣|谐协|途徒图|拔拨|惶皇煌|糊胡|祥详|抱报|胜盛|戛嘎|鸿洪宏|竭揭|暇瑕遐|衷中终|蹈滔涛|辙撤|拙绌|诲悔晦|诫戒|催摧|脉默|契锲|砾烁铄|尊遵|妄忘望|功工攻|弛驰|愈越|赅该|豪毫|缕屡|偶呕|楫辑揖|贻怡|崇祟|瞻赡|诌绉皱|惨残|廷庭|措错|筹愁|效笑|畴踌|粱梁|溯塑|躁燥噪";
+    public static final String FUNCTION = "不无未非莫勿别难免没休的地得了着过在是也又还很和与而就都才要会能可给让被把将一二三四五六七八九十百千万亿零两其此彼之于以为乃则者所乎焉耶哉矣兮些每各任某该本这那我你他她它您咱们";
+    public static final String NAMING = "笔名|网名|姓名|名字|昵称|称呼|书名|篇名|标题|词语|词组|字样|写法|变量名|函数名|角色名|代号|署名|个词|个字";
+    public static final String NUMERALS = "零〇一二两三四五六七八九十百千万亿兆几数半0123456789";
+    public static final String QUANTITY_UNITS = "个只条头匹辆部台口尾座把本名位双对件张枚颗棵根支枝朵艘架间所套份册块片段次遍趟场回岁年月日天时分秒斤克吨米升元角毛";
     private static final String[] LEFT_WORDS=LEFT.split("\\|"),RIGHT_WORDS=RIGHT.split("\\|"),
         DUP_LEFT_WORDS=DUP_LEFT.split("\\|"),DUP_RIGHT_WORDS=DUP_RIGHT.split("\\|"),
-        REPEATS=REPEATED_WORDS.split("\\|"),CONFUSION_GROUPS=CONFUSIONS.split("\\|");
+        NAMES=NAMING.split("\\|"),REPEATS=REPEATED_WORDS.split("\\|");
     private static final Pattern CUE=Pattern.compile(".*(?:成语|四字词语|四字词|熟语)(?:[：: 　]|是|为|叫|叫作|写成|写作|应该是|应为|应写作){0,4}");
     public static final class Edit {
         public final int start,end;
@@ -327,34 +329,65 @@ public final class Proofreader {
     private final Set<String> words=new HashSet<>();
     private final Map<String,String> substitutions=new HashMap<>(),missing=new HashMap<>();
     private final Set<Integer> fuzzyLengths=new HashSet<>();
-    private final int[] lengths;
+    /** Lookup-only probe: never inserted into a map; compares directly with stored pattern strings. */
+    private static final class SubstitutionProbe {
+        String source;int wildcard;
+        @Override public int hashCode(){int h=0;for(int i=0;i<source.length();i++)h=31*h+(i==wildcard?'*':source.charAt(i));return h;}
+        @Override public boolean equals(Object other){
+            if(other==this)return true;if(!(other instanceof String))return false;String key=(String)other;
+            if(key.length()!=source.length())return false;
+            for(int i=0;i<source.length();i++)if(key.charAt(i)!=(i==wildcard?'*':source.charAt(i)))return false;return true;
+        }
+    }
+    // Compact trie: integer/character arrays, no substring allocation during exact scanning.
+    private final int[] roots,first,edges;
+    private final char[] labels;
+    private final boolean[] terminals;
     public Proofreader(Reader input)throws IOException {
-        TreeSet<Integer> sizes=new TreeSet<>();
+
         if(input!=null)try(BufferedReader reader=new BufferedReader(input)){
             for(String raw;(raw=reader.readLine())!=null;){
                 String word=raw.replace("\ufeff","").trim();
                 if(word.length()<2||word.length()>64||!allHan(word)||!words.add(word))continue;
-                sizes.add(word.length());
+
                 if(word.length()<4||word.length()>8||word.codePointCount(0,word.length())!=word.length())continue;
                 fuzzyLengths.add(word.length());
                 for(int i=0;i<word.length();i++)unique(substitutions,word.substring(0,i)+"*"+word.substring(i+1),word);
                 for(int i=1;i+1<word.length();i++)unique(missing,word.substring(0,i)+word.substring(i+1),word);
             }
         }
-        lengths=new int[sizes.size()];int i=0;for(int size:sizes)lengths[i++]=size;
+        String[] sorted=words.toArray(new String[0]);Arrays.sort(sorted);int capacity=1,max=0;
+        for(String word:sorted){capacity+=word.length();max=Math.max(max,word.length());}
+        int[] parents=new int[capacity],counts=new int[capacity],path=new int[max+1];char[] chars=new char[capacity];boolean[] ends=new boolean[capacity];
+        String previous="";int size=1;
+        for(String word:sorted){int common=0;while(common<previous.length()&&common<word.length()&&previous.charAt(common)==word.charAt(common))common++;
+            for(int i=common;i<word.length();i++){int node=size++,parent=path[i];parents[node]=parent;counts[parent]++;chars[node]=word.charAt(i);path[i+1]=node;}
+            ends[path[word.length()]]=true;previous=word;
+        }
+        first=new int[size+1];edges=new int[size-1];roots=new int[65536];labels=Arrays.copyOf(chars,size);terminals=Arrays.copyOf(ends,size);
+        for(int i=0;i<size;i++)first[i+1]=first[i]+counts[i];int[] next=first.clone();
+        for(int node=1;node<size;node++){edges[next[parents[node]]++]=node;if(parents[node]==0)roots[chars[node]]=node;}
     }
+    private int child(int node,char c){int low=first[node],high=first[node+1]-1;while(low<=high){int mid=(low+high)>>>1,n=edges[mid];if(labels[n]==c)return n;if(labels[n]<c)low=mid+1;else high=mid-1;}return 0;}
     private static void unique(Map<String,String> index,String key,String word){String old=index.get(key);index.put(key,old==null||old.equals(word)?word:"");}
     public int size(){return words.size();}
     private static boolean han(char c){return c>='\u3400'&&c<='\u9fff'||c>='\uf900'&&c<='\ufaff';}
     private static boolean hanCodePoint(int cp){return cp>=0x3400&&cp<=0x9fff||cp>=0xf900&&cp<=0xfaff||cp>=0x20000&&cp<=0x2fa1f||cp>=0x30000&&cp<=0x323af;}
     private static boolean allHan(String s){for(int i=0;i<s.length();){int cp=s.codePointAt(i);if(!hanCodePoint(cp))return false;i+=Character.charCount(cp);}return true;}
-    public boolean[] exactPositions(String text){boolean[] mask=new boolean[text.length()];markExact(text,mask);return mask;}
-    public void markExact(String text,boolean[] mask){
+    public boolean[] exactPositions(String text){return exactPositions(text,()->false);}
+    public boolean[] exactPositions(String text,BooleanSupplier cancelled){
+        boolean[] mask=new boolean[text.length()];
         for(int p=0;p<text.length();p++){
-            if(!hanCodePoint(text.codePointAt(p)))continue;
-            for(int size:lengths){if(p+size>text.length())break;if(words.contains(text.substring(p,p+size)))Arrays.fill(mask,p,p+size,true);}
+            if((p&255)==0&&cancelled.getAsBoolean())return null;
+            int node=roots[text.charAt(p)];if(node==0)continue;
+            for(int end=p+1;node!=0;end++){
+                if(terminals[node])Arrays.fill(mask,p,end,true);
+                if(end==text.length())break;node=child(node,text.charAt(end));
+            }
         }
+        return mask;
     }
+    public void markExact(String text,boolean[] mask){boolean[] found=exactPositions(text);for(int i=0;i<found.length;i++)mask[i]|=found[i];}
     /** Protect quotations, titles and inline code before sentence splitting. */
     public static boolean[] literalPositions(String text){
         boolean[] mask=new boolean[text.length()];ArrayList<Character> closes=new ArrayList<>();int begin=-1;
@@ -367,50 +400,95 @@ public final class Proofreader {
             int key=opens.indexOf(c);
             if(c=='\''&&i>0&&i+1<text.length()&&asciiLetter(text.charAt(i-1))&&asciiLetter(text.charAt(i+1)))key=-1;
             if(key>=0){if(closes.isEmpty())begin=i;closes.add(ends.charAt(key));}
-            if(c=='\n'&&!closes.isEmpty()){Arrays.fill(mask,begin,i,true);closes.clear();begin=-1;}
+
         }
-        if(begin>=0)Arrays.fill(mask,begin,text.length(),true);return mask;
+        if(begin>=0){int end=text.indexOf('\n',begin);Arrays.fill(mask,begin,end<0?text.length():end,true);}return mask;
     }
     private static boolean asciiLetter(char c){return c>='a'&&c<='z'||c>='A'&&c<='Z';}
     private static boolean any(boolean[] mask,int start,int end){for(int i=start;i<end;i++)if(mask[i])return true;return false;}
     private static boolean suffix(String text,int end,String[] choices){for(String s:choices)if(end>=s.length()&&text.regionMatches(end-s.length(),s,0,s.length()))return true;return false;}
     private static boolean prefix(String text,int start,String[] choices){for(String s:choices)if(text.startsWith(s,start))return true;return false;}
-    private static boolean left(String text,int start,String[] choices){return start==0||!han(text.charAt(start-1))||suffix(text,start,choices);}
-    private static boolean right(String text,int end){return end==text.length()||!han(text.charAt(end))||prefix(text,end,RIGHT_WORDS);}
-    private static boolean cue(String text,int start){int begin=start;while(begin>0&&start-begin<18&&"。！？!?；;\n".indexOf(text.charAt(begin-1))<0)begin--;return CUE.matcher(text.substring(begin,start)).matches();}
-    private static boolean confusable(char a,char b){for(String group:CONFUSION_GROUPS)if(group.indexOf(a)>=0&&group.indexOf(b)>=0)return true;return false;}
-    private static int difference(String a,String b){for(int i=0;i<a.length();i++)if(a.charAt(i)!=b.charAt(i))return i;return -1;}
+    private static boolean left(String text,int start,String[] choices){return start==0||(!Character.isLetterOrDigit(text.codePointBefore(start))&&text.charAt(start-1)!='_')||suffix(text,start,choices);}
+    private static boolean right(String text,int end){return end==text.length()||(!Character.isLetterOrDigit(text.codePointAt(end))&&text.charAt(end)!='_')||prefix(text,end,RIGHT_WORDS);}
+    private static boolean cue(String text,int start){if(start==0||"：: 　是为叫作语词".indexOf(text.charAt(start-1))<0)return false;int begin=start;while(begin>0&&start-begin<18&&"。！？!?；;\n".indexOf(text.charAt(begin-1))<0)begin--;return CUE.matcher(text.substring(begin,start)).matches();}
+    private static boolean namedUse(String text,int end){
+        if(!text.startsWith("是",end)&&!text.startsWith("为",end)&&!text.startsWith("作为",end)&&!text.startsWith("用作",end))return false;
+        int stop=Math.min(text.length(),end+18);for(int i=end;i<stop;i++){if("。！？!?；;，,\n".indexOf(text.charAt(i))>=0)break;if(prefix(text,i,NAMES))return true;}return false;
+    }
+    private static int contentCount(String source){int count=0;for(int i=0;i<source.length();i++)if(FUNCTION.indexOf(source.charAt(i))<0)count++;return count;}
     private static int removedAt(String longer,String shorter){int i=0;while(i<shorter.length()&&longer.charAt(i)==shorter.charAt(i))i++;return i;}
-    private void candidates(String text,int start,int size,boolean[] exact,Map<String,String> targets,boolean explicit){
-        int end=start+size;String source=text.substring(start,end);
-        if(!left(text,start,LEFT_WORDS)&&!explicit||!right(text,end))return;
-        boolean protectedSpan=any(exact,start,end);
-        if(!protectedSpan&&fuzzyLengths.contains(size)){
-            Set<String> near=new HashSet<>();boolean ambiguous=false;
-            for(int i=0;i<size;i++){String w=substitutions.get(source.substring(0,i)+"*"+source.substring(i+1));if(w!=null){if(w.isEmpty())ambiguous=true;else near.add(w);}}
-            // Count ambiguity before confidence filtering. Never choose by registration order.
-            if(!ambiguous&&near.size()==1){String word=near.iterator().next();int diff=difference(source,word);
-                if(diff>=0&&(explicit||FUNCTION.indexOf(source.charAt(diff))<0&&FUNCTION.indexOf(word.charAt(diff))<0&&confusable(source.charAt(diff),word.charAt(diff))))targets.put(word,"成语疑似错字（唯一候选）");
-            }
-            if(explicit){Set<String> swaps=new HashSet<>();
-                for(int i=0;i+1<size;i++){if(source.charAt(i)==source.charAt(i+1))continue;String swapped=source.substring(0,i)+source.charAt(i+1)+source.charAt(i)+source.substring(i+2);if(words.contains(swapped))swaps.add(swapped);}
-                if(swaps.size()==1)targets.put(swaps.iterator().next(),"成语相邻字顺序疑似颠倒（唯一候选）");
+    private static boolean changesQuantity(String text,int start,String source,String target){
+        int diff=0;while(diff<source.length()&&source.charAt(diff)==target.charAt(diff))diff++;
+        int at=start+diff;
+        return diff<source.length()&&at>0&&at+1<text.length()&&QUANTITY_UNITS.indexOf(source.charAt(diff))>=0&&NUMERALS.indexOf(text.charAt(at-1))>=0&&han(text.charAt(at+1));
+    }
+    // A function-word expansion may be intentional, e.g. 名不副其实. Do not repair its partial window.
+    private static boolean functionExpansion(String text,int start,String source,String target){
+        int size=source.length()+1;
+        for(int begin=Math.max(0,start-1);begin<=start;begin++){
+            if(begin+size>text.length())continue;
+            for(int skip=1;skip+1<size;skip++){
+                if(FUNCTION.indexOf(text.charAt(begin+skip))<0)continue;
+                boolean same=true;for(int i=0;i<target.length();i++)if(target.charAt(i)!=text.charAt(begin+i+(i>=skip?1:0))){same=false;break;}
+                if(same)return true;
             }
         }
-        if(fuzzyLengths.contains(size-1)){Set<String> extra=new HashSet<>();
+        return false;
+    }
+    private void candidates(String text,int start,String source,boolean[] exact,Map<String,String> targets,boolean explicit,boolean structural,SubstitutionProbe probe){
+        int size=source.length(),end=start+size;
+        boolean protectedSpan=any(exact,start,end);
+        if(!protectedSpan&&fuzzyLengths.contains(size)&&!namedUse(text,end)){
+            String candidate=null;boolean ambiguous=false;
+            probe.source=source;
             for(int i=0;i<size;i++){
-                String word=source.substring(0,i)+source.substring(i+1);if(!words.contains(word)||exact[start+i])continue;
-                boolean repeated=i>0&&source.charAt(i)==source.charAt(i-1)||i+1<size&&source.charAt(i)==source.charAt(i+1);
-                // Delete an outside duplicate while leaving the complete original idiom unchanged.
-                if(protectedSpan){if(!repeated||!(source.startsWith(word)||source.endsWith(word)))continue;}
-                else if(!repeated&&(i==0||i==size-1||FUNCTION.indexOf(source.charAt(i))>=0))continue;
-                extra.add(word);
+                probe.wildcard=i;String word=substitutions.get(probe);
+                if(word==null)continue;
+                if(word.isEmpty()||candidate!=null&&!candidate.equals(word)){ambiguous=true;break;}
+                candidate=word;
+            }
+            if(!ambiguous&&candidate!=null&&!functionExpansion(text,start,source,candidate)&&!changesQuantity(text,start,source,candidate))targets.put(candidate,"成语疑似错字（单字不同、唯一候选）");
+        }
+        // Keep insertion/deletion and transposition checks under their existing context limits.
+        if(!structural)return;
+        if(!protectedSpan&&explicit&&fuzzyLengths.contains(size)){
+            Set<String> swaps=new HashSet<>();
+            for(int i=0;i+1<size;i++){if(source.charAt(i)==source.charAt(i+1))continue;String swapped=source.substring(0,i)+source.charAt(i+1)+source.charAt(i)+source.substring(i+2);if(words.contains(swapped))swaps.add(swapped);}
+            if(swaps.size()==1)targets.put(swaps.iterator().next(),"成语相邻字顺序疑似颠倒（唯一候选）");
+        }
+        if(size>=5){Set<String> extra=new HashSet<>();
+            for(int i=0;i<size;i++){
+                int runEnd=i+1;while(runEnd<size&&source.charAt(runEnd)==source.charAt(i))runEnd++;
+                for(int count=1;count<=Math.max(1,runEnd-i-(i>0&&source.charAt(i)==source.charAt(i-1)?0:1));count++){
+                    if(!fuzzyLengths.contains(size-count)||any(exact,start+i,start+i+count))continue;
+                    String word=source.substring(0,i)+source.substring(i+count);if(!words.contains(word))continue;
+                    boolean repeated=i>0&&source.charAt(i)==source.charAt(i-1)||i+count<size&&source.charAt(i)==source.charAt(i+count);
+                    if(protectedSpan){if(!repeated||!(source.startsWith(word)||source.endsWith(word)))continue;}
+                    else if(!repeated&&(i==0||i==size-1||FUNCTION.indexOf(source.charAt(i))>=0))continue;
+                    extra.add(word);
+                }
             }
             if(extra.size()==1)targets.put(extra.iterator().next(),"成语疑似多字（唯一候选）");
         }
-        if(!protectedSpan&&explicit&&fuzzyLengths.contains(size+1)){
+        if(!protectedSpan&&explicit&&fuzzyLengths.contains(size+1)&&contentCount(source)>=2){
             String word=missing.get(source);if(word!=null&&!word.isEmpty()){int insertion=removedAt(word,source);if(FUNCTION.indexOf(word.charAt(insertion))<0)targets.put(word,"成语疑似漏字（明确成语语境、唯一候选）");}
         }
+    }
+    /** Keep mixed identifiers intact; explicit custom mappings still take precedence. */
+    public static boolean touchesIdentifier(String text,int start,int end){
+        return start>0&&identifierCharacter(text.codePointBefore(start))||end<text.length()&&identifierCharacter(text.codePointAt(end));
+    }
+    private static boolean identifierCharacter(int cp){return cp=='_'||!hanCodePoint(cp)&&Character.isLetterOrDigit(cp);}
+    /** A built-in permutation must not reorder the seam of a legitimate ABAB/ABCABC repetition. */
+    public static boolean crossesRepetition(String text,int start,String source,String replacement){
+        if(source.length()<2||source.length()>16||source.length()!=replacement.length()||source.equals(replacement))return false;
+        char[] a=source.toCharArray(),b=replacement.toCharArray();Arrays.sort(a);Arrays.sort(b);if(!Arrays.equals(a,b))return false;
+        int end=start+source.length();
+        for(int width=2;width<=8;width++)for(int middle=start+1;middle<end;middle++){
+            int begin=middle-width,stop=middle+width;
+            if(begin>=0&&stop<=text.length()&&begin<=start&&end<=stop&&text.regionMatches(begin,text,middle,width))return true;
+        }
+        return false;
     }
     public static boolean altersExact(boolean[] mask,int start,String source,String replacement){
         int prefix=0,suffix=0;
@@ -421,26 +499,29 @@ public final class Proofreader {
     }
     public Edit[] collect(String text,boolean[] custom,boolean[] exact,boolean[] literals,boolean idioms,boolean repetition){return collect(text,custom,exact,literals,idioms,repetition,()->false);}
     public Edit[] collect(String text,boolean[] custom,boolean[] exact,boolean[] literals,boolean idioms,boolean repetition,BooleanSupplier cancelled){
-        ArrayList<Edit> pending=new ArrayList<>();
+        ArrayList<Edit> pending=new ArrayList<>();Map<String,String> targets=new HashMap<>();SubstitutionProbe probe=new SubstitutionProbe();
         for(int p=0;p<text.length();p++){
             if((p&255)==0&&cancelled.getAsBoolean())return null;
-            if(!han(text.charAt(p)))continue;
-            boolean explicit=idioms&&cue(text,p);
-            if(idioms&&(explicit||left(text,p,LEFT_WORDS)))for(int size=3;size<=9&&p+size<=text.length();size++){
+            if(!han(text.charAt(p))||custom[p]||literals[p])continue;
+            boolean checkIdioms=idioms&&!fuzzyLengths.isEmpty(),explicit=checkIdioms&&cue(text,p);
+            if(checkIdioms){boolean structuralLeft=explicit||left(text,p,LEFT_WORDS);int stop=p;while(stop<text.length()&&stop<p+9&&han(text.charAt(stop)))stop++;
+            for(int size=3;p+size<=stop;size++){
+                boolean structural=structuralLeft&&right(text,p+size);
+                if((!fuzzyLengths.contains(size)||any(exact,p,p+size))&&!structural||touchesIdentifier(text,p,p+size))continue;
                 if(any(custom,p,p+size)||any(literals,p,p+size))continue;
-                String source=text.substring(p,p+size);if(!allHan(source)||words.contains(source))continue;
-                Map<String,String> targets=new HashMap<>();candidates(text,p,size,exact,targets,explicit);
+                String source=text.substring(p,p+size);if(words.contains(source))continue;
+                targets.clear();candidates(text,p,source,exact,targets,explicit,structural,probe);
                 if(targets.size()==1){String replacement=targets.keySet().iterator().next();pending.add(new Edit(p,source,replacement,targets.get(replacement)));}
-            }
+            }}
             if(!repetition)continue;
             char c=text.charAt(p);int end=p+1;
             if(PRONOUNS.indexOf(c)>=0&&(p==0||text.charAt(p-1)!=c))while(end<text.length()&&text.charAt(end)==c)end++;
-            if(PRONOUNS.indexOf(c)>=0&&end-p>=2&&(p==0||text.charAt(p-1)!=c)&&left(text,p,DUP_LEFT_WORDS)&&prefix(text,end,DUP_RIGHT_WORDS)&&!any(custom,p,end)&&!any(exact,p,end)&&!any(literals,p,end))pending.add(new Edit(p,text.substring(p,end),String.valueOf(c),"代词连续重复（句首或时间/关联语境）"));
+            if(PRONOUNS.indexOf(c)>=0&&end-p>=2&&(p==0||text.charAt(p-1)!=c)&&left(text,p,DUP_LEFT_WORDS)&&prefix(text,end,DUP_RIGHT_WORDS)&&!namedUse(text,end)&&!any(custom,p,end)&&!any(exact,p,end)&&!any(literals,p,end))pending.add(new Edit(p,text.substring(p,end),String.valueOf(c),""));
             for(String word:REPEATS){
-                if(c!=word.charAt(0))continue;int stop=p+word.length()*2;
-                if(stop>text.length()||!text.startsWith(word+word,p)||!left(text,p,DUP_LEFT_WORDS)||stop==text.length()||!han(text.charAt(stop)))continue;
+                if(c!=word.charAt(0)||p>=word.length()&&text.regionMatches(p-word.length(),word,0,word.length()))continue;int stop=p+word.length()*2;
+                if(stop>text.length()||!text.startsWith(word+word,p)||!(left(text,p,DUP_LEFT_WORDS)||suffix(text,p,LEFT_WORDS))||stop==text.length()||!han(text.charAt(stop)))continue;
                 while(text.startsWith(word,stop))stop+=word.length();
-                if(stop<text.length()&&han(text.charAt(stop))&&!any(custom,p,stop)&&!any(exact,p,stop)&&!any(literals,p,stop))pending.add(new Edit(p,text.substring(p,stop),word,"虚词连续重复（无停顿）"));
+                if(stop<text.length()&&han(text.charAt(stop))&&!namedUse(text,stop)&&!any(custom,p,stop)&&!any(exact,p,stop)&&!any(literals,p,stop))pending.add(new Edit(p,text.substring(p,stop),word,""));
             }
         }
         pending.sort((a,b)->a.start!=b.start?Integer.compare(a.start,b.start):Integer.compare(b.end,a.end));
@@ -448,7 +529,11 @@ public final class Proofreader {
         for(int i=0;i<pending.size();i++){Edit a=pending.get(i);
             for(int j=i+1;j<pending.size()&&pending.get(j).start<a.end;j++){Edit b=pending.get(j);int end=Math.max(a.end,b.end);
                 String one=a.replacement+text.substring(a.end,end),two=text.substring(a.start,b.start)+b.replacement+text.substring(b.end,end);
-                if(!one.equals(two)){conflicts[i]=true;conflicts[j]=true;}
+                if(!one.equals(two)){
+                    boolean structuralA=a.source.length()!=a.replacement.length(),structuralB=b.source.length()!=b.replacement.length();
+                    if(structuralA!=structuralB)conflicts[structuralA?j:i]=true;
+                    else{conflicts[i]=true;conflicts[j]=true;}
+                }
             }
         }
         Edit[] hits=new Edit[text.length()];int takenEnd=0;
@@ -567,13 +652,14 @@ public final class CorrectionCore {
         final MainActivity.TypoIndex dictionary = MainActivity.currentTypoIndex();
         long startTime = android.os.SystemClock.elapsedRealtime();
         final Proofreader proofreader = ProofreaderAssets.get();
-        final boolean[] exactAll = proofreader.exactPositions(text);
+        final boolean[] exactAll = proofreader.exactPositions(text, () -> listener != null && listener.isCancelled());
+        if (exactAll == null) return null;
         final boolean[] customAll = dictionary.protectedPositions(text);
         final Proofreader.Edit[] proofEdits = proofreader.collect(text, customAll, exactAll, Proofreader.literalPositions(text), true, true, () -> listener != null && listener.isCancelled());
         if (proofEdits == null) return null;
         final boolean[] blockedAll = customAll.clone();
         for (Proofreader.Edit edit : proofEdits) if (edit != null) Arrays.fill(blockedAll, edit.start, edit.end, true);
-        int sentenceOffset = 0;
+        int sentenceOffset = 0, skipUntil = 0;
         List<String> sentences = splitText(text);
         List<List<MainActivity.TextBlock>> allBlocks = new ArrayList<>(sentences.size());
         StringBuilder fullCleanText = new StringBuilder(text.length());
@@ -584,7 +670,7 @@ public final class CorrectionCore {
             if (listener != null && listener.isCancelled()) return null;
             String sentence = sentences.get(sentenceIndex);
             int sentenceStart = sentenceOffset; sentenceOffset += sentence.length();
-            if (sentence.isEmpty()) continue;
+            if (sentence.isEmpty() || skipUntil >= sentenceOffset) continue;
 
             boolean[] exactPositions = Arrays.copyOfRange(exactAll, sentenceStart, sentenceOffset);
             boolean[] blockedPositions = Arrays.copyOfRange(blockedAll, sentenceStart, sentenceOffset);
@@ -593,15 +679,17 @@ public final class CorrectionCore {
             GrammarHit[] grammarHits = collectGrammarHits(sentence, fastMode, blockedPositions, exactPositions);
             List<MainActivity.TextBlock> intermediate = new ArrayList<>(Math.max(16, sentence.length() / 4));
             StringBuilder plain = new StringBuilder();
-            int cursor = 0;
+            int cursor = Math.max(0, skipUntil - sentenceStart);
+            int originalStart = sentenceStart + cursor;
             while (cursor < sentence.length()) {
                 if (listener != null && listener.isCancelled()) return null;
 
                 MainActivity.TypoMatch typoMatch = dictionary.find(sentence, cursor, protectedPositions);
                 Proofreader.Edit proof = proofEdits[sentenceStart + cursor];
-                if (proof != null && proof.end <= sentenceOffset && (typoMatch == null || !typoMatch.custom)) {
+                if (proof != null && (typoMatch == null || !typoMatch.custom)) {
                     flushPlain(intermediate, plain);
-                    errorCount = appendGrammarChange(intermediate, proof.source, proof.replacement, proof.explanation, errorCount, listener);
+                    errorCount = appendProofChange(intermediate, proof.source, proof.replacement, proof.explanation, errorCount, listener);
+                    skipUntil = proof.end;
                     cursor += proof.source.length(); continue;
                 }
                 if (typoMatch != null) {
@@ -695,7 +783,7 @@ public final class CorrectionCore {
             }
             flushPlain(intermediate, plain);
 
-            int originalPosition = sentenceStart;
+            int originalPosition = originalStart;
             for (MainActivity.TextBlock block : intermediate) {
                 if (block.type == 0) for (int i = originalPosition; i < originalPosition + block.original.length(); i++)
                     if (exactAll[i]) { block.type = 2; break; }
@@ -756,11 +844,24 @@ public final class CorrectionCore {
     }
 
     private static int progressInterval(int length) { return length > 100000 ? 1200 : (length > 30000 ? 700 : 350); }
+    private static int appendProofChange(List<MainActivity.TextBlock> blocks, String source, String replacement, String explanation, int count, Listener listener) {
+        // Keep only the changed characters in the review mark. A duplicate is a deletion, without a parenthetical note.
+        int prefix=0,suffix=0;
+        while(prefix<source.length()&&prefix<replacement.length()&&source.charAt(prefix)==replacement.charAt(prefix))prefix++;
+        while(suffix<source.length()-prefix&&suffix<replacement.length()-prefix&&source.charAt(source.length()-1-suffix)==replacement.charAt(replacement.length()-1-suffix))suffix++;
+        appendProtectedText(blocks,source.substring(0,prefix));
+        count=appendGrammarChange(blocks,source.substring(prefix,source.length()-suffix),replacement.substring(prefix,replacement.length()-suffix),explanation,count,listener);
+        appendProtectedText(blocks,source.substring(source.length()-suffix));
+        return count;
+    }
+    private static void appendProtectedText(List<MainActivity.TextBlock> blocks,String text) {
+        if(!text.isEmpty())blocks.add(new MainActivity.TextBlock(text,text,false,0f,2));
+    }
     private static int appendGrammarChange(List<MainActivity.TextBlock> blocks, String original, String replacement, String explanation, int count, Listener listener) {
         if (original.equals(replacement)) { appendNormalText(blocks, original); return count; }
         MainActivity.TextBlock block = new MainActivity.TextBlock(original, replacement, true, 1.0f, 6);
-        block.exp = explanation; blocks.add(block); count++;
-        if (listener != null) listener.onError("发现错误：" + original + " → " + (replacement.isEmpty() ? "(删除)" : replacement) + " | 共 " + count + " 处", true);
+        block.exp = replacement.isEmpty() ? "" : explanation; blocks.add(block); count++;
+        if (listener != null) listener.onError((replacement.isEmpty() ? "删除：" + original : "发现错误：" + original + " → " + replacement) + " | 共 " + count + " 处", true);
         return count;
     }
     private static boolean isTarget(char c) { return FiveCharInference.target(c); }
@@ -796,34 +897,16 @@ public final class CorrectionCore {
         }
     }
     public static List<String> splitText(String text) {
-        List<String> firstPass = new ArrayList<>();
-        StringBuilder current = new StringBuilder();
-        for (int i = 0; i < text.length(); i++) {
-            char c = text.charAt(i); current.append(c);
-            if (c == '。' || c == '！' || c == '？' || c == '!' || c == '?' || c == '\n') {
-                // 相邻标点留在同一段，重复/冲突标点规则才能看到完整输入。
-                if (c != '\n') while (i + 1 < text.length() && "。！？!?，、；：”’\"」』".indexOf(text.charAt(i + 1)) >= 0) current.append(text.charAt(++i));
-                firstPass.add(current.toString()); current.setLength(0);
+        List<String> result=new ArrayList<>();int start=0;
+        while(start<text.length()){
+            int limit=Math.min(start+MAX_SEQUENCE_LENGTH,text.length()),end=limit;
+            for(int i=start;i<limit;i++)if("。！？!?\n".indexOf(text.charAt(i))>=0){
+                end=i+1;if(text.charAt(i)!='\n')while(end<limit&&"。！？!?，、；：”’\"」』".indexOf(text.charAt(end))>=0)end++;break;
             }
-        }
-        if (current.length() > 0) firstPass.add(current.toString());
-        List<String> result = new ArrayList<>(firstPass.size());
-        for (String segment : firstPass) {
-            if (segment.length() <= MAX_SEQUENCE_LENGTH) { result.add(segment); continue; }
-            StringBuilder pending = new StringBuilder();
-            for (int i = 0; i < segment.length(); i++) {
-                pending.append(segment.charAt(i));
-                if (pending.length() < MAX_SEQUENCE_LENGTH || (Character.isHighSurrogate(segment.charAt(i)) && i + 1 < segment.length() && Character.isLowSurrogate(segment.charAt(i + 1)))) continue;
-                int split = -1;
-                for (int j = pending.length() - 1; j >= Math.max(0, pending.length() - 60); j--) {
-                    char c = pending.charAt(j); if (c == '，' || c == ',' || c == '；' || c == ';' || c == '、') { split = j; break; }
-                }
-                if (split > 0) {
-                    result.add(pending.substring(0, split + 1));
-                    String remainder = pending.substring(split + 1); pending.setLength(0); pending.append(remainder);
-                } else { result.add(pending.toString()); pending.setLength(0); }
-            }
-            if (pending.length() > 0) result.add(pending.toString());
+            if(end==limit&&end<text.length())for(int i=end-1;i>=Math.max(start+1,end-60);i--)if("，,；;、".indexOf(text.charAt(i))>=0){end=i+1;break;}
+            if(end<text.length()&&Character.isLowSurrogate(text.charAt(end))&&Character.isHighSurrogate(text.charAt(end-1)))end--;
+            if(end<text.length()&&text.charAt(end-1)=='\r'&&text.charAt(end)=='\n')end--;
+            result.add(text.substring(start,end));start=end;
         }
         return result;
     }
@@ -2564,8 +2647,10 @@ public class MainActivity extends AppCompatActivity {
             }
             int entry = terminal[node] - 1;
             if (entry < 0 || (!customs[entry] && isFalsePositiveTypo(text, start, sources[entry]))) return null;
+            if (!customs[entry] && Proofreader.touchesIdentifier(text, start, start + sources[entry].length())) return null;
             if (!customs[entry] && !sources[entry].equals(corrections[entry]) && protectedPositions != null)
                 for (int i = start; i < start + sources[entry].length(); i++) if (protectedPositions[i]) return null;
+            if (!customs[entry] && Proofreader.crossesRepetition(text, start, sources[entry], corrections[entry])) return null;
             if (excluded(text, start, entry)) return new TypoMatch(sources[entry], sources[entry], customs[entry]);
             if (!customs[entry] && !sources[entry].equals(corrections[entry]) && conflicts(text, start, sources[entry], corrections[entry])) return null;
             return new TypoMatch(sources[entry], corrections[entry], customs[entry]);
@@ -4906,9 +4991,10 @@ public class MainActivity extends AppCompatActivity {
             for (TextBlock block : group) {
                 String original = escapeHtmlQuick(block.original), current = escapeHtmlQuick(block.current);
                 if (isActiveCorrection(block)) {
-                    errorCount[0]++; String note = block.type == 1 ? " (置信度:" + String.format(Locale.getDefault(), "%.2f", block.conf) + ")" : (block.type == 4 ? " (自定义)" : ""); if (block.exp != null && !block.exp.isEmpty()) note += " (" + block.exp + ")"; String oldColor = block.type == 6 ? "#E53935" : "#9E9E9E";
+                    errorCount[0]++; String note = block.type == 1 ? " (置信度:" + String.format(Locale.getDefault(), "%.2f", block.conf) + ")" : (block.type == 4 ? " (自定义)" : ""); if (!block.current.isEmpty() && block.exp != null && !block.exp.isEmpty()) note += " (" + block.exp + ")"; String oldColor = block.type == 6 ? "#E53935" : "#9E9E9E";
                     if (block.current.equals(block.original)) html.append("<font color='#E53935'><b>").append(original).append("</b></font><font color='#9E9E9E'><small>").append(note).append("</small></font>");
-                    else html.append("<font color='").append(oldColor).append("'><s>").append(original).append("</s></font> <font color='#E53935'><b>").append(current).append("</b></font><font color='#9E9E9E'><small>").append(note).append("</small></font>");
+                    else { html.append("<font color='").append(oldColor).append("'><s>").append(original).append("</s></font>");
+                        if (!block.current.isEmpty()) html.append(" <font color='#E53935'><b>").append(current).append("</b></font><font color='#9E9E9E'><small>").append(note).append("</small></font>"); }
                 } else html.append(original);
             }
             html.append("<br><br>");
@@ -5139,13 +5225,14 @@ public class MainActivity extends AppCompatActivity {
             int oldStart = builder.length(); builder.append(block.original);
             if (block.type == 6) builder.setSpan(new ColoredStrikethroughSpan(0xFF9E9E9E, 0xFFE53935), oldStart, builder.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
             else { builder.setSpan(new StrikethroughSpan(), oldStart, builder.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE); builder.setSpan(new ForegroundColorSpan(0xFF9E9E9E), oldStart, builder.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE); }
-            builder.append(' '); newStart = builder.length(); builder.append(block.current);
+            if (block.current.isEmpty()) newStart = oldStart;
+            else { builder.append(' '); newStart = builder.length(); builder.append(block.current); }
         }
         int[] range = normalizedRange(newStart, builder.length());
         if (clickable) builder.setSpan(createEditSpan(block), range[0], range[1], range[2]);
         else { builder.setSpan(new ForegroundColorSpan(block.userModified && !block.current.equals(block.original) ? 0xFF4CAF50 : 0xFFE53935), range[0], range[1], range[2]); builder.setSpan(new android.text.style.TypefaceSpan("sans-serif-medium"), range[0], range[1], range[2]); }
-        if (!block.userModified && block.type == 1) appendSmallNote(builder, "置信度: " + String.format(Locale.getDefault(), "%.2f", block.conf)); else if (!block.userModified && block.type == 4) appendSmallNote(builder, "自定义");
-        if (!block.userModified && block.exp != null && !block.exp.isEmpty()) appendSmallNote(builder, block.exp);
+        if (!block.current.isEmpty() && !block.userModified && block.type == 1) appendSmallNote(builder, "置信度: " + String.format(Locale.getDefault(), "%.2f", block.conf)); else if (!block.current.isEmpty() && !block.userModified && block.type == 4) appendSmallNote(builder, "自定义");
+        if (!block.current.isEmpty() && !block.userModified && block.exp != null && !block.exp.isEmpty()) appendSmallNote(builder, block.exp);
     }
 
     private void appendSmallNote(SpannableStringBuilder builder, String note) {
