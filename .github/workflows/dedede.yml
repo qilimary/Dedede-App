@@ -10,6 +10,7 @@ on:
       - app_icon.png
       - lan.png
       - '错别字.txt'
+      - '成语.txt'
       - .github/workflows/dedede.yml
 
 permissions:
@@ -54,6 +55,15 @@ jobs:
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: '3.11'
+
+      - name: Regression check for shared proofreading rules
+        shell: bash
+        run: |
+          set -euo pipefail
+          python dedede-windows.py
+          args=()
+          if [ -f 成语.txt ]; then args=(--idioms 成语.txt); fi
+          python windows/tests/check_proofreading_java.py "${args[@]}"
 
       - name: Cache verified models
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0

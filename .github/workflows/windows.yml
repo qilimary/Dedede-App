@@ -9,7 +9,7 @@ env:
   PYTHONUTF8: '1'
   DOTNET_CLI_TELEMETRY_OPTOUT: '1'
   DOTNET_NOLOGO: '1'
-  WINDOWS_SOURCE_VERSION: '1.2.11'
+  WINDOWS_SOURCE_VERSION: '1.2.13'
 jobs:
   build:
     name: ${{ matrix.name }}
@@ -175,7 +175,7 @@ jobs:
       run: |
         set -euo pipefail
         cat > release-notes.md <<'NOTES'
-        Windows 10/11 x64 离线安装程序。EXE 可直接安装；ZIP 内为同一完整安装程序。当前用户安装，提供启动诊断与兼容启动。版本 1.2.11，完善改后文本编辑、实时复核与阅读设置，改进稳定性与资源使用；同步当前安卓规则。
+        Windows 10/11 x64 离线安装程序。EXE 可直接安装；ZIP 内为同一完整安装程序。当前用户安装，提供启动诊断与兼容启动。版本 1.2.13，成语单字纠错去除音形限制并支持句中匹配；保留完整成语、数量表达和歧义保护，重复内容只划掉多余部分。
         NOTES
         test -s installers/Dedede-Windows-Setup.exe
         test -s installers/Dedede-Windows-Setup.zip
@@ -194,4 +194,5 @@ jobs:
     - .github/workflows/windows.yml
     - dedede-build.sh
     - 错别字.txt
+    - 成语.txt
   workflow_dispatch: {}
