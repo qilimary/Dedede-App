@@ -657,7 +657,7 @@ public final class CorrectionCore {
         final boolean[] exactAll = proofreader.exactPositions(text, () -> listener != null && listener.isCancelled());
         if (exactAll == null) return null;
         final boolean[] customAll = dictionary.protectedPositions(text);
-        final Proofreader.Edit[] proofEdits = proofreader.collect(text, customAll, exactAll, Proofreader.literalPositions(text), true, true, () -> listener != null && listener.isCancelled());
+        final Proofreader.Edit[] proofEdits = proofreader.collect(text, customAll, exactAll, Proofreader.literalPositions(text), false, true, () -> listener != null && listener.isCancelled());
         if (proofEdits == null) return null;
         final boolean[] blockedAll = customAll.clone();
         for (Proofreader.Edit edit : proofEdits) if (edit != null) Arrays.fill(blockedAll, edit.start, edit.end, true);
