@@ -9,7 +9,7 @@ env:
   PYTHONUTF8: '1'
   DOTNET_CLI_TELEMETRY_OPTOUT: '1'
   DOTNET_NOLOGO: '1'
-  WINDOWS_SOURCE_VERSION: '1.2.14'
+  WINDOWS_SOURCE_VERSION: '1.2.16'
 jobs:
   build:
     name: ${{ matrix.name }}
@@ -41,7 +41,7 @@ jobs:
         if version != expected:
             raise SystemExit(f'Windows 源码与工作流版本不一致：源码 {version}，工作流要求 {expected}。请配套替换根目录 dedede-windows.py 和 .github/workflows/windows.yml。')
         PY
-    - name: Sync current Android grammar and dictionary
+    - name: Sync base grammar and desktop dictionary
       shell: bash
       run: python windows/scripts/sync_android.py --repo .
     - name: Regression check for shortcut validation
@@ -175,7 +175,7 @@ jobs:
       run: |
         set -euo pipefail
         cat > release-notes.md <<'NOTES'
-        Windows 10/11 x64 离线安装程序。EXE 可直接安装；ZIP 内为同一完整安装程序。当前用户安装，提供启动诊断与兼容启动。版本 1.2.14，移除成语、错字、多字、少字和重复纠错的规则说明，结果直接显示修改。
+        Windows 10/11 x64 离线安装程序。EXE 可直接安装；ZIP 内为同一完整安装程序。当前用户安装，提供启动诊断与兼容启动。版本 1.2.16，与 Android/Mac 共用错别字.txt、短语白名单、搭配规则与默认参数；错词库支持正确词在前、多错误形式合并。
         NOTES
         test -s installers/Dedede-Windows-Setup.exe
         test -s installers/Dedede-Windows-Setup.zip

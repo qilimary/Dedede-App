@@ -83,19 +83,15 @@ jobs:
       - name: Sync current Windows shared engine and regression checks
         shell: bash
         run: python macos/scripts/sync_windows.py --repo .
-      - name: Sync current Android grammar and dictionary
+      - name: Sync base grammar and desktop dictionary
         shell: bash
         run: python macos/shared/scripts/sync_android.py --repo .
-      - name: Regression check for bundle signing
+      - name: Regression checks for signing and DMG capacity
         shell: bash
         run: |
-          # On macOS the default temp dir /var/folders/... is a symlink to /private/var/folders/...
-          # The signing code returns the resolved (/private/var/...) path, while the test compares it
-          # with the unresolved temp path. Point TMPDIR at the real path so both sides match.
-          TMPDIR="$(python -c 'import os, tempfile; print(os.path.realpath(tempfile.gettempdir()))')"
-          export TMPDIR
-          echo "TMPDIR=$TMPDIR"
           python macos/tests/test_sign_bundle.py
+          python macos/tests/test_create_dmg.py
+          python macos/tests/test_sync_windows.py --repo .
       - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68
         with:
           global-json-file: macos/global.json
@@ -129,7 +125,10 @@ jobs:
         shell: bash
         env:
           DEDEDE_MODEL_MIRRORS: 'https://github.com/${{ github.repository }}/releases/download/model-assets/{filename}'
-        run: bash macos/build.sh "${{ matrix.rid }}"
+        run: |
+          mkdir -p macos/dist
+          set -o pipefail
+          bash macos/build.sh "${{ matrix.rid }}" 2>&1 | tee macos/dist/build.log
       - name: Save model to the macOS cache entry even when the build fails
         if: always() && steps.model_macos.outputs.cache-hit != 'true' && hashFiles('macos/shared/assets/models/HCAM_V2_5CHAR_INT8_PT.onnx') != ''
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
@@ -184,7 +183,7 @@ jobs:
         run: |
           set -euo pipefail
           cat > release-notes.md <<'NOTES'
-          macOS 14+，Apple Silicon（M 系列芯片）原生离线包，Intel 芯片 Mac 已不再支持。DMG 拖入 Applications 安装；ZIP 内为同一 DMG。版本 1.2.14，同步当前 Windows 共用纠错内核与安卓规则；补齐改后文本编辑、实时全文、专注清单、历史与字号设置。本机签名，未 Apple 公证。
+          macOS 14+，Apple Silicon（M 系列芯片）原生离线包，Intel 芯片 Mac 已不再支持。DMG 拖入 Applications 安装；ZIP 内为同一 DMG。版本 1.2.16，Android/Windows/Mac 共用错别字.txt、白名单、语法规则与默认参数；修复 DMG 容量不足，保留完整构建诊断。本机签名，未 Apple 公证。
           NOTES
           test -s installers/Dedede-Mac-AppleSilicon.dmg
           test -s installers/Dedede-Mac-AppleSilicon.zip
