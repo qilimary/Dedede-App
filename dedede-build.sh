@@ -13,6 +13,13 @@ case "$BUILD_MODE" in
   normal|lan|both) ;;
   *) echo "错误：BUILD_MODE 只能填 normal、lan 或 both" >&2; exit 2 ;;
 esac
+# All platforms require the same correct-first source; old reversed files must not silently load.
+python3 - <<'DEDEDE_FORMAT_CHECK'
+from pathlib import Path
+source = Path('错别字.txt').read_text(encoding='utf-8-sig')
+if not source.startswith('# dedede-typos-v2 correct-first'):
+    raise SystemExit('请同时替换新错别字.txt 与三个平台入口：词库第一项必须是正确词。')
+DEDEDE_FORMAT_CHECK
 MODEL_ID='1mBXuaUNVLh_vHNMRkgcLL4JlMIb-K9Qw'
 MODEL_SHA='15b431068a31ff6c9483ca8df5e0d095c6dbdb0b53f80ea9dd98d9d7d9361b6a'
 TOKENIZER_ID='1CEryzzuhemAB0oAQpy-vshA2XP7nOqwQ'
@@ -50,8 +57,8 @@ android {
         applicationId "com.app.dededi.pte"
         minSdk 24
         targetSdk 36
-        versionCode 39
-        versionName "4.1.5-PTE"
+        versionCode 40
+        versionName "4.1.6-PTE"
         ndk { abiFilters "arm64-v8a" }
         externalNativeBuild { cmake { cppFlags ""; arguments "-DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON" } }
     }
@@ -1257,6 +1264,7 @@ public class FloatingService extends Service {
     @Override public void onCreate() {
         super.onCreate();
         sp = getSharedPreferences("DededeConfig", Context.MODE_PRIVATE);
+        MainActivity.upgradeCorrectionDefaults(sp);
         AppExecutors.INFERENCE.execute(() -> MainActivity.ensureTypoMapLoaded(getApplicationContext()));
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             NotificationChannel channel = new NotificationChannel("float_chan", "悬浮窗后台服务", NotificationManager.IMPORTANCE_LOW);
@@ -1463,10 +1471,10 @@ public class FloatingService extends Service {
         }
         final float temperature = fast ? 1f : storedTemperature;
         // 极速模式不使用模型；专业模式会在输入变动时预热，纠错结束后按使用间隔自适应保留30～120秒再释放。
-        float tDe = MainActivity.parseFloatSafe(sp.getString("pro_th1", "0.7"), Float.NaN);
-        float tDi = MainActivity.parseFloatSafe(sp.getString("pro_th2", "0.7"), Float.NaN);
+        float tDe = MainActivity.parseFloatSafe(sp.getString("pro_th1", "0.72"), Float.NaN);
+        float tDi = MainActivity.parseFloatSafe(sp.getString("pro_th2", "0.72"), Float.NaN);
         float tDe3 = MainActivity.parseFloatSafe(sp.getString("pro_th3", "0.75"), Float.NaN);
-        float tZuo=MainActivity.parseFloatSafe(sp.getString("pro_th4","0.75"),Float.NaN),tZuo4=MainActivity.parseFloatSafe(sp.getString("pro_th5","0.75"),Float.NaN);
+        float tZuo=MainActivity.parseFloatSafe(sp.getString("pro_th4","0.75"),Float.NaN),tZuo4=MainActivity.parseFloatSafe(sp.getString("pro_th5","0.78"),Float.NaN);
         if (!fast) MainActivity.noteProCorrectionStart(this);
         lastCorrectedText = "";
         MainActivity.hasNewFloatResult = false; MainActivity.pendingFloatSourceText = null;
@@ -2526,7 +2534,6 @@ public class MainActivity extends AppCompatActivity {
             // 只在明确的引语结构中修正“说到”，保留“说到这个话题”等表达。
             addRule("(?<=[他她时]|笑着|接着|转发)(说到)([ 　]*)([:：])(?=[“”‘])", new String[][]{{"说道", null}});
             // “10月1日前往”并不必然表示截止日期，不能自动插入“之前”。
-            addRule("(几个)([^的，。；！？、\\n]{0,8}?)(校长|老师|领导|教授|医生|警察|党员|干部)", new String[][]{{"几位", null}});
             addRule("(出于)([^，,。；;！？!?：:、\\n]{1,15}?)(的决定)", new String[][]{{"", "决定"}});
             addRule("(具有)([ 　]*(?:消食|化积|润肠|通便|清热|解毒|活血|化瘀|消肿|止痛|健脾|养胃|安神|补血|益气|滋阴|补肾|祛风|除湿|润肺|化痰|止咳|平喘|抗氧化|抗菌|抑菌|消炎)(?:[、和及与 　]*(?:消食|化积|润肠|通便|清热|解毒|活血|化瘀|消肿|止痛|健脾|养胃|安神|补血|益气|滋阴|补肾|祛风|除湿|润肺|化痰|止咳|平喘|抗氧化|抗菌|抑菌|消炎))*[ 　]*)()(?=[，,。；;！？!?：:\\n]|$)", new String[][]{{null, "的功效", "成分残缺，补充宾语"}});
 
@@ -2606,6 +2613,16 @@ public class MainActivity extends AppCompatActivity {
             addProtectedTargetPattern("(地)(?=一声)");
             // "梦幻般地起伏"：般+地+动词为状语结构。
             addProtectedTargetPattern("(?:般)(地)(?=[ 　]*(?:起伏|交错|流动|涌动|浮现|蔓延|展开|延伸|旋转|飞舞|飘荡|摇摆|闪烁|跳动|变化))");
+            // Three-platform shared additions; keep uncommon false positives in the exact whitelist.
+            addRule("(启用)([ \\u3000]*(?:了|过)?[ \\u3000]*(?:(?:一位|两位|几位|一批|多名|年轻的|新来的|优秀的|有经验的)[ \\u3000]*){1,2})(演员|导演|教练|干部|新人)(?=$|[，,。；;！？!?：:、\\n了后时])", new String[][]{{"起用", null, "任用人用“起用”，设施或设备用“启用”"}});
+            addRule("(起用)([ \\u3000]*(?:了|过)?[ \\u3000]*(?:(?:这台|那台|一台|两台|新的|新建的|备用的|全新的)[ \\u3000]*){0,2})(设备|机器|系统|机场|印章|账号|账户)(?=$|[，,。；;！？!?：:、\\n了后时])", new String[][]{{"启用", null, "开始使用设施、设备或账号用“启用”"}});
+            addRule("(登陆)([ \\u3000]*(?:(?:个人的|自己的|官方网站的|指定的|学校的|公司的|新的|该)[ \\u3000]*){1,2})(账号|账户|网站|网页)(?=$|[，,。；;！？!?：:、\\n了后时])", new String[][]{{"登录", null, "进入网站或账号用“登录”"}});
+            addRule("(召开)([ \\u3000]*(?:了|过)?[ \\u3000]*(?:(?:一次|一场|两场|大型的|隆重的|盛大的|年度的|简短的)[ \\u3000]*){1,2})(开幕式|闭幕式|颁奖典礼|婚礼|毕业典礼)(?=$|[，,。；;！？!?：:、\\n了后时])", new String[][]{{"举行", null, "典礼、仪式用“举行”，“召开”用于会议"}});
+            addRule("(召开)([ \\u3000]*(?:了|过)?[ \\u3000]*(?:(?:一期|两期|多期|一次|一场|大型的|面向青年的)[ \\u3000]*){1,2})(培训班|训练班|展览)(?=$|[，,。；;！？!?：:、\\n了后时])", new String[][]{{"举办", null, "培训班、展览用“举办”"}});
+            addRule("(之所以)([^，,。；;！？!?：:\\n]{2,24}[，,][ \\u3000]*)(为的是)(?=让|使|保证|确保|提高|降低|减少|增加|帮助|保护|便于|方便|避免|防止)", new String[][]{{"", null, "目的关系不叠加“之所以”"}});
+            addRule("(?<=[一二两三四五六七八九十几这那0-9])(幅)([ \\u3000]*(?:(?:新的|新买的|旧的|黑色的|金边的|银边的)[ \\u3000]*){1,2})(眼镜|墨镜|手套|耳环|对联)(?=$|[，,。；;！？!?：:、\\n了后时])", new String[][]{{"副", null, "成对、成套的物品用“副”"}});
+            addRule("(?<=[一二两三四五六七八九十几这那0-9])(副)([ \\u3000]*(?:(?:新的|旧的|精美的|珍贵的|巨大的|漂亮的)[ \\u3000]*){1,2})(油画|图画|画卷|地图|山水画)(?=$|[，,。；;！？!?：:、\\n了后时])", new String[][]{{"幅", null, "图画用“幅”"}});
+            addRule("(几个)([ \\u3000]*(?:(?:年轻的|新来的|退休的|优秀的|年长的)[ \\u3000]*)?)(校长|老师|领导|教授|医生|警察|党员|干部)(?=$|[，,。；;！？!?：:、\\n都在来去说问讲])", new String[][]{{"几位", null, "人物量词"}});
             quantRules.put('牛', new QuantifierRule("头", "头")); quantRules.put('马', new QuantifierRule("匹", "匹")); quantRules.put('狗', new QuantifierRule("只", "只条")); quantRules.put('猫', new QuantifierRule("只", "只")); quantRules.put('猪', new QuantifierRule("头", "头口只")); quantRules.put('羊', new QuantifierRule("只", "只头")); quantRules.put('鸡', new QuantifierRule("只", "只")); quantRules.put('鸭', new QuantifierRule("只", "只")); quantRules.put('鹅', new QuantifierRule("只", "只")); quantRules.put('鸟', new QuantifierRule("只", "只")); quantRules.put('鱼', new QuantifierRule("条", "条尾")); quantRules.put('门', new QuantifierRule("扇", "扇部")); quantRules.put('车', new QuantifierRule("辆", "辆部台座个"));
         } catch (Throwable error) { rulesAttempted=false;gramRules.clear();quantRules.clear();protectedTargetPatterns.clear();throw new IllegalStateException("语法规则加载失败",error); }
     }
@@ -2701,11 +2718,13 @@ public class MainActivity extends AppCompatActivity {
                 if (next != 0) { TypoMatch longer = findLongest(text, start, cursor + 1, next, protectedPositions); if (longer != null) return longer; }
             }
             int entry = terminal[node] - 1;
-            if (entry < 0 || (!customs[entry] && isFalsePositiveTypo(text, start, sources[entry]))) return null;
-            if (!customs[entry] && Proofreader.touchesIdentifier(text, start, start + sources[entry].length())) return null;
+            if (entry < 0) return null;
+            boolean correction = !sources[entry].equals(corrections[entry]);
+            if (!customs[entry] && correction && isFalsePositiveTypo(text, start, sources[entry])) return null;
+            if (!customs[entry] && correction && Proofreader.touchesIdentifier(text, start, start + sources[entry].length())) return null;
             if (!customs[entry] && !sources[entry].equals(corrections[entry]) && protectedPositions != null)
                 for (int i = start; i < start + sources[entry].length(); i++) if (protectedPositions[i]) return null;
-            if (!customs[entry] && Proofreader.crossesRepetition(text, start, sources[entry], corrections[entry])) return null;
+            if (!customs[entry] && correction && Proofreader.crossesRepetition(text, start, sources[entry], corrections[entry])) return null;
             if (excluded(text, start, entry)) return new TypoMatch(sources[entry], sources[entry], customs[entry]);
             if (!customs[entry] && !sources[entry].equals(corrections[entry]) && conflicts(text, start, sources[entry], corrections[entry])) return null;
             return new TypoMatch(sources[entry], corrections[entry], customs[entry]);
@@ -3063,7 +3082,7 @@ public class MainActivity extends AppCompatActivity {
             while ((line = reader.readLine()) != null) parseTypoLine(line, words, exclusions);
         } catch (Exception error) { throw new IllegalStateException("错词库加载失败",error); }
         // 内置白名单：匹配整词后保护其中的五字，不截断前面开始的更长错词；用户白名单另有跨词保护。
-        for (String word : new String[]{"舒的", "怎的", "能的", "您的", "得得得", "得吃", "得逞", "说的", "折射得"}) { words.put(word, word); exclusions.remove(word); }
+        for (String word : new String[]{"舒的", "怎的", "能的", "您的", "得得得", "得吃", "得逞", "说的", "折射得", "简单得只有", "简单得甚至", "去想的那些", "吊儿郎当的，", "来了个猛的", "来个猛的", "书里写的那般", "作甚", "下得山来", "十里地", "百里地", "几里地", "谈不到一块的", "同样地，", "长久的凝视", "没有书上写的那么", "眼见得", "漫长得没有", "出门得通过", "本地话", "当家做主", "做笔记", "做了标记", "做过的调整", "得道成仙", "得道了", "目的地", "断断续续地，", "支吾地回", "晓得初中", "药厂产的，", "实时的云", "可靠的网", "精确的图", "得脸的样子", "直得起腰杆", "领导的做派", "客气地挽留", "真诚地挽留", "知书达礼", "可造之材", "做了点评"}) { words.put(word, word); exclusions.remove(word); }
         try {
             JSONObject custom = new JSONObject(context.getSharedPreferences("DededeConfig", MODE_PRIVATE).getString("custom_typos", "{}")); Iterator<String> keys = custom.keys();
             while (keys.hasNext()) { String source = keys.next(); if (source.isEmpty()) continue;
@@ -3073,26 +3092,33 @@ public class MainActivity extends AppCompatActivity {
         typoMapLoaded = true;
     }
 
+    // Shared source format: correct wrong1 wrong2 n=excluded-context other-context.
+    // Everything after n= is an exclusion, shared by all aliases on this line.
     static void parseTypoLine(String line, Map<String, String> words, Map<String, String[]> exclusions) {
         line = line.trim(); if (line.startsWith("\uFEFF")) line = line.substring(1).trim();
-        if (line.isEmpty()) return;
-        String[] fields = TYPO_FIELDS.split(line, 3);
-        if (fields.length < 2 || fields[0].equals(fields[1])) return;
-        words.put(fields[0], fields[1]); exclusions.remove(fields[0]);
-        if (fields.length == 3 && fields[2].startsWith("n=")) {
-            String tail = fields[2].substring(2).trim();
-            if (!tail.isEmpty()) exclusions.put(fields[0], TYPO_FIELDS.split(tail));
+        if (line.isEmpty() || line.startsWith("#")) return;
+        String[] fields = TYPO_FIELDS.split(line);
+        int marker = fields.length;
+        for (int i = 0; i < fields.length; i++) if (fields[i].startsWith("n=")) { marker = i; break; }
+        if (marker < 2) throw new IllegalArgumentException("错词库应为：正确词 错误形式1 错误形式2 n=排除片段");
+        String correct = fields[0];
+        java.util.LinkedHashSet<String> shared = new java.util.LinkedHashSet<>();
+        if (marker < fields.length) {
+            if (fields[marker].length() > 2) shared.add(fields[marker].substring(2));
+            for (int i = marker + 1; i < fields.length; i++) shared.add(fields[i]);
         }
-        String[] boundaryExceptions = null;
-        if ("妨照".equals(fields[0]) && "仿照".equals(fields[1])) boundaryExceptions = new String[]{"不妨照"};
-        if ("换界".equals(fields[0]) && "换届".equals(fields[1])) boundaryExceptions = new String[]{"换界面"};
-        if ("做数".equals(fields[0]) && "作数".equals(fields[1])) boundaryExceptions = new String[]{"做数学", "做数据", "做数值", "做数理", "做数独", "做数字", "做数量", "做数组"};
-        if (boundaryExceptions != null) {
-            java.util.LinkedHashSet<String> merged = new java.util.LinkedHashSet<>();
-            String[] existing = exclusions.get(fields[0]); if (existing != null) Collections.addAll(merged, existing);
-            Collections.addAll(merged, boundaryExceptions); exclusions.put(fields[0], merged.toArray(new String[0]));
+        for (int i = 1; i < marker; i++) {
+            String wrong = fields[i];
+            if (wrong.equals(correct)) continue;
+            java.util.LinkedHashSet<String> except = new java.util.LinkedHashSet<>(shared);
+            if ("妨照".equals(wrong) && "仿照".equals(correct)) except.add("不妨照");
+            if ("换界".equals(wrong) && "换届".equals(correct)) except.add("换界面");
+            if ("做数".equals(wrong) && "作数".equals(correct)) Collections.addAll(except,
+                    "做数学", "做数据", "做数值", "做数理", "做数独", "做数字", "做数量", "做数组");
+            words.put(wrong, correct);
+            exclusions.remove(wrong);
+            if (!except.isEmpty()) exclusions.put(wrong, except.toArray(new String[0]));
         }
-
     }
     private static void reloadTypoMapAsync(Context context) {
         Context app = context.getApplicationContext(); AppExecutors.INFERENCE.execute(() -> {try{loadTypoMap(app);}catch(Throwable error){showModelError(errorDetails(error));}});
@@ -3897,37 +3923,40 @@ public class MainActivity extends AppCompatActivity {
         @Override public void onStopTrackingTouch(android.widget.SeekBar seekBar) {}
     }
 
+    public static synchronized void upgradeCorrectionDefaults(SharedPreferences sp) {
+        if (sp.getBoolean("hcam_unified_defaults_v2", false)) return;
+        String[] keys = {"pro_temp", "pro_th1", "pro_th2", "pro_th3", "pro_th4", "pro_th5"};
+        String[] current = {"1.0", "0.72", "0.72", "0.75", "0.75", "0.78"};
+        // Match whole historical default profiles. Never migrate individual fields
+        // of a customized profile, including one first opened through the float service.
+        String[][] previous = {
+            {"1.0", "0.7", "0.7", "0.75", "0.75", "0.75"},
+            {"1.0", "0.68", "0.68", "0.74", "0.74", "0.74"},
+            {"1.0", "0.68", "0.68", "0.72", "0.74", "0.74"},
+            {"1.2", "0.76", "0.74", "0.78", "0.74", "0.74"},
+            {"1.1", "0.76", "0.72", "0.74", "0.74", "0.74"},
+            {"0.8", "0.72", "0.68", "0.74", "0.74", "0.74"},
+            {"0.8", "0.72", "0.72", "0.80", "0.74", "0.74"}
+        };
+        boolean untouched = false;
+        for (String[] profile : previous) {
+            boolean matches = true;
+            for (int i = 0; i < keys.length; i++) {
+                try {
+                    float value = Float.parseFloat(sp.getString(keys[i], profile[i]));
+                    if (!Float.isFinite(value) || Math.abs(value - Float.parseFloat(profile[i])) > 0.00001f) matches = false;
+                } catch (RuntimeException error) { matches = false; }
+            }
+            if (matches) { untouched = true; break; }
+        }
+        SharedPreferences.Editor defaults = sp.edit().putBoolean("hcam_unified_defaults_v2", true)
+                .putBoolean("hcam_params_v1", true).putBoolean("hcam_v2_five", true).putBoolean("hcam_thresholds_20261011", true);
+        if (untouched) for (int i = 0; i < keys.length; i++) defaults.putString(keys[i], current[i]);
+        defaults.apply();
+    }
+
     private void loadSettings(boolean fast) {
-        if (!sp.getBoolean("hcam_params_v1", false)) {
-            String oldT = sp.getString("pro_temp", null);
-            String oldDe = sp.getString("pro_th1", null);
-            String oldDi = sp.getString("pro_th2", null);
-            String oldDe3 = sp.getString("pro_th3", null);
-            boolean unset = oldT == null && oldDe == null && oldDi == null && oldDe3 == null;
-            boolean oldDefaultA = "1.2".equals(oldT) && "0.76".equals(oldDe) && "0.74".equals(oldDi) && "0.78".equals(oldDe3);
-            boolean oldDefaultB = "1.1".equals(oldT) && "0.76".equals(oldDe) && "0.72".equals(oldDi) && "0.74".equals(oldDe3);
-            boolean interimDilaGloDefault = "0.8".equals(oldT) && "0.72".equals(oldDe) && "0.68".equals(oldDi) && "0.74".equals(oldDe3);
-            boolean previousDilaGloFinal = "0.8".equals(oldT) && "0.72".equals(oldDe) && "0.72".equals(oldDi) && "0.80".equals(oldDe3);
-            SharedPreferences.Editor migration = sp.edit().putBoolean("hcam_params_v1", true);
-            if (unset || oldDefaultA || oldDefaultB || interimDilaGloDefault || previousDilaGloFinal) {
-                migration.putString("pro_temp", "1.0").putString("pro_th1", "0.68").putString("pro_th2", "0.68").putString("pro_th3", "0.72");
-            }
-            migration.apply();
-        }
-        if(!sp.getBoolean("hcam_v2_five",false)) {
-            SharedPreferences.Editor migration=sp.edit().putBoolean("hcam_v2_five",true);
-            if("1.0".equals(sp.getString("pro_temp","1.0"))&&"0.68".equals(sp.getString("pro_th1","0.68"))&&"0.68".equals(sp.getString("pro_th2","0.68"))&&"0.72".equals(sp.getString("pro_th3","0.72")))migration.putString("pro_th3","0.74");
-            migration.apply();
-        }
-        if(!sp.getBoolean("hcam_thresholds_20261011",false)) {
-            SharedPreferences.Editor defaults=sp.edit().putBoolean("hcam_thresholds_20261011",true);
-            String[] keys={"pro_th1","pro_th2","pro_th3","pro_th4","pro_th5"};
-            for(int i=0;i<keys.length;i++) {
-                String old=i<2?"0.68":"0.74", next=i<2?"0.7":"0.75";
-                if(old.equals(sp.getString(keys[i],old))) defaults.putString(keys[i],next);
-            }
-            defaults.apply();
-        }
+        upgradeCorrectionDefaults(sp);
         String temperature = sp.getString("pro_temp", "1.0");
         if (!isTemperatureValid(parseFloatSafe(temperature, Float.NaN))) {
             temperature = "1.0";
@@ -3936,10 +3965,10 @@ public class MainActivity extends AppCompatActivity {
         }
         // 两种模式显示同一组专业参数；极速模式只禁用并置灰，不再换成另一套数字。
         editTemp.setText(temperature);
-        editThreshDe1.setText(sp.getString("pro_th1", "0.7"));
-        editThreshDe2.setText(sp.getString("pro_th2", "0.7"));
+        editThreshDe1.setText(sp.getString("pro_th1", "0.72"));
+        editThreshDe2.setText(sp.getString("pro_th2", "0.72"));
         editThreshDe3.setText(sp.getString("pro_th3", "0.75"));
-        editThreshZuo.setText(sp.getString("pro_th4", "0.75")); editThreshZuo4.setText(sp.getString("pro_th5", "0.75"));
+        editThreshZuo.setText(sp.getString("pro_th4", "0.75")); editThreshZuo4.setText(sp.getString("pro_th5", "0.78"));
         boolean professional = !fast;
         for (EditText field : new EditText[]{editTemp, editThreshDe1, editThreshDe2, editThreshDe3, editThreshZuo, editThreshZuo4}) {
             field.setEnabled(professional);
@@ -4559,7 +4588,7 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void showHelp() {
-        String text = "【模式介绍】\n极速：不调用神经网络检查“的/地/得/做/作”；仅运行系统内置的错词库和规则。速度最快（毫秒级），适合只想快速检查错别字与语病的场景。\n\n专业：比极速模式额外纠错“的地得做作”使用，速度较快（秒级）。\nHCAM模型是本作者自己设计，并从零训练＋微调的中文掩码模型。该模型会额外纠错“的地得”和“做作”。\n通常建议始终使用专业模式，除非你对“的地得做作”运用得如火纯青。\n\n注：不同手机的速度会有差异；模型也可能出现极少量误判，这是神经网络的通病，在所难免。\n\n单次纠错不建议超过30万字，可能会出现卡顿或闪退。\n\n【温度参数（仅专业模式）】\n控制AI判断的自信（果断）程度。\n• 允许范围：0.5～2.0；推荐默认值1.0。\n• 温度值越高，概率分布越平缓，模型更保守，给出的置信度变低，修改量可能下降。\n• 值越低（如0.5）：概率分布越尖锐，模型更激进，给出的置信度更高，修改量可能上升。\n• 值越高（如2.0）：概率分布越平缓，模型更保守，修改量可能下降。\n举例：0.8会给出更高的置信度，更不容易被阈值拦截。1.2会更保守，更容易被阈值拦截。\n• 温度不得低于0.5或高于2.0。\n\n【置信度拦截阈值（仅专业模式）】\n只有AI的置信度 ≥ 阈值时才修改，否则保留原字，防止过度纠错。\n• 推荐默认值：的0.7、地0.7、得0.75、做0.75、作0.75。阈值按模型预测的目标字应用，范围0～1。\n举例：设置为0.9时，模型修改的置信度超过0.9才会被保留并显示，否则忽略。\n\n【交互与拓展功能】\n• 手动修改：检查后，点击带下划线的字词即可手动修改或还原。\n• 纠错过程中修改原文会中断检查。\n• 输入框展开：点击输入框右上角的展开按钮，可进入全屏输入编辑，支持可拖动滚动条、撤销、还原和首行缩进；完成后内容会自动同步回主输入框。\n• 便签模式：长按底部纠错结果区域，即可展开便签编辑器进行全局修改，完成后支持直接导出。绿色的波浪线为系统或你修改过的文本（原在输出框中呈现红色）。\n• 字体大小与皮肤：点击标题栏“A”进入字体设置，可调节字体大小。底部彩色衣服可切换不同的界面皮肤。\n• 快速跳转：点击纠错清单中的序号 [1]，可以自动滚动定位至全文对应段落。\n• 一键粘贴：点击按钮快速读取剪贴板内容。（不建议一次性粘贴超过20万字，可能导致闪退）\n• 导入文件：支持txt、md、docx、pdf及图片格式(支持直接OCR识图)。\n  不建议一次导入多个过大的文件，可能导致使用卡顿。也不建议导入带有特定格式和排版（如表格类）的文件，会破坏原有排版。\n\n• 系统分享：在其他App中选中文本，点击分享并选择本App，即可跳转至系统进行纠错。\n• 历史记录：最多保存近50条。\n\n 【错词库】\n  手动定义规则，这些规则会在纠错中自动应用。\n  使用方法：\n1.白名单：\n在“原始文本”框输入例如“慢慢的”或“张三”，直接提交。等效于白名单，系统在遇到该词后不会再修改。\n  2.改错：在“修改后”里再添加文本（如：慢慢地），纠错时原始文本就会被自动修改。\n• 自定义规则优先级高于本系统。\n\n【悬浮窗】\n开启后支持后台随时随地纠错。长按悬浮球或点击面板右上角可同步至应用内继续操作。点击面板外可自动收起。\n\n【标点清理：】\n  当检测到包含复制残留的垃圾标点时会触发弹窗，允许自由清理提纯文本。\n\n• 其他：本App和内置模型均由 奇 制作与训练，非其他开源模型，无版权风险。本著作权归奇（qi）所有。想与作者私聊？公众号搜索：Li的信箱";
+        String text = "【模式介绍】\n极速：不调用神经网络检查“的/地/得/做/作”；仅运行系统内置的错词库和规则。速度最快（毫秒级），适合只想快速检查错别字与语病的场景。\n\n专业：比极速模式额外纠错“的地得做作”使用，速度较快（秒级）。\nHCAM模型是本作者自己设计，并从零训练＋微调的中文掩码模型。该模型会额外纠错“的地得”和“做作”。\n通常建议始终使用专业模式，除非你对“的地得做作”运用得如火纯青。\n\n注：不同手机的速度会有差异；模型也可能出现极少量误判，这是神经网络的通病，在所难免。\n\n单次纠错不建议超过30万字，可能会出现卡顿或闪退。\n\n【温度参数（仅专业模式）】\n控制AI判断的自信（果断）程度。\n• 允许范围：0.5～2.0；推荐默认值1.0。\n• 温度值越高，概率分布越平缓，模型更保守，给出的置信度变低，修改量可能下降。\n• 值越低（如0.5）：概率分布越尖锐，模型更激进，给出的置信度更高，修改量可能上升。\n• 值越高（如2.0）：概率分布越平缓，模型更保守，修改量可能下降。\n举例：0.8会给出更高的置信度，更不容易被阈值拦截。1.2会更保守，更容易被阈值拦截。\n• 温度不得低于0.5或高于2.0。\n\n【置信度拦截阈值（仅专业模式）】\n只有AI的置信度 ≥ 阈值时才修改，否则保留原字，防止过度纠错。\n• 推荐默认值：的0.72、地0.72、得0.75、做0.75、作0.78。阈值按模型预测的目标字应用，范围0～1。\n举例：设置为0.9时，模型修改的置信度超过0.9才会被保留并显示，否则忽略。\n\n【交互与拓展功能】\n• 手动修改：检查后，点击带下划线的字词即可手动修改或还原。\n• 纠错过程中修改原文会中断检查。\n• 输入框展开：点击输入框右上角的展开按钮，可进入全屏输入编辑，支持可拖动滚动条、撤销、还原和首行缩进；完成后内容会自动同步回主输入框。\n• 便签模式：长按底部纠错结果区域，即可展开便签编辑器进行全局修改，完成后支持直接导出。绿色的波浪线为系统或你修改过的文本（原在输出框中呈现红色）。\n• 字体大小与皮肤：点击标题栏“A”进入字体设置，可调节字体大小。底部彩色衣服可切换不同的界面皮肤。\n• 快速跳转：点击纠错清单中的序号 [1]，可以自动滚动定位至全文对应段落。\n• 一键粘贴：点击按钮快速读取剪贴板内容。（不建议一次性粘贴超过20万字，可能导致闪退）\n• 导入文件：支持txt、md、docx、pdf及图片格式(支持直接OCR识图)。\n  不建议一次导入多个过大的文件，可能导致使用卡顿。也不建议导入带有特定格式和排版（如表格类）的文件，会破坏原有排版。\n\n• 系统分享：在其他App中选中文本，点击分享并选择本App，即可跳转至系统进行纠错。\n• 历史记录：最多保存近50条。\n\n 【错词库】\n  手动定义规则，这些规则会在纠错中自动应用。\n  使用方法：\n1.白名单：\n在“原始文本”框输入例如“慢慢的”或“张三”，直接提交。等效于白名单，系统在遇到该词后不会再修改。\n  2.改错：在“修改后”里再添加文本（如：慢慢地），纠错时原始文本就会被自动修改。\n• 自定义规则优先级高于本系统。\n\n【悬浮窗】\n开启后支持后台随时随地纠错。长按悬浮球或点击面板右上角可同步至应用内继续操作。点击面板外可自动收起。\n\n【标点清理：】\n  当检测到包含复制残留的垃圾标点时会触发弹窗，允许自由清理提纯文本。\n\n• 其他：本App和内置模型均由 奇 制作与训练，非其他开源模型，无版权风险。本著作权归奇（qi）所有。想与作者私聊？公众号搜索：Li的信箱";
         int ui = Math.max(-3, Math.min(3, sp.getInt("font_offset_sys", 0))); TextView view = new TextView(this); view.setText(text); view.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 14 + ui); view.setTextColor(0xFF333333); view.setLineSpacing(0, 1.2f); int padding = (int) (20 * getResources().getDisplayMetrics().density); view.setPadding(padding, padding / 2, padding, 0); ScrollView scroll = new ScrollView(this); scroll.addView(view); new AlertDialog.Builder(this).setTitle("使用说明").setView(scroll).setPositiveButton("知道了", null).show();
     }
 
@@ -5865,11 +5894,11 @@ cat > "app/src/main/res/layout/activity_main.xml" <<'DEDEDE_SOURCE_EOF'
                 <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:gravity="center_vertical" android:baselineAligned="false">
                 <LinearLayout android:id="@+id/paramDe" android:layout_width="0dp" android:layout_height="42dp" android:layout_weight="1" android:orientation="horizontal" android:gravity="center_vertical">
                     <TextView android:id="@+id/labelDe" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="的" android:textSize="15sp" android:textStyle="bold" android:textColor="@color/text_primary"/>
-                    <EditText android:id="@+id/editThreshDe1" android:layout_width="0dp" android:layout_weight="1" android:layout_height="42dp" android:minWidth="0dp" android:padding="0dp" android:text="0.7" android:contentDescription="的字阈值" android:textColor="@color/text_primary" android:textSize="13sp" android:inputType="numberDecimal" android:maxLength="5" android:singleLine="true" android:gravity="center" android:background="@null"/>
+                    <EditText android:id="@+id/editThreshDe1" android:layout_width="0dp" android:layout_weight="1" android:layout_height="42dp" android:minWidth="0dp" android:padding="0dp" android:text="0.72" android:contentDescription="的字阈值" android:textColor="@color/text_primary" android:textSize="13sp" android:inputType="numberDecimal" android:maxLength="5" android:singleLine="true" android:gravity="center" android:background="@null"/>
                 </LinearLayout>
                 <LinearLayout android:id="@+id/paramDi" android:layout_width="0dp" android:layout_height="42dp" android:layout_weight="1" android:orientation="horizontal" android:gravity="center_vertical">
                     <TextView android:id="@+id/labelDi" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="地" android:textSize="15sp" android:textStyle="bold" android:textColor="@color/text_primary"/>
-                    <EditText android:id="@+id/editThreshDe2" android:layout_width="0dp" android:layout_weight="1" android:layout_height="42dp" android:minWidth="0dp" android:padding="0dp" android:text="0.7" android:contentDescription="地字阈值" android:textColor="@color/text_primary" android:textSize="13sp" android:inputType="numberDecimal" android:maxLength="5" android:singleLine="true" android:gravity="center" android:background="@null"/>
+                    <EditText android:id="@+id/editThreshDe2" android:layout_width="0dp" android:layout_weight="1" android:layout_height="42dp" android:minWidth="0dp" android:padding="0dp" android:text="0.72" android:contentDescription="地字阈值" android:textColor="@color/text_primary" android:textSize="13sp" android:inputType="numberDecimal" android:maxLength="5" android:singleLine="true" android:gravity="center" android:background="@null"/>
                 </LinearLayout>
                 <LinearLayout android:id="@+id/paramDe3" android:layout_width="0dp" android:layout_height="42dp" android:layout_weight="1" android:orientation="horizontal" android:gravity="center_vertical">
                     <TextView android:id="@+id/labelDe3" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="得" android:textSize="15sp" android:textStyle="bold" android:textColor="@color/text_primary"/>
@@ -5877,7 +5906,7 @@ cat > "app/src/main/res/layout/activity_main.xml" <<'DEDEDE_SOURCE_EOF'
                 </LinearLayout>
                 <LinearLayout android:id="@+id/paramZuo4" android:layout_width="0dp" android:layout_height="42dp" android:layout_weight="1" android:orientation="horizontal" android:gravity="center_vertical">
                     <TextView android:id="@+id/labelZuo4" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="作" android:textSize="15sp" android:textStyle="bold" android:textColor="@color/text_primary"/>
-                    <EditText android:id="@+id/editThreshZuo4" android:layout_width="0dp" android:layout_weight="1" android:layout_height="42dp" android:minWidth="0dp" android:padding="0dp" android:text="0.75" android:contentDescription="作字阈值" android:textColor="@color/text_primary" android:textSize="13sp" android:inputType="numberDecimal" android:maxLength="5" android:singleLine="true" android:gravity="center" android:background="@null"/>
+                    <EditText android:id="@+id/editThreshZuo4" android:layout_width="0dp" android:layout_weight="1" android:layout_height="42dp" android:minWidth="0dp" android:padding="0dp" android:text="0.78" android:contentDescription="作字阈值" android:textColor="@color/text_primary" android:textSize="13sp" android:inputType="numberDecimal" android:maxLength="5" android:singleLine="true" android:gravity="center" android:background="@null"/>
                 </LinearLayout>
                 <LinearLayout android:id="@+id/paramZuo" android:layout_width="0dp" android:layout_height="42dp" android:layout_weight="1" android:orientation="horizontal" android:gravity="center_vertical">
                     <TextView android:id="@+id/labelZuo" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="做" android:textSize="15sp" android:textStyle="bold" android:textColor="@color/text_primary"/>
