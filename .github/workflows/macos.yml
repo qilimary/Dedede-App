@@ -15,6 +15,8 @@ env:
       - main
     paths:
       - dedede-macos.py
+      - dedede-windows.py
+      - 成语.txt
       - .github/workflows/macos.yml
       - dedede-build.sh
       - 错别字.txt
@@ -78,6 +80,9 @@ jobs:
       - name: Verify and restore macos sources
         shell: bash
         run: python dedede-macos.py
+      - name: Sync current Windows shared engine and regression checks
+        shell: bash
+        run: python macos/scripts/sync_windows.py --repo .
       - name: Sync current Android grammar and dictionary
         shell: bash
         run: python macos/shared/scripts/sync_android.py --repo .
@@ -151,8 +156,10 @@ jobs:
           name: Checks-and-previews-${{ matrix.label }}
           path: |-
             source-verification.json
+            macos/shared/desktop-sync.json
             macos/shared/assets/android-sync.json
             macos/dist/*.json
+            macos/dist/*.log
             macos/dist/previews-*/
           if-no-files-found: ignore
           retention-days: 14
@@ -177,7 +184,7 @@ jobs:
         run: |
           set -euo pipefail
           cat > release-notes.md <<'NOTES'
-          macOS 14+，Apple Silicon（M 系列芯片）原生离线包，Intel 芯片 Mac 已不再支持。DMG 拖入 Applications 安装；ZIP 内为同一 DMG。版本 1.2.3，同步当前安卓规则。本机签名，未 Apple 公证。
+          macOS 14+，Apple Silicon（M 系列芯片）原生离线包，Intel 芯片 Mac 已不再支持。DMG 拖入 Applications 安装；ZIP 内为同一 DMG。版本 1.2.14，同步当前 Windows 共用纠错内核与安卓规则；补齐改后文本编辑、实时全文、专注清单、历史与字号设置。本机签名，未 Apple 公证。
           NOTES
           test -s installers/Dedede-Mac-AppleSilicon.dmg
           test -s installers/Dedede-Mac-AppleSilicon.zip
