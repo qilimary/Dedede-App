@@ -125,16 +125,8 @@ jobs:
     - name: Stage installer
       shell: bash
       run: |
-        mkdir -p delivery-exe delivery-zip
-        cp windows/dist/Dedede-Windows-Setup.exe delivery-exe/
+        mkdir -p delivery-zip
         cp windows/dist/Dedede-Windows-Setup.zip delivery-zip/
-    - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
-      with:
-        name: Installer-EXE-${{ matrix.label }}
-        path: delivery-exe/*
-        if-no-files-found: error
-        retention-days: 30
-        compression-level: 0
     - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
       with:
         name: Installer-ZIP-${{ matrix.label }}
@@ -154,7 +146,7 @@ jobs:
           windows/dist/previews/
         if-no-files-found: ignore
         retention-days: 14
-      if: always()
+      if: failure()
   publish:
     name: Publish windows installers
     needs: build
@@ -175,16 +167,16 @@ jobs:
       run: |
         set -euo pipefail
         cat > release-notes.md <<'NOTES'
-        Windows 10/11 x64 离线安装程序。EXE 可直接安装；ZIP 内为同一完整安装程序。当前用户安装，提供启动诊断与兼容启动。版本 1.2.16，与 Android/Mac 共用错别字.txt、短语白名单、搭配规则与默认参数；错词库支持正确词在前、多错误形式合并。
+        Windows 10/11 x64 离线安装压缩包。解压 ZIP 后运行其中的安装程序。当前用户安装，提供启动诊断与兼容启动。版本 1.2.16，与 Android/Mac 共用错别字.txt、短语白名单、搭配规则与默认参数；错词库支持正确词在前、多错误形式合并。
         NOTES
-        test -s installers/Dedede-Windows-Setup.exe
         test -s installers/Dedede-Windows-Setup.zip
         if gh release view windows-latest --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-          gh release upload windows-latest installers/Dedede-Windows-Setup.exe installers/Dedede-Windows-Setup.zip --repo "$GITHUB_REPOSITORY" --clobber
+          gh release upload windows-latest installers/Dedede-Windows-Setup.zip --repo "$GITHUB_REPOSITORY" --clobber
           gh release edit windows-latest --repo "$GITHUB_REPOSITORY" --notes-file release-notes.md
         else
-          gh release create windows-latest installers/Dedede-Windows-Setup.exe installers/Dedede-Windows-Setup.zip --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title '纠错 Pro Windows（最新版）' --notes-file release-notes.md --latest=false
+          gh release create windows-latest installers/Dedede-Windows-Setup.zip --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title '纠错 Pro Windows（最新版）' --notes-file release-notes.md --latest=false
         fi
+        gh release delete-asset windows-latest Dedede-Windows-Setup.exe --repo "$GITHUB_REPOSITORY" --yes 2>/dev/null || true
 'on':
   push:
     branches:

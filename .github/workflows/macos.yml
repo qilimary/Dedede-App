@@ -141,7 +141,7 @@ jobs:
         shell: bash
         run: |
           mkdir -p delivery
-          cp "macos/dist/Dedede-Mac-${{ matrix.label }}.dmg" "macos/dist/Dedede-Mac-${{ matrix.label }}.zip" delivery/
+          cp "macos/dist/Dedede-Mac-${{ matrix.label }}.zip" delivery/
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: Installer-${{ matrix.label }}
@@ -162,7 +162,7 @@ jobs:
             macos/dist/previews-*/
           if-no-files-found: ignore
           retention-days: 14
-        if: always()
+        if: failure()
   publish:
     name: Publish macos installers
     needs: build
@@ -183,17 +183,16 @@ jobs:
         run: |
           set -euo pipefail
           cat > release-notes.md <<'NOTES'
-          macOS 14+，Apple Silicon（M 系列芯片）原生离线包，Intel 芯片 Mac 已不再支持。DMG 拖入 Applications 安装；ZIP 内为同一 DMG。版本 1.2.16，Android/Windows/Mac 共用错别字.txt、白名单、语法规则与默认参数；修复 DMG 容量不足，保留完整构建诊断。本机签名，未 Apple 公证。
+          macOS 14+，Apple Silicon（M 系列芯片）原生离线包，Intel 芯片 Mac 已不再支持。ZIP 内包含 DMG，解压后拖入 Applications 安装。版本 1.2.16，Android/Windows/Mac 共用错别字.txt、白名单、语法规则与默认参数；修复 DMG 容量不足，保留完整构建诊断。本机签名，未 Apple 公证。
           NOTES
-          test -s installers/Dedede-Mac-AppleSilicon.dmg
           test -s installers/Dedede-Mac-AppleSilicon.zip
           if gh release view macos-latest --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release upload macos-latest installers/Dedede-Mac-AppleSilicon.dmg installers/Dedede-Mac-AppleSilicon.zip --repo "$GITHUB_REPOSITORY" --clobber
+            gh release upload macos-latest installers/Dedede-Mac-AppleSilicon.zip --repo "$GITHUB_REPOSITORY" --clobber
             gh release edit macos-latest --repo "$GITHUB_REPOSITORY" --notes-file release-notes.md
           else
-            gh release create macos-latest installers/Dedede-Mac-AppleSilicon.dmg installers/Dedede-Mac-AppleSilicon.zip --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title '纠错 Pro Mac（最新版）' --notes-file release-notes.md --latest=false
+            gh release create macos-latest installers/Dedede-Mac-AppleSilicon.zip --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title '纠错 Pro Mac（最新版）' --notes-file release-notes.md --latest=false
           fi
           # Remove stale Intel assets left over from older releases, if any.
-          for asset in Dedede-Mac-Intel.dmg Dedede-Mac-Intel.zip; do
+          for asset in Dedede-Mac-Intel.dmg Dedede-Mac-Intel.zip Dedede-Mac-AppleSilicon.dmg; do
             gh release delete-asset macos-latest "$asset" --repo "$GITHUB_REPOSITORY" --yes 2>/dev/null || true
           done

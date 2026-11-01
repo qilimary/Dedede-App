@@ -7,7 +7,6 @@ on:
     branches: [main]
     paths:
       - dedede-build.sh
-      - dedede-windows.py
       - app_icon.png
       - lan.png
       - '错别字.txt'
@@ -57,7 +56,7 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Regression check for Android parser, defaults and shared rules
+      - name: Regression check for shared proofreading rules
         shell: bash
         run: |
           set -euo pipefail
@@ -86,7 +85,7 @@ jobs:
           bash -n dedede-build.sh
           bash dedede-build.sh
 
-      - name: Verify selected APK and ZIP files
+      - name: Verify ZIP packages and packaged APKs
         id: verify
         shell: bash
         run: |
@@ -98,58 +97,39 @@ jobs:
             both)   versions=(Normal Lan) ;;
             *) echo "Unknown BUILD_MODE: $mode" >&2; exit 1 ;;
           esac
-
           shopt -s nullglob
-          apks=(dist/*.apk)
-          test "${#apks[@]}" -eq "${#versions[@]}"
-
+          zips=(dist/Dedede-*.zip)
+          apks=(dist/Dedede-*.apk)
+          test "${#zips[@]}" -eq "${#versions[@]}"
+          test "${#apks[@]}" -eq 0
           for version in "${versions[@]}"; do
-            apk="dist/Dedede-${version}.apk"
             zip="dist/Dedede-${version}.zip"
-
-            test -s "$apk"
             test -s "$zip"
-            unzip -tqq "$apk"
             unzip -tqq "$zip"
-
-            contents=$(unzip -Z1 "$apk")
+            entry="Dedede-${version}.apk"
+            test "$(unzip -Z1 "$zip" | wc -l)" -eq 1
+            unzip -Z1 "$zip" | grep -Fxq "$entry"
+            tmp_apk=$(mktemp --suffix=.apk)
+            unzip -p "$zip" "$entry" > "$tmp_apk"
+            test -s "$tmp_apk"
+            unzip -tqq "$tmp_apk"
+            contents=$(unzip -Z1 "$tmp_apk")
             grep -qx 'AndroidManifest.xml' <<< "$contents"
             grep -Eq '^classes([0-9]+)?\.dex$' <<< "$contents"
-
             expected=com.app.dededi.pte
             if [[ "$version" == Lan ]]; then expected="$expected.lan"; fi
-            actual=$("$ANDROID_HOME/build-tools/36.0.0/aapt" dump badging "$apk" | sed -n "s/^package: name='\([^']*\)'.*/\1/p")
+            actual=$("$ANDROID_HOME/build-tools/36.0.0/aapt" dump badging "$tmp_apk" | sed -n "s/^package: name='\([^']*\)'.*/\1/p")
+            rm -f "$tmp_apk"
             test "$actual" = "$expected"
             echo "${version,,}=true" >> "$GITHUB_OUTPUT"
-            echo "Verified $apk and $zip ($actual)"
+            echo "Verified $zip ($actual)"
           done
-
-      - name: Upload Normal APK
-        if: steps.verify.outputs.normal == 'true'
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: Dedede-Normal-APK
-          path: dist/Dedede-Normal.apk
-          if-no-files-found: error
-          retention-days: 30
-          compression-level: 0
-
       - name: Upload Normal ZIP
         if: steps.verify.outputs.normal == 'true'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: Dedede-Normal-ZIP
           path: dist/Dedede-Normal.zip
-          if-no-files-found: error
-          retention-days: 30
-          compression-level: 0
-
-      - name: Upload Lan APK
-        if: steps.verify.outputs.lan == 'true'
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: Dedede-Lan-APK
-          path: dist/Dedede-Lan.apk
           if-no-files-found: error
           retention-days: 30
           compression-level: 0
@@ -164,7 +144,7 @@ jobs:
           retention-days: 30
           compression-level: 0
 
-      - name: Publish directly downloadable APKs
+      - name: Publish directly downloadable ZIPs
         if: github.ref == 'refs/heads/main'
         shell: bash
         env:
@@ -174,21 +154,26 @@ jobs:
           tag=android-variants-latest
 
           if ! gh release view "$tag" >/dev/null 2>&1; then
-            gh release create "$tag" --target "$GITHUB_SHA" --title 'Dedede Android' --notes '普通版与兰特供版可独立安装，数据互不影响；APK 可直接安装，ZIP 为备用包。'
+            gh release create "$tag" --target "$GITHUB_SHA" --title 'Dedede Android' --notes '普通版与兰特供版可独立安装，数据互不影响；下载 ZIP 解压后安装 APK。'
           fi
 
           # Replace selected assets first; keep the previous release if upload fails.
-          gh release upload "$tag" dist/* --clobber
-          for asset in Dedede-Normal.apk Dedede-Lan.apk Dedede-Normal.zip Dedede-Lan.zip; do
+          gh release upload "$tag" dist/Dedede-*.zip --clobber
+          # 旧 APK 下载项不再发布；清理已有 Release 的历史 APK。
+          for asset in Dedede-Normal.apk Dedede-Lan.apk; do
+            gh release delete-asset "$tag" "$asset" --yes >/dev/null 2>&1 || true
+          done
+          for asset in Dedede-Normal.zip Dedede-Lan.zip; do
             if [[ ! -f "dist/$asset" ]]; then
               gh release delete-asset "$tag" "$asset" --yes >/dev/null 2>&1 || true
             fi
           done
           {
             echo '### Android 下载'
-            echo '普通版与兰特供版可同时安装；点击 APK 链接直接下载，ZIP 为备用。'
-            for file in dist/*; do
-              name=$(basename "$file")
-              echo "- [$name](https://github.com/$GITHUB_REPOSITORY/releases/download/$tag/$name)"
+            echo '普通版在前，兰特供版在后。下载 ZIP 解压后安装其中的 APK。'
+            for name in Dedede-Normal.zip Dedede-Lan.zip; do
+              if [[ -f "dist/$name" ]]; then
+                echo "- [$name](https://github.com/$GITHUB_REPOSITORY/releases/download/$tag/$name)"
+              fi
             done
           } >> "$GITHUB_STEP_SUMMARY"
