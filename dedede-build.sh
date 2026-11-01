@@ -5898,8 +5898,8 @@ cat > "app/src/main/res/layout/activity_main.xml" <<'DEDEDE_SOURCE_EOF'
     android:id="@+id/drawerLayout" android:layout_width="match_parent" android:layout_height="match_parent" android:background="@color/bg_color">
 
     <FrameLayout android:id="@+id/mainContentFrame" android:layout_width="match_parent" android:layout_height="match_parent" android:background="@color/bg_color">
-        <LinearLayout android:id="@+id/mainBody" android:layout_width="match_parent" android:layout_height="match_parent" android:orientation="vertical" android:paddingStart="14dp" android:paddingEnd="14dp" android:paddingTop="12dp" android:paddingBottom="14dp" android:background="@color/bg_color">
-            <RelativeLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginBottom="7dp">
+        <LinearLayout android:id="@+id/mainBody" android:layout_width="match_parent" android:layout_height="match_parent" android:orientation="vertical" android:paddingStart="14dp" android:paddingEnd="14dp" android:paddingTop="7dp" android:paddingBottom="14dp" android:background="@color/bg_color">
+            <RelativeLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginBottom="3dp">
                 <TextView android:id="@+id/tvTitle" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="纠错 Pro" android:textSize="20sp" android:textStyle="bold" android:textColor="@color/text_primary" android:layout_alignParentStart="true" android:layout_centerVertical="true" android:clickable="true" android:focusable="true"/>
                 <LinearLayout android:layout_width="wrap_content" android:layout_height="wrap_content" android:orientation="horizontal" android:layout_alignParentEnd="true" android:layout_centerVertical="true" android:gravity="center_vertical">
                     <androidx.appcompat.widget.AppCompatButton android:id="@+id/btnFloat" android:layout_width="24dp" android:layout_height="24dp" android:layout_marginEnd="8dp" android:text="✓" android:textSize="12sp" android:background="@drawable/circle_btn_bg" android:textColor="#FFFFFF" android:stateListAnimator="@null" android:padding="0dp"/>
@@ -5908,7 +5908,7 @@ cat > "app/src/main/res/layout/activity_main.xml" <<'DEDEDE_SOURCE_EOF'
                 </LinearLayout>
             </RelativeLayout>
 
-            <LinearLayout android:id="@+id/modeBar" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:gravity="center_vertical" android:layout_marginBottom="5dp">
+            <LinearLayout android:id="@+id/modeBar" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:gravity="center_vertical" android:layout_marginBottom="3dp">
                 <RadioGroup android:id="@+id/rgMode" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:orientation="horizontal" android:gravity="center_vertical">
                     <RadioButton android:id="@+id/rbFast" android:layout_width="0dp" android:layout_height="48dp" android:layout_weight="1" android:minWidth="0dp" android:paddingStart="0dp" android:paddingEnd="0dp" android:text="极速" android:textColor="@color/text_primary" android:textSize="14sp"/>
                     <RadioButton android:id="@+id/rbPro" android:layout_width="0dp" android:layout_height="48dp" android:layout_weight="1.8" android:layout_marginStart="12dp" android:minWidth="0dp" android:paddingStart="0dp" android:paddingEnd="0dp" android:text="专业（HCAM）" android:checked="true" android:textColor="@color/text_primary" android:textSize="14sp"/>
@@ -5919,8 +5919,8 @@ cat > "app/src/main/res/layout/activity_main.xml" <<'DEDEDE_SOURCE_EOF'
                 </LinearLayout>
             </LinearLayout>
 
-            <TextView android:id="@+id/tvThresholdHint" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginStart="6dp" android:layout_marginBottom="2dp" android:text="修改阈值" android:textSize="10sp" android:textColor="@color/text_secondary"/>
-            <LinearLayout android:id="@+id/paramsCard" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:background="@color/card_bg" android:paddingStart="6dp" android:paddingEnd="6dp" android:paddingTop="3dp" android:paddingBottom="4dp" android:layout_marginBottom="9dp">
+            <TextView android:id="@+id/tvThresholdHint" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginStart="6dp" android:layout_marginBottom="1dp" android:text="修改阈值" android:textSize="10sp" android:textColor="@color/text_secondary"/>
+            <LinearLayout android:id="@+id/paramsCard" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:background="@color/card_bg" android:paddingStart="6dp" android:paddingEnd="6dp" android:paddingTop="3dp" android:paddingBottom="4dp" android:layout_marginBottom="7dp">
                 <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:gravity="center_vertical" android:baselineAligned="false">
                 <LinearLayout android:id="@+id/paramDe" android:layout_width="0dp" android:layout_height="42dp" android:layout_weight="1" android:orientation="horizontal" android:gravity="center_vertical">
                     <TextView android:id="@+id/labelDe" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="的" android:textSize="15sp" android:textStyle="bold" android:textColor="@color/text_primary"/>
@@ -5945,7 +5945,7 @@ cat > "app/src/main/res/layout/activity_main.xml" <<'DEDEDE_SOURCE_EOF'
                 </LinearLayout>
             </LinearLayout>
 
-            <RelativeLayout android:layout_width="match_parent" android:layout_height="142dp" android:layout_marginBottom="10dp">
+            <RelativeLayout android:layout_width="match_parent" android:layout_height="152dp" android:layout_marginBottom="10dp">
                 <EditText android:id="@+id/inputText" android:layout_width="match_parent" android:layout_height="match_parent" android:hint="输入或粘贴文本..." android:textColorHint="@color/text_secondary" android:textColor="@color/text_primary" android:gravity="top|start" android:background="@color/card_bg" android:padding="12dp" android:paddingEnd="42dp" android:paddingBottom="24dp" android:textSize="15sp" android:scrollbars="vertical"/>
                 <Button android:id="@+id/btnInputExpand" android:layout_width="32dp" android:layout_height="32dp" android:layout_alignParentTop="true" android:layout_alignParentEnd="true" android:layout_marginTop="0dp" android:layout_marginEnd="0dp" android:translationX="2dp" android:translationY="-2dp" android:text="⛶" android:textSize="16sp" android:textColor="#7B8CA4" android:background="?android:attr/selectableItemBackgroundBorderless" android:padding="0dp" android:insetTop="0dp" android:insetBottom="0dp" android:contentDescription="展开输入框"/>
                 <TextView android:id="@+id/tvWordCount" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_alignParentBottom="true" android:layout_alignParentEnd="true" android:layout_marginEnd="8dp" android:layout_marginBottom="3dp" android:text="0 字" android:textColor="#9E9E9E" android:textSize="11sp"/>
@@ -6457,7 +6457,7 @@ fi
 
 mkdir -p dist
 # 避免切换 BUILD_MODE 后混入上次构建留下的另一版本文件。
-rm -f dist/Dedede-Normal.apk dist/Dedede-Lan.apk dist/Dedede-Normal.zip dist/Dedede-Lan.zip
+rm -f Dedede-HCAM-V2-PTE.apk dist/Dedede-Normal.apk dist/Dedede-Lan.apk dist/Dedede-Normal.zip dist/Dedede-Lan.zip
 for skin in "${android_variants[@]}"; do
   echo "====== 开始构建 Android ${skin} 版 ======" 
   apply_android_skin "$skin"
@@ -6473,19 +6473,14 @@ for skin in "${android_variants[@]}"; do
   fi
 done
 
-# 兼容旧工作流原有的 APK 路径。双版本时旧路径默认放普通版。
-if [[ -f dist/Dedede-Normal.apk ]]; then
-  cp dist/Dedede-Normal.apk Dedede-HCAM-V2-PTE.apk
-else
-  cp dist/Dedede-Lan.apk Dedede-HCAM-V2-PTE.apk
-fi
-
-# 额外提供 ZIP 备份；dist/*.apk 是可以直接安装的原始 APK。
+# 仅保留发布用 ZIP；APK 只作为构建、装包过程中的临时产物。
 python3 - <<'DEDEDE_ZIP_PY'
 from pathlib import Path
 from zipfile import ZipFile, ZIP_STORED
 for apk in sorted(Path('dist').glob('Dedede-*.apk')):
     with ZipFile(apk.with_suffix('.zip'), 'w', compression=ZIP_STORED) as z:
         z.write(apk, arcname=apk.name)
-print('已完成 APK 和 ZIP：', ', '.join(p.name for p in sorted(Path('dist').iterdir())))
+for apk in Path('dist').glob('Dedede-*.apk'):
+    apk.unlink()
+print('已完成 ZIP：', ', '.join(p.name for p in (Path('dist/Dedede-Normal.zip'), Path('dist/Dedede-Lan.zip')) if p.is_file()))
 DEDEDE_ZIP_PY
