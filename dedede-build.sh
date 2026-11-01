@@ -5945,7 +5945,7 @@ cat > "app/src/main/res/layout/activity_main.xml" <<'DEDEDE_SOURCE_EOF'
                 </LinearLayout>
             </LinearLayout>
 
-            <RelativeLayout android:layout_width="match_parent" android:layout_height="152dp" android:layout_marginBottom="10dp">
+            <RelativeLayout android:layout_width="match_parent" android:layout_height="149dp" android:layout_marginBottom="10dp">
                 <EditText android:id="@+id/inputText" android:layout_width="match_parent" android:layout_height="match_parent" android:hint="输入或粘贴文本..." android:textColorHint="@color/text_secondary" android:textColor="@color/text_primary" android:gravity="top|start" android:background="@color/card_bg" android:padding="12dp" android:paddingEnd="42dp" android:paddingBottom="24dp" android:textSize="15sp" android:scrollbars="vertical"/>
                 <Button android:id="@+id/btnInputExpand" android:layout_width="32dp" android:layout_height="32dp" android:layout_alignParentTop="true" android:layout_alignParentEnd="true" android:layout_marginTop="0dp" android:layout_marginEnd="0dp" android:translationX="2dp" android:translationY="-2dp" android:text="⛶" android:textSize="16sp" android:textColor="#7B8CA4" android:background="?android:attr/selectableItemBackgroundBorderless" android:padding="0dp" android:insetTop="0dp" android:insetBottom="0dp" android:contentDescription="展开输入框"/>
                 <TextView android:id="@+id/tvWordCount" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_alignParentBottom="true" android:layout_alignParentEnd="true" android:layout_marginEnd="8dp" android:layout_marginBottom="3dp" android:text="0 字" android:textColor="#9E9E9E" android:textSize="11sp"/>
