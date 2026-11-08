@@ -1,4 +1,3 @@
-
 name: Android - Normal and Lan
 
 on:
@@ -85,7 +84,9 @@ jobs:
           bash -n dedede-build.sh
           bash dedede-build.sh
 
-      - name: Verify ZIP packages and packaged APKs
+      # The build script writes one ZIP for the standalone GitHub Release download.
+      # Actions itself wraps every artifact in a ZIP, so export its inner APK here.
+      - name: Verify ZIP packages and extract APK for Actions artifacts
         id: verify
         shell: bash
         run: |
@@ -104,42 +105,45 @@ jobs:
           test "${#apks[@]}" -eq 0
           for version in "${versions[@]}"; do
             zip="dist/Dedede-${version}.zip"
+            entry="Dedede-${version}.apk"
+            apk="dist/${entry}"
             test -s "$zip"
             unzip -tqq "$zip"
-            entry="Dedede-${version}.apk"
             test "$(unzip -Z1 "$zip" | wc -l)" -eq 1
             unzip -Z1 "$zip" | grep -Fxq "$entry"
-            tmp_apk=$(mktemp --suffix=.apk)
-            unzip -p "$zip" "$entry" > "$tmp_apk"
-            test -s "$tmp_apk"
-            unzip -tqq "$tmp_apk"
-            contents=$(unzip -Z1 "$tmp_apk")
+            unzip -p "$zip" "$entry" > "$apk"
+            test -s "$apk"
+            unzip -tqq "$apk"
+            contents=$(unzip -Z1 "$apk")
             grep -qx 'AndroidManifest.xml' <<< "$contents"
             grep -Eq '^classes([0-9]+)?\.dex$' <<< "$contents"
             expected=com.app.dededi.pte
             if [[ "$version" == Lan ]]; then expected="$expected.lan"; fi
-            actual=$("$ANDROID_HOME/build-tools/36.0.0/aapt" dump badging "$tmp_apk" | sed -n "s/^package: name='\([^']*\)'.*/\1/p")
-            rm -f "$tmp_apk"
+            actual=$("$ANDROID_HOME/build-tools/36.0.0/aapt" dump badging "$apk" | sed -n "s/^package: name='\([^']*\)'.*/\1/p")
             test "$actual" = "$expected"
             echo "${version,,}=true" >> "$GITHUB_OUTPUT"
-            echo "Verified $zip ($actual)"
+            echo "Verified $zip and exported $apk ($actual)"
           done
-      - name: Upload Normal ZIP
-        if: steps.verify.outputs.normal == 'true'
+
+      # Upload the special edition first, normal edition last: GitHub commonly
+      # shows recently uploaded artifacts at the top. Numbered names make
+      # the intended order clear independently of the presentation sort.
+      - name: Upload Lan APK (one extraction)
+        if: steps.verify.outputs.lan == 'true'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: Dedede-Normal-ZIP
-          path: dist/Dedede-Normal.zip
+          name: 02-Dedede-Lan-APK
+          path: dist/Dedede-Lan.apk
           if-no-files-found: error
           retention-days: 30
           compression-level: 0
 
-      - name: Upload Lan ZIP
-        if: steps.verify.outputs.lan == 'true'
+      - name: Upload Normal APK (one extraction)
+        if: steps.verify.outputs.normal == 'true'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: Dedede-Lan-ZIP
-          path: dist/Dedede-Lan.zip
+          name: 01-Dedede-Normal-APK
+          path: dist/Dedede-Normal.apk
           if-no-files-found: error
           retention-days: 30
           compression-level: 0
@@ -156,10 +160,9 @@ jobs:
           if ! gh release view "$tag" >/dev/null 2>&1; then
             gh release create "$tag" --target "$GITHUB_SHA" --title 'Dedede Android' --notes '普通版与兰特供版可独立安装，数据互不影响；下载 ZIP 解压后安装 APK。'
           fi
-
           # Replace selected assets first; keep the previous release if upload fails.
           gh release upload "$tag" dist/Dedede-*.zip --clobber
-          # 旧 APK 下载项不再发布；清理已有 Release 的历史 APK。
+          # Old APK download items are not published in Releases.
           for asset in Dedede-Normal.apk Dedede-Lan.apk; do
             gh release delete-asset "$tag" "$asset" --yes >/dev/null 2>&1 || true
           done
@@ -170,7 +173,7 @@ jobs:
           done
           {
             echo '### Android 下载'
-            echo '普通版在前，兰特供版在后。下载 ZIP 解压后安装其中的 APK。'
+            echo '普通版在前，兰特供版在后。Actions 产物解压一次即可安装 APK；Release ZIP 也只需解压一次。'
             for name in Dedede-Normal.zip Dedede-Lan.zip; do
               if [[ -f "dist/$name" ]]; then
                 echo "- [$name](https://github.com/$GITHUB_REPOSITORY/releases/download/$tag/$name)"
