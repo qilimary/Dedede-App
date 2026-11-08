@@ -679,7 +679,11 @@ public final class CorrectionCore {
             if (listener != null && listener.isCancelled()) return null;
             String sentence = sentences.get(sentenceIndex);
             int sentenceStart = sentenceOffset; sentenceOffset += sentence.length();
-            if (sentence.isEmpty() || skipUntil >= sentenceOffset) continue;
+            if (sentence.isEmpty() || skipUntil >= sentenceOffset) {
+                if (listener != null && sentenceIndex == sentences.size() - 1)
+                    listener.onProgress(sentences.size(), sentences.size(), allBlocks, errorCount, android.os.SystemClock.elapsedRealtime() - startTime);
+                continue;
+            }
 
             boolean[] exactPositions = Arrays.copyOfRange(exactAll, sentenceStart, sentenceOffset);
             boolean[] blockedPositions = Arrays.copyOfRange(blockedAll, sentenceStart, sentenceOffset);
@@ -693,7 +697,8 @@ public final class CorrectionCore {
             while (cursor < sentence.length()) {
                 if (listener != null && listener.isCancelled()) return null;
 
-                MainActivity.TypoMatch typoMatch = dictionary.find(sentence, cursor, protectedPositions);
+                MainActivity.TypoMatch typoMatch = customAll[sentenceStart + cursor] ? dictionary.findCustom(text, sentenceStart + cursor) : null;
+                if (typoMatch == null) typoMatch = dictionary.find(sentence, cursor, protectedPositions);
                 Proofreader.Edit proof = proofEdits[sentenceStart + cursor];
                 if (proof != null && (typoMatch == null || !typoMatch.custom)) {
                     flushPlain(intermediate, plain);
@@ -711,6 +716,7 @@ public final class CorrectionCore {
                         if (listener != null) listener.onError("发现错误：" + typoMatch.source + " → " + typoMatch.correction + " | 共 " + errorCount + " 处", true);
                     }
                     cursor += typoMatch.source.length();
+                    skipUntil = Math.max(skipUntil, sentenceStart + cursor);
                     continue;
                 }
 
@@ -860,6 +866,7 @@ public final class CorrectionCore {
                 listener.onProgress(sentenceIndex + 1, sentences.size(), allBlocks, errorCount, now - startTime);
             }
         }
+        if (listener != null && listener.isCancelled()) return null;
         long elapsed = android.os.SystemClock.elapsedRealtime() - startTime;
         Result result=new Result(allBlocks, fullCleanText.toString(), errorCount, elapsed); result.modelNanos=modelNanos;result.modelCalls=modelCalls;result.reviewCalls=reviewCalls;return result;
     }
@@ -1684,6 +1691,7 @@ import java.nio.charset.StandardCharsets;
 import java.text.SimpleDateFormat;
 import java.util.Date;
 import java.util.List;
+import java.util.ArrayList;
 import java.util.Locale;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicLong;
@@ -1713,7 +1721,7 @@ public final class HistoryStore {
                             if (!candidateId.isEmpty() && text.equals(readUtf8(candidate))) {
                                 resolvedId = candidateId;
                                 String finalId = resolvedId;
-                                if (callback != null) AppExecutors.MAIN.post(() -> callback.onSaved(finalId));
+                                if (callback != null) AppExecutors.MAIN.post(() -> { if (epoch == HISTORY_EPOCH.get()) callback.onSaved(finalId); });
                                 return;
                             }
                         }
@@ -1739,10 +1747,10 @@ public final class HistoryStore {
                     for (int i = 49; i < remaining.length(); i++) deleteFiles(directory, remaining.getJSONObject(i).optString("file", ""));
                     if (epoch != HISTORY_EPOCH.get()) return;
                     preferences.edit().putString("history_records", finalArray.toString()).apply();
-                } catch (Exception ignored) {}
+                } catch (Exception ignored) { return; }
             }
             String finalId = resolvedId;
-            if (epoch == HISTORY_EPOCH.get() && callback != null) AppExecutors.MAIN.post(() -> callback.onSaved(finalId));
+            if (callback != null) AppExecutors.MAIN.post(() -> { if (epoch == HISTORY_EPOCH.get()) callback.onSaved(finalId); });
         });
     }
 
@@ -1754,13 +1762,24 @@ public final class HistoryStore {
         if (fileId == null || fileId.isEmpty() || blocks == null || blocks.isEmpty()) return;
         Context appContext = context.getApplicationContext();
         final long epoch = HISTORY_EPOCH.get();
+        // The caller owns these mutable blocks. Freeze them before a later UI edit/clear.
+        final List<List<MainActivity.TextBlock>> snapshot = new ArrayList<>(blocks.size());
+        for (List<MainActivity.TextBlock> sentence : blocks) {
+            List<MainActivity.TextBlock> copy = new ArrayList<>(sentence.size());
+            for (MainActivity.TextBlock block : sentence) {
+                MainActivity.TextBlock item = new MainActivity.TextBlock(block.original, block.current, block.isMutable, block.conf, block.type);
+                item.modelCorrected = block.modelCorrected; item.userModified = block.userModified; item.exp = block.exp; copy.add(item);
+            }
+            snapshot.add(copy);
+        }
         AppExecutors.HISTORY.execute(() -> {
             if (epoch != HISTORY_EPOCH.get()) return;
-            String json = MainActivity.serializeBlocks(blocks);
+            String json = MainActivity.serializeBlocks(snapshot);
             synchronized (AppExecutors.HISTORY_LOCK) {
                 if (epoch != HISTORY_EPOCH.get()) return;
                 try {
                     File directory = new File(appContext.getFilesDir(), "history");
+                    if (!new File(directory, fileId + ".txt").isFile()) return;
                     if (!directory.exists() && !directory.mkdirs()) throw new IllegalStateException("无法创建历史目录");
                     writeUtf8Atomic(new File(directory, fileId + "_blocks.json"), json);
 
@@ -1812,13 +1831,18 @@ public final class HistoryStore {
         if (fileId == null || fileId.isEmpty() || text == null) return;
         Context appContext = context.getApplicationContext();
         final long epoch = HISTORY_EPOCH.get();
+        final Spannable snapshot = new android.text.SpannableString(text);
         AppExecutors.HISTORY.execute(() -> {
             if (epoch != HISTORY_EPOCH.get()) return;
-            String json = MainActivity.serializeSpannable(text);
-            try {
-                File directory = new File(appContext.getFilesDir(), "history"); if (!directory.exists()) directory.mkdirs();
-                writeUtf8Atomic(new File(directory, fileId + "_manual.json"), json);
-            } catch (Exception ignored) {}
+            String json = MainActivity.serializeSpannable(snapshot);
+            synchronized (AppExecutors.HISTORY_LOCK) {
+                if (epoch != HISTORY_EPOCH.get()) return;
+                try {
+                    File directory = new File(appContext.getFilesDir(), "history");
+                    if (!new File(directory, fileId + ".txt").isFile()) return;
+                    writeUtf8Atomic(new File(directory, fileId + "_manual.json"), json);
+                } catch (Exception ignored) {}
+            }
         });
     }
 
@@ -1833,7 +1857,7 @@ public final class HistoryStore {
 
     public static void deleteRecord(Context context, String fileId) {
         if (fileId == null || fileId.isEmpty()) return;
-        deleteFiles(new File(context.getFilesDir(), "history"), fileId);
+        synchronized (AppExecutors.HISTORY_LOCK) { deleteFiles(new File(context.getFilesDir(), "history"), fileId); }
     }
 
     public static void clear(Context context) {
@@ -2212,6 +2236,17 @@ public class MainActivity extends AppCompatActivity {
             addRule("(?<![\u4E00-\u9FFFA-Za-z0-9])(通过)([^，,。；;！？!?：:\\n]{0,28}?(?:" + evidenceSource + "))([ 　]*(?:显示|表明))(?=[，,。；;！？!?：:\\n]|$)", new String[][]{{"", null, "句首句式杂糅"}});
             // “是由于/是因为……导致的(造成的/引起的)”：改为“是由……导致/造成/引起的”。
             // 2026-10 回归修复：“是由于X引起的”完全合法，仅“X所导致的”才是杂糅；原先把25处合法句改成“是由”。
+            addRule("(发挥)([ \\u3000]*(?:着|了)?[ \\u3000]*(?:(?:越来越|十分|非常|特别|极其|相当|更加|更)[ \\u3000]*)?(?:重要|关键|积极|巨大|显著|不可替代)的[ \\u3000]*)(地位)(?=$|[，,。；;！？!?：:、\\n了后时])", new String[][]{{null, "作用", "动宾搭配"}});
+            addRule("(降低)([ \\u3000]*(?:了|过)?[ \\u3000]*(?:(?:自己|我们|他们|学生|员工|家庭|企业|群众)的)?(?:生活|学习|工作|学业|经济|心理|精神)?[ \\u3000]*)(负担)(?=$|[，,。；;！？!?：:、\\n了后时])", new String[][]{{"减轻", null, "动宾搭配"}});
+            addRule("(减轻)([ \\u3000]*(?:了|过)?[ \\u3000]*(?:(?:企业|公司|项目|产品)的)?(?:生产|制造|运营|运输|研发|采购|交易|时间)?[ \\u3000]*)(成本)(?=$|[，,。；;！？!?：:、\\n了后时])", new String[][]{{"降低", null, "动宾搭配"}});
+            addRule("(增强)([ \\u3000]*(?:了|过)?[ \\u3000]*(?:(?:自己|我们|他们|学生|员工)的)?(?:专业|业务|科学|文化)?[ \\u3000]*)(知识)(?=$|[，,。；;！？!?：:、\\n了后时])", new String[][]{{"增长", null, "动宾搭配"}});
+            addRule("(改进|改善)([ \\u3000]*(?:了|过)?[ \\u3000]*(?:(?:自己|我们|他们|学生|员工)的)?[ \\u3000]*)(缺点|错误)(?=$|[，,。；;！？!?：:、\\n了后时])", new String[][]{{"改正", null, "动宾搭配"}});
+            addRule("(扩大)([ \\u3000]*(?:了|过)?[ \\u3000]*(?:(?:自己|我们|他们|学生|员工)的)?[ \\u3000]*)(眼界)(?=$|[，,。；;！？!?：:、\\n了后时])", new String[][]{{"开阔", null, "动宾搭配"}});
+            addRule("(缩小)([ \\u3000]*(?:了|过)?[ \\u3000]*(?:等待|排队|办理|办事|处理|运输|通勤|完成任务所需的)[ \\u3000]*)(时间)(?=$|[，,。；;！？!?：:、\\n了后时])", new String[][]{{"缩短", null, "动宾搭配"}});
+            addRule("(至少|起码|不低于|不少于)([ \\u3000]*)(≥)(?=[ \\u3000]*[0-9零〇一二两三四五六七八九十百千万亿])", new String[][]{{"", null, "下界表达重复"}});
+            addRule("(至多|不高于|不超过)([ \\u3000]*)(≤)(?=[ \\u3000]*[0-9零〇一二两三四五六七八九十百千万亿])", new String[][]{{"", null, "上界表达重复"}});
+            addRule("(的原因)([ \\u3000]*(?:主要|仅仅|完全)?[ \\u3000]*)(是为了)(?=让|使|保证|确保|提高|降低|减少|增加|帮助|保护|便于|方便|避免|防止|解决|节省)", new String[][]{{"", null, "原因与目的句式杂糅"}});
+            addRule("(原因是(?:由于|因为|由))([^，,。；;！？!?：:\\n]{1,28}?)(所?造成的|所?导致的|所?引起的)(?=[，,。；;！？!?：:\\n]|$)", new String[][]{{"原因是", "", "句式杂糅"}});
             addRule("(是由于|是因为)([^，,。；;！？!?：:\n]{1,40}?)(所导致的|所造成的|所引起的|所决定的)(?=[，,。；;！？!?：:\n]|$)", new String[][]{{"是由", null, "句式杂糅"}});
             // 其他跨词句式杂糅，均收紧到分句边界，优先控制误报。
             addRule("((?<!在)受)([^，,。；;！？!?：:\\n]{1,24}?影响)(下)(?=[，,。；;！？!?：:\\n]|$)", new String[][]{{null, "", "句式杂糅"}});
@@ -2287,9 +2322,9 @@ public class MainActivity extends AppCompatActivity {
 
             addRule("(令人|让人|叫人)( *)(堪忧)", new String[][]{{"", null}, {null, "担忧"}});
             addRule("(首当其冲)(的? *)(问题|任务|事情|要务|条件)", new String[][]{{"首要", null}, {"最重要", null}});
-            addRule("(改善|改变|加强)([^，,。；;！？!?：:、\\n]{0,8}?)(水平|素养)", new String[][]{{"提高", null}});
-            addRule("(加快|加速)([^，,。；;！？!?：:、\\n]{0,8}?)(效率)", new String[][]{{"提高", null}});
-            addRule("(缓解|减缓)([^，,。；;！？!?：:、\\n]{0,8}?)(态度|立场)", new String[][]{{"缓和", null}});
+            addRule("(改善|改变|加强)([ \\u3000]*(?:了|过)?[ \\u3000]*(?:(?:自己|我们|他们|学生|员工|团队|企业|学校|当地居民)的)?(?:学习|工作|业务|服务|管理|技术|文化|教学|生产|办事|执行|科研|专业|综合|整体)?[ \\u3000]*)(水平|素养)(?=$|[，,。；;！？!?：:、\\n了后时])", new String[][]{{"提高", null, "搭配不当"}});
+            addRule("(加快|加速)([ \\u3000]*(?:了|过)?[ \\u3000]*(?:(?:自己|我们|他们|学生|员工|团队|企业|学校|当地居民)的)?(?:学习|工作|业务|服务|管理|技术|文化|教学|生产|办事|执行|科研|专业|综合|整体)?[ \\u3000]*)(效率)(?=$|[，,。；;！？!?：:、\\n了后时])", new String[][]{{"提高", null, "搭配不当"}});
+            addRule("(缓解|减缓)([ \\u3000]*(?:了|过)?[ \\u3000]*(?:(?:自己|我们|他们|双方|对方)的)?[ \\u3000]*)(态度|立场)(?=$|[，,。；;！？!?：:、\\n了后时])", new String[][]{{"缓和", null, "搭配不当"}});
             addRule("(悬殊)( *)(很大|极大|特别大|非常大)", new String[][]{{null, ""}, {"差距", null}});
             addRule("(?<![\u4E00-\u9FFFA-Za-z0-9])(通过)([^，,。；;！？!?：:\\n]{1,24}?)([，,][ 　]*使)(?!用|得|劲|坏|命|绊|眼|性|气|然)", new String[][]{{null, "，", "主语残缺"}});
             addRule("(令人|让人|叫人)( *)(贻笑大方)", new String[][]{{"", null}});
@@ -2307,7 +2342,7 @@ public class MainActivity extends AppCompatActivity {
             addRule("(难言之隐)(的? *)(苦衷|事情|原因)", new String[][]{{null, ""}});
             addRule("(责无旁贷)(的? *)(责任|义务)", new String[][]{{null, ""}});
             addRule("(真知灼见)(的? *)(意见|看法|见解)", new String[][]{{null, ""}});
-            addRule("(至少|起码|最少)([^，。；！？、\n]{1,15}?)(以上)", new String[][]{{null, "", "重复啰嗦"}, {"", null, "重复啰嗦"}});
+            addRule("(至少|起码|最少)([ \\u3000]*(?:有|需要|达到|要|为|是)?[ \\u3000]*[0-9零〇一二两三四五六七八九十百千万亿]+(?:\\.[0-9]+)?[ \\u3000]*(?:亿元|万元|万|亿|公里|平方米|千克|公斤|小时|分钟|个人|个月|元|人|名|位|个|岁|年|月|日|天|米|斤|克|吨|次|台|辆|本|件|%|％)?[ \\u3000]*)(以上)(?=$|[的，,。；;！？!?：:、\\n])", new String[][]{{null, "", "重复啰嗦"}});
 
             // pycorrector 的经典示例包含“因该→应该、让坐→让座”，但本应用不做无条件替换：
             // “因该公司/因该项目”以及“这里不让坐/让他坐下”都可能是正常表达，只在高确定性上下文触发。
@@ -2738,6 +2773,16 @@ public class MainActivity extends AppCompatActivity {
             return positions;
         }
         public TypoMatch find(String text, int index) { return find(text, index, null); }
+        // User mappings may span an internal 300-character cut or a newline.
+        TypoMatch findCustom(String text, int index) {
+            int node = 0, chosen = -1;
+            for (int p = index; p < text.length(); p++) {
+                node = child(node, text.charAt(p)); if (node == 0) break;
+                int entry = terminal[node] - 1;
+                if (entry >= 0 && customs[entry]) chosen = entry;
+            }
+            return chosen < 0 ? null : new TypoMatch(sources[chosen], corrections[chosen], true);
+        }
         TypoMatch find(String text, int index, boolean[] protectedPositions) {
             if (index < 0 || index >= text.length()) return null;
             return findLongest(text, index, index, 0, protectedPositions);
@@ -5182,7 +5227,7 @@ public class MainActivity extends AppCompatActivity {
         if (block.type == 1) {
             String[] choices = "做作".contains(block.original) ? new String[]{"做","作"} : new String[]{"的","地","得"};
             String[] options=Arrays.copyOf(choices,choices.length+2); options[choices.length]="还原为原字 ("+block.original+")"; options[choices.length+1]="错改？点击这里加入白名单";
-            AlertDialog dialog = buildEditChoiceDialog(block, options, 4, (d, which) -> {
+            AlertDialog dialog = buildEditChoiceDialog(block, options, choices.length + 1, (d, which) -> {
                 if (which == choices.length+1) { jumpToWhitelistFromCorrection(); return; }
                 String choice = which < choices.length ? choices[which] : block.original;
                 block.userModified = !choice.equals(block.modelCorrected); block.current = choice; renderFinalBlocks(); HistoryStore.saveBlocks(this, lastSavedHistoryFileId, allSentencesBlocks);
@@ -5357,16 +5402,81 @@ public class MainActivity extends AppCompatActivity {
 DEDEDE_SOURCE_EOF
 
 mkdir -p "app/src/main/java/com/app/dedede"
+cat > "app/src/main/java/com/app/dedede/CachedInferenceEngine.java" <<'DEDEDE_SOURCE_EOF'
+package com.app.dedede;
+
+import java.util.Arrays;
+import java.util.LinkedHashMap;
+import java.util.Map;
+
+/** Bounded, exact-input LRU of raw model scores; all correction decisions run again. */
+public final class CachedInferenceEngine implements FiveCharInference.Engine {
+    private static final int MAX_ENTRIES = 512, MAX_BYTES = 4 * 1024 * 1024;
+    private final FiveCharInference.Engine inner;
+    private final LinkedHashMap<Key, float[]> cache = new LinkedHashMap<>(32, .75f, true);
+    private int bytes, hits;
+    private boolean closed;
+    private static final class Key {
+        final long[] ids; final boolean[] mask; final int hash;
+        Key(long[] ids, boolean[] mask, boolean copy) {
+            this.ids = copy ? ids.clone() : ids; this.mask = copy ? mask.clone() : mask;
+            hash = 31 * Arrays.hashCode(ids) + Arrays.hashCode(mask);
+        }
+        @Override public int hashCode() { return hash; }
+        @Override public boolean equals(Object value) {
+            if (!(value instanceof Key)) return false;
+            Key other = (Key) value;
+            return Arrays.equals(ids, other.ids) && Arrays.equals(mask, other.mask);
+        }
+        int size(float[] value) { return ids.length * 9 + value.length * 4 + 256; }
+    }
+    public CachedInferenceEngine(FiveCharInference.Engine inner) { this.inner = inner; }
+    @Override public synchronized float[] forward(long[] ids, boolean[] mask) throws Exception {
+        if (closed) throw new IllegalStateException("模型已释放");
+        if (ids.length == 0 || ids.length != mask.length || ids.length > 1248)
+            throw new IllegalArgumentException("模型输入长度错误");
+        Key lookup = new Key(ids, mask, false);
+        float[] saved = cache.get(lookup);
+        if (saved != null) { hits++; return saved.clone(); }
+        float[] value = inner.forward(ids, mask);
+        if (value == null || value.length != ids.length * 5) throw new IllegalStateException("模型输出形状异常");
+        for (float score : value) if (!Float.isFinite(score)) throw new IllegalStateException("模型输出包含 NaN/Infinity");
+        int size = lookup.size(value);
+        while (!cache.isEmpty() && (cache.size() >= MAX_ENTRIES || bytes + size > MAX_BYTES)) {
+            java.util.Iterator<Map.Entry<Key, float[]>> iterator = cache.entrySet().iterator();
+            Map.Entry<Key, float[]> oldest = iterator.next(); bytes -= oldest.getKey().size(oldest.getValue()); iterator.remove();
+        }
+        if (size <= MAX_BYTES) { cache.put(new Key(ids, mask, true), value.clone()); bytes += size; }
+        return value;
+    }
+    public synchronized int hits() { return hits; }
+    synchronized int retainedBytes() { return bytes; }
+    synchronized int size() { return cache.size(); }
+    @Override public synchronized void close() {
+        if (closed) return;
+        closed = true; cache.clear(); bytes = 0; inner.close();
+    }
+}
+DEDEDE_SOURCE_EOF
+
 cat > "app/src/main/java/com/app/dedede/ModelEngine.java" <<'DEDEDE_SOURCE_EOF'
 package com.app.dedede;
 import org.pytorch.executorch.*;
+import org.pytorch.executorch.Module;
 import java.nio.*;
 import java.util.Arrays;
 
 public final class ModelEngine implements FiveCharInference.Engine {
     public static final String NAME="PTE INT8 PC", EXT=".pte";
     private final Module module;
-    private ModelEngine(String path){module=Module.load(path,Module.LOAD_MODE_MMAP,4);}
+    private final CachedInferenceEngine cached;
+    private ModelEngine(String path){
+        module=Module.load(path,Module.LOAD_MODE_MMAP,4);
+        cached=new CachedInferenceEngine(new FiveCharInference.Engine(){
+            public float[] forward(long[] ids,boolean[] mask){return forwardUncached(ids,mask);}
+            public void close(){module.close();}
+        });
+    }
     public static ModelEngine load(String path){return new ModelEngine(path);}
     // The byte[] Tensor overload is INT8, not BOOL. JNI reads these virtual methods.
     private static final class BoolTensor extends Tensor {
@@ -5375,14 +5485,15 @@ public final class ModelEngine implements FiveCharInference.Engine {
         @Override public DType dtype(){return DType.BOOL;}
         @Override public Buffer getRawDataBuffer(){return data;}
     }
-    @Override public float[] forward(long[] ids,boolean[] mask){
+    @Override public float[] forward(long[] ids,boolean[] mask) throws Exception {return cached.forward(ids,mask);}
+    private float[] forwardUncached(long[] ids,boolean[] mask){
         if(ids.length!=mask.length)throw new IllegalArgumentException("输入与 mask 长度不同");
         EValue[] values=module.forward(EValue.from(Tensor.fromBlob(ids,new long[]{1,ids.length})),EValue.from(new BoolTensor(mask)));
         if(values==null||values.length!=1||values[0]==null)throw new IllegalStateException("PTE 输出数量异常");
         Tensor t=values[0].toTensor();if(!Arrays.equals(t.shape(),new long[]{1,ids.length,5}))throw new IllegalStateException("PTE 输出形状异常："+Arrays.toString(t.shape()));
         return t.getDataAsFloatArray();
     }
-    @Override public void close(){module.close();}
+    @Override public void close(){cached.close();}
 }
 DEDEDE_SOURCE_EOF
 
