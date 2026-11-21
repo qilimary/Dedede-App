@@ -62,12 +62,23 @@ android {
         ndk { abiFilters "arm64-v8a" }
         externalNativeBuild { cmake { cppFlags ""; arguments "-DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON" } }
     }
+    signingConfigs {
+        def ksPath = System.getenv("DEDEDE_KEYSTORE_PATH")
+        if (ksPath && file(ksPath).isFile()) {
+            release {
+                storeFile file(ksPath)
+                storePassword System.getenv("DEDEDE_KEYSTORE_PASSWORD")
+                keyAlias System.getenv("DEDEDE_KEY_ALIAS")
+                keyPassword System.getenv("DEDEDE_KEY_PASSWORD")
+            }
+        }
+    }
     buildTypes {
         release {
             minifyEnabled true
             shrinkResources true
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
-            signingConfig signingConfigs.debug
+            signingConfig signingConfigs.findByName("release") ?: signingConfigs.debug
         }
     }
     externalNativeBuild { cmake { path "src/main/cpp/CMakeLists.txt"; version "3.22.1" } }
@@ -352,14 +363,15 @@ public final class Proofreader {
     private final int[] roots,first,edges;
     private final char[] labels;
     private final boolean[] terminals;
-    public Proofreader(Reader input)throws IOException {
+    public Proofreader(Reader input)throws IOException {this(input,true);}
+    public Proofreader(Reader input,boolean buildFuzzy)throws IOException {
 
         if(input!=null)try(BufferedReader reader=new BufferedReader(input)){
             for(String raw;(raw=reader.readLine())!=null;){
                 String word=raw.replace("\ufeff","").trim();
                 if(word.length()<2||word.length()>64||!allHan(word)||!words.add(word))continue;
 
-                if(word.length()<4||word.length()>8||word.codePointCount(0,word.length())!=word.length())continue;
+                if(!buildFuzzy||word.length()<4||word.length()>8||word.codePointCount(0,word.length())!=word.length())continue;
                 fuzzyLengths.add(word.length());
                 for(int i=0;i<word.length();i++)unique(substitutions,word.substring(0,i)+"*"+word.substring(i+1),word);
                 for(int i=1;i+1<word.length();i++)unique(missing,word.substring(0,i)+word.substring(i+1),word);
@@ -565,7 +577,7 @@ final class ProofreaderAssets {
         boolean present = false;
         for (String name : DededeApp.context().getAssets().list("")) if ("sys_idioms.dat".equals(name)) present = true;
         // Missing is optional. Authentication/corruption failures must still report their real error.
-        instance = new Proofreader(present ? new StringReader(SecureAsset.readUtf8(DededeApp.context(), "sys_idioms.dat")) : null);
+        instance = new Proofreader(present ? new StringReader(SecureAsset.readUtf8(DededeApp.context(), "sys_idioms.dat")) : null, false);
         return instance;
     }
 }
@@ -583,7 +595,7 @@ import java.util.regex.Pattern;
 
 public final class CorrectionCore {
     private static final String[] LABELS = {"的", "地", "得", "做", "作"};
-    private static final int MAX_SEQUENCE_LENGTH = 300;
+    private static final int MAX_SEQUENCE_LENGTH = 350;
     private CorrectionCore() {}
 
     public interface Listener {
@@ -633,6 +645,7 @@ public final class CorrectionCore {
         GrammarHit[] hits = new GrammarHit[sentence.length()];
         for (MainActivity.GramRule rule : MainActivity.gramRules) {
             if (fastMode && rule.professionalOnly) continue;
+            if (!rule.mayMatch(sentence)) continue;
             Matcher matcher = rule.pattern.matcher(sentence).useTransparentBounds(true).useAnchoringBounds(false);
             int searchStart = 0;
             while (searchStart < sentence.length()) {
@@ -744,13 +757,13 @@ public final class CorrectionCore {
                     // 相邻冲突标点作为一个整体纠错：保留句末/分句标点，与桌面端一致。
                     // 这样删除一侧后，修正后的全文会把红色可点击标记落在实际保留下来的标点上，
                     // 而不是因为“删除结果长度为 0”错误地借用前一个汉字作为视觉锚点。
+                    boolean g1Pause = isPausePunct(group1), g3Pause = isPausePunct(group3);
                     boolean punctuationConflict = "标点多余".equals(explanation) && group2.isEmpty()
-                            && ((group1.matches("[，、]+") && group3.matches("[。；：]"))
-                            || (group1.matches("[。；：]") && group3.matches("[，、]+")));
+                            && ((g1Pause && isMajorPunct(group3)) || (isMajorPunct(group1) && g3Pause));
                     if (punctuationConflict && (replacement1.isEmpty() ^ replacement3.isEmpty())) {
-                        String kept = group1.matches("[，、]+") ? group3 : group1;
+                        String kept = g1Pause ? group3 : group1;
                         // 若逗号/顿号一侧本身重复，只保留一个，避免“，，。”随机后留下“，，”。
-                        if (kept.length() > 1 && kept.matches("[，、]+")) kept = kept.substring(0, 1);
+                        if (kept.length() > 1 && isPausePunct(kept)) kept = kept.substring(0, 1);
                         String originalPunctuation = group1 + group3;
                         MainActivity.TextBlock block = new MainActivity.TextBlock(originalPunctuation, kept, true, 1.0f, 6);
                         block.exp = explanation;
@@ -902,6 +915,12 @@ public final class CorrectionCore {
         return count;
     }
     private static boolean isTarget(char c) { return FiveCharInference.target(c); }
+    private static boolean isPausePunct(String s) {
+        if (s.isEmpty()) return false;
+        for (int i = 0; i < s.length(); i++) { char c = s.charAt(i); if (c != '，' && c != '、') return false; }
+        return true;
+    }
+    private static boolean isMajorPunct(String s) { return s.length() == 1 && "。；：".indexOf(s.charAt(0)) >= 0; }
     private static void flushPlain(List<MainActivity.TextBlock> blocks, StringBuilder plain) {
         if (plain.length() == 0) return;
         String value = plain.toString(); blocks.add(new MainActivity.TextBlock(value, value, false, 0f, 0)); plain.setLength(0);
@@ -1362,9 +1381,11 @@ public class FloatingService extends Service {
             String fileId = currentHistoryFileId; saveHistory(text, fileId); setFocusable(false); panelInput.setVisibility(View.GONE); startInference(text, fileId);
         });
         btnCopy.setOnClickListener(v -> {
-            String text = lastCorrectedText.isEmpty() ? editFloatInput.getText().toString() : lastCorrectedText;
+            boolean hasCorrected = !lastCorrectedText.isEmpty();
+            String text = hasCorrected ? lastCorrectedText : editFloatInput.getText().toString();
+            if (text.isEmpty()) { showStatus("文本为空", true); return; }
             ClipboardManager clipboard = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
-            if (clipboard != null) { clipboard.setPrimaryClip(ClipData.newPlainText("Corrected", text)); showStatus("已复制修正后的全文。", true); }
+            if (clipboard != null) { clipboard.setPrimaryClip(ClipData.newPlainText("Corrected", text)); showStatus(hasCorrected ? "已复制修正后的全文。" : "未开始纠错，已复制原文。", true); }
         });
         btnFloatSwitch.setOnClickListener(v -> {
             boolean fast = !sp.getBoolean("is_fast_mode", false); sp.edit().putBoolean("is_fast_mode", fast).apply(); showStatus(fast ? "已切换至极速模式" : "已切换至专业模式", true);
@@ -1481,10 +1502,25 @@ public class FloatingService extends Service {
         }
         final float temperature = fast ? 1f : storedTemperature;
         // 极速模式不使用模型；专业模式会在输入变动时预热，纠错结束后按使用间隔自适应保留30～120秒再释放。
-        float tDe = MainActivity.parseFloatSafe(sp.getString("pro_th1", "0.72"), Float.NaN);
-        float tDi = MainActivity.parseFloatSafe(sp.getString("pro_th2", "0.72"), Float.NaN);
-        float tDe3 = MainActivity.parseFloatSafe(sp.getString("pro_th3", "0.75"), Float.NaN);
-        float tZuo=MainActivity.parseFloatSafe(sp.getString("pro_th4","0.75"),Float.NaN),tZuo4=MainActivity.parseFloatSafe(sp.getString("pro_th5","0.78"),Float.NaN);
+        float[] thDefaults = {0.72f, 0.72f, 0.75f, 0.75f, 0.78f};
+        String[] thKeys = {"pro_th1", "pro_th2", "pro_th3", "pro_th4", "pro_th5"};
+        String[] thDefaultStrings = {"0.72", "0.72", "0.75", "0.75", "0.78"};
+        float[] thValues = new float[5];
+        boolean thReset = false;
+        SharedPreferences.Editor thEditor = null;
+        for (int i = 0; i < 5; i++) {
+            float v = MainActivity.parseFloatSafe(sp.getString(thKeys[i], thDefaultStrings[i]), Float.NaN);
+            if (!fast && (!Float.isFinite(v) || v < 0f || v > 1f)) {
+                v = thDefaults[i];
+                if (thEditor == null) thEditor = sp.edit();
+                thEditor.putString(thKeys[i], thDefaultStrings[i]);
+                thReset = true;
+            }
+            thValues[i] = v;
+        }
+        if (thEditor != null) thEditor.apply();
+        if (thReset) Toast.makeText(this, "部分阈值无效，已自动恢复默认值（允许范围0～1）", Toast.LENGTH_LONG).show();
+        final float tDe = thValues[0], tDi = thValues[1], tDe3 = thValues[2], tZuo = thValues[3], tZuo4 = thValues[4];
         if (!fast) MainActivity.noteProCorrectionStart(this);
         lastCorrectedText = "";
         MainActivity.hasNewFloatResult = false; MainActivity.pendingFloatSourceText = null;
@@ -2018,16 +2054,20 @@ public class MainActivity extends AppCompatActivity {
         synchronized long remaining(long now) { return Math.max(0L, timeout - Math.max(0L, now - lastActivity)); }
     }
     private static void loadIdlePolicy(Context context) {
-        if (proIdlePreferences != null) return;
-        proIdlePreferences = context.getSharedPreferences("DededeModelIdle", MODE_PRIVATE);
-        PRO_IDLE.restore(proIdlePreferences.getLong("timeout_ms", 60_000L));
+        synchronized (PRO_IDLE) {
+            if (proIdlePreferences != null) return;
+            proIdlePreferences = context.getSharedPreferences("DededeModelIdle", MODE_PRIVATE);
+            PRO_IDLE.restore(proIdlePreferences.getLong("timeout_ms", 60_000L));
+        }
     }
     private static void persistIdlePolicy() {
-        long now = android.os.SystemClock.uptimeMillis();
-        if (proIdlePreferences != null && now - proIdleLastSave >= 60_000L) {
-            long value = PRO_IDLE.timeout();
-            if (proIdlePreferences.getLong("timeout_ms", 60_000L) != value) proIdlePreferences.edit().putLong("timeout_ms", value).apply();
-            proIdleLastSave = now;
+        synchronized (PRO_IDLE) {
+            long now = android.os.SystemClock.uptimeMillis();
+            if (proIdlePreferences != null && now - proIdleLastSave >= 60_000L) {
+                long value = PRO_IDLE.timeout();
+                if (proIdlePreferences.getLong("timeout_ms", 60_000L) != value) proIdlePreferences.edit().putLong("timeout_ms", value).apply();
+                proIdleLastSave = now;
+            }
         }
     }
     private static int proModuleUsers;
@@ -2119,7 +2159,171 @@ public class MainActivity extends AppCompatActivity {
     }
     public static class GramRule {
         public final Pattern pattern; public final String[][] options; public final boolean professionalOnly;
-        GramRule(String regex, String[][] options, boolean professionalOnly) { pattern = Pattern.compile(regex); this.options = options; this.professionalOnly = professionalOnly; }
+        private final String requiredLiteral;
+        private final String[] requiredAny;
+        GramRule(String regex, String[][] options, boolean professionalOnly) {
+            pattern = Pattern.compile(regex); this.options = options; this.professionalOnly = professionalOnly;
+            String bestLit = null; String[] bestAny = null;
+            if (regex != null && !regex.contains("(?i") && !regex.contains("\\Q")) {
+                List<String> lits = new ArrayList<>(); List<String[]> anys = new ArrayList<>();
+                collectRequired(regex, 0, regex.length(), lits, anys);
+                for (String s : lits) if (bestLit == null || s.length() > bestLit.length()) bestLit = s;
+                if (bestLit == null || bestLit.length() < 2) {
+                    int bestScore = -1;
+                    for (String[] group : anys) {
+                        int minLen = Integer.MAX_VALUE;
+                        for (String branch : group) minLen = Math.min(minLen, branch.length());
+                        int score = minLen * 100 - group.length;
+                        if (score > bestScore) { bestScore = score; bestAny = group; }
+                    }
+                }
+            }
+            requiredLiteral = bestLit; requiredAny = bestAny;
+        }
+        public boolean mayMatch(String sentence) {
+            if (requiredLiteral != null && sentence.indexOf(requiredLiteral) < 0) return false;
+            if (requiredAny != null) {
+                for (String token : requiredAny) if (sentence.indexOf(token) >= 0) return true;
+                return false;
+            }
+            return true;
+        }
+        private static void collectRequired(String r, int start, int end, List<String> lits, List<String[]> anys) {
+            List<int[]> branches = splitTopAlternations(r, start, end);
+            if (branches.size() > 1) {
+                if (anys == null || branches.size() > 16) return;
+                String[] chosen = new String[branches.size()];
+                for (int b = 0; b < branches.size(); b++) {
+                    List<String> sub = new ArrayList<>();
+                    collectRequired(r, branches.get(b)[0], branches.get(b)[1], sub, null);
+                    String best = null;
+                    for (String s : sub) if (best == null || s.length() > best.length()) best = s;
+                    if (best == null || best.isEmpty()) return;
+                    chosen[b] = best;
+                }
+                anys.add(chosen);
+                return;
+            }
+            StringBuilder run = new StringBuilder();
+            for (int i = start; i < end; ) {
+                char c = r.charAt(i);
+                if (c == '\\') {
+                    flushRun(run, lits);
+                    i = skipQuantifier(r, skipEscape(r, i, end), end)[0];
+                } else if (c == '[') {
+                    flushRun(run, lits);
+                    i = skipQuantifier(r, skipCharClass(r, i, end), end)[0];
+                } else if (c == '(') {
+                    flushRun(run, lits);
+                    int close = findCloseParen(r, i, end);
+                    if (close < 0) return;
+                    int[] q = skipQuantifier(r, close + 1, end);
+                    if (q[1] == 0) {
+                        int inner = -1;
+                        if (i + 1 < close && r.charAt(i + 1) != '?') inner = i + 1;
+                        else if (i + 2 < close && r.charAt(i + 1) == '?' && r.charAt(i + 2) == ':') inner = i + 3;
+                        if (inner >= 0) collectRequired(r, inner, close, lits, anys);
+                    }
+                    i = q[0];
+                } else if (c == '.' || c == '^' || c == '$' || c == '*' || c == '+' || c == '?' || c == '{' || c == '}' || c == ')' || c == '|') {
+                    flushRun(run, lits);
+                    i = skipQuantifier(r, i + 1, end)[0];
+                } else if (Character.isHighSurrogate(c) && i + 1 < end && Character.isLowSurrogate(r.charAt(i + 1))) {
+                    flushRun(run, lits);
+                    int[] q = skipQuantifier(r, i + 2, end);
+                    if (q[1] == 0) lits.add(r.substring(i, i + 2));
+                    i = q[0];
+                } else {
+                    int[] q = skipQuantifier(r, i + 1, end);
+                    if (q[1] == 1) {
+                        flushRun(run, lits);
+                    } else if (q[0] > i + 1) {
+                        flushRun(run, lits);
+                        lits.add(String.valueOf(c));
+                    } else {
+                        run.append(c);
+                    }
+                    i = q[0];
+                }
+            }
+            flushRun(run, lits);
+        }
+        private static void flushRun(StringBuilder run, List<String> lits) {
+            if (run.length() > 0) { lits.add(run.toString()); run.setLength(0); }
+        }
+        private static int skipEscape(String r, int i, int end) {
+            if (i + 1 >= end) return end;
+            char n = r.charAt(i + 1);
+            if (n == 'u' && i + 5 < end) return i + 6;
+            if (n == 'x' && i + 3 < end) return i + 4;
+            if ((n == 'p' || n == 'P') && i + 2 < end && r.charAt(i + 2) == '{') {
+                int close = r.indexOf('}', i + 3);
+                return close >= 0 && close < end ? close + 1 : end;
+            }
+            return i + 2;
+        }
+        private static int skipCharClass(String r, int i, int end) {
+            int p = i + 1, depth = 1;
+            if (p < end && r.charAt(p) == '^') p++;
+            if (p < end && r.charAt(p) == ']') p++;
+            while (p < end && depth > 0) {
+                char c = r.charAt(p);
+                if (c == '\\') { p = skipEscape(r, p, end); continue; }
+                if (c == '[') depth++;
+                else if (c == ']') depth--;
+                p++;
+            }
+            return p;
+        }
+        private static int findCloseParen(String r, int i, int end) {
+            int p = i + 1, depth = 1;
+            while (p < end && depth > 0) {
+                char c = r.charAt(p);
+                if (c == '\\') { p = skipEscape(r, p, end); continue; }
+                if (c == '[') { p = skipCharClass(r, p, end); continue; }
+                if (c == '(') depth++;
+                else if (c == ')') { depth--; if (depth == 0) return p; }
+                p++;
+            }
+            return -1;
+        }
+        private static List<int[]> splitTopAlternations(String r, int start, int end) {
+            List<int[]> parts = new ArrayList<>();
+            int seg = start, depth = 0;
+            for (int p = start; p < end; ) {
+                char c = r.charAt(p);
+                if (c == '\\') { p = skipEscape(r, p, end); continue; }
+                if (c == '[') { p = skipCharClass(r, p, end); continue; }
+                if (c == '(') depth++;
+                else if (c == ')') depth--;
+                else if (c == '|' && depth == 0) { parts.add(new int[]{seg, p}); seg = p + 1; }
+                p++;
+            }
+            parts.add(new int[]{seg, end});
+            return parts;
+        }
+        private static int[] skipQuantifier(String r, int pos, int end) {
+            if (pos >= end) return new int[]{pos, 0};
+            char c = r.charAt(pos);
+            int next = pos; boolean optional = false;
+            if (c == '?' || c == '*') { next = pos + 1; optional = true; }
+            else if (c == '+') { next = pos + 1; }
+            else if (c == '{') {
+                int close = r.indexOf('}', pos + 1);
+                if (close > pos + 1 && close < end) {
+                    int comma = r.indexOf(',', pos + 1);
+                    int minEnd = (comma > pos && comma < close) ? comma : close;
+                    int min = 0; boolean valid = minEnd > pos + 1;
+                    for (int k = pos + 1; k < minEnd && valid; k++) {
+                        char d = r.charAt(k);
+                        if (d >= '0' && d <= '9') min = min * 10 + (d - '0'); else valid = false;
+                    }
+                    if (valid) { next = close + 1; optional = min == 0; }
+                }
+            }
+            if (next > pos && next < end && (r.charAt(next) == '?' || r.charAt(next) == '+')) next++;
+            return new int[]{next, optional ? 1 : 0};
+        }
     }
     public static final Map<Character, QuantifierRule> quantRules = new HashMap<>();
     public static final List<GramRule> gramRules = new ArrayList<>();
@@ -3169,7 +3373,7 @@ public class MainActivity extends AppCompatActivity {
             while ((line = reader.readLine()) != null) parseTypoLine(line, words, exclusions);
         } catch (Exception error) { throw new IllegalStateException("错词库加载失败",error); }
         // 内置白名单：匹配整词后保护其中的五字，不截断前面开始的更长错词；用户白名单另有跨词保护。
-        for (String word : new String[]{"舒的", "怎的", "能的", "您的", "得得得", "得吃", "得逞", "说的", "折射得", "简单得只有", "简单得甚至", "去想的那些", "吊儿郎当的，", "来了个猛的", "来个猛的", "书里写的那般", "作甚", "下得山来", "十里地", "百里地", "几里地", "谈不到一块的", "同样地，", "长久的凝视", "没有书上写的那么", "眼见得", "漫长得没有", "出门得通过", "本地话", "当家做主", "做笔记", "做了标记", "做过的调整", "得道成仙", "得道了", "目的地", "断断续续地，", "支吾地回", "晓得初中", "药厂产的，", "实时的云", "可靠的网", "精确的图", "得脸的样子", "直得起腰杆", "领导的做派", "客气地挽留", "真诚地挽留", "知书达礼", "可造之材", "做了点评"}) { words.put(word, word); exclusions.remove(word); }
+        for (String word : new String[]{"舒的", "怎的", "能的", "您的", "得得得", "得吃", "得逞", "折射得", "简单得只有", "简单得甚至", "去想的那些", "吊儿郎当的，", "来了个猛的", "来个猛的", "书里写的那般", "作甚", "下得山来", "十里地", "百里地", "几里地", "谈不到一块的", "同样地，", "长久的凝视", "没有书上写的那么", "眼见得", "漫长得没有", "出门得通过", "本地话", "当家做主", "做笔记", "做了标记", "做过的调整", "得道成仙", "得道了", "目的地", "断断续续地，", "支吾地回", "晓得初中", "药厂产的，", "实时的云", "可靠的网", "精确的图", "得脸的样子", "直得起腰杆", "领导的做派", "客气地挽留", "真诚地挽留", "知书达礼", "可造之材", "做了点评"}) { words.put(word, word); exclusions.remove(word); }
         try {
             JSONObject custom = new JSONObject(context.getSharedPreferences("DededeConfig", MODE_PRIVATE).getString("custom_typos", "{}")); Iterator<String> keys = custom.keys();
             while (keys.hasNext()) { String source = keys.next(); if (source.isEmpty()) continue;
@@ -3599,15 +3803,41 @@ public class MainActivity extends AppCompatActivity {
         try {
             if (lower.endsWith(".docx") || "application/vnd.openxmlformats-officedocument.wordprocessingml.document".equals(mime)) return extractDocx(context, uri);
             if (lower.endsWith(".pptx") || "application/vnd.openxmlformats-officedocument.presentationml.presentation".equals(mime)) return extractPptx(context, uri);
-            try (InputStream input = context.getContentResolver().openInputStream(uri); BufferedReader reader = new BufferedReader(new InputStreamReader(input, StandardCharsets.UTF_8))) {
-                StringBuilder result = new StringBuilder(); String line; while ((line = reader.readLine()) != null) result.append(line).append('\n'); return result.toString();
+            try (InputStream input = context.getContentResolver().openInputStream(uri)) {
+                if (input == null) return "";
+                ByteArrayOutputStream buffer = new ByteArrayOutputStream();
+                byte[] chunk = new byte[8192]; int read;
+                while ((read = input.read(chunk)) != -1) buffer.write(chunk, 0, read);
+                byte[] bytes = buffer.toByteArray();
+                if (bytes.length == 0) return "";
+                String decoded;
+                if (bytes.length >= 3 && (bytes[0] & 0xFF) == 0xEF && (bytes[1] & 0xFF) == 0xBB && (bytes[2] & 0xFF) == 0xBF) {
+                    decoded = new String(bytes, 3, bytes.length - 3, StandardCharsets.UTF_8);
+                } else if (bytes.length >= 2 && (bytes[0] & 0xFF) == 0xFF && (bytes[1] & 0xFF) == 0xFE) {
+                    decoded = new String(bytes, 2, bytes.length - 2, StandardCharsets.UTF_16LE);
+                } else if (bytes.length >= 2 && (bytes[0] & 0xFF) == 0xFE && (bytes[1] & 0xFF) == 0xFF) {
+                    decoded = new String(bytes, 2, bytes.length - 2, StandardCharsets.UTF_16BE);
+                } else {
+                    try {
+                        decoded = StandardCharsets.UTF_8.newDecoder()
+                                .onMalformedInput(java.nio.charset.CodingErrorAction.REPORT)
+                                .onUnmappableCharacter(java.nio.charset.CodingErrorAction.REPORT)
+                                .decode(java.nio.ByteBuffer.wrap(bytes)).toString();
+                    } catch (java.nio.charset.CharacterCodingException ignored) {
+                        try { decoded = new String(bytes, java.nio.charset.Charset.forName("GB18030")); }
+                        catch (Exception fallback) { decoded = new String(bytes, StandardCharsets.UTF_8); }
+                    }
+                }
+                return decoded.replace("\r\n", "\n").replace('\r', '\n');
             }
         } catch (Exception exception) { exception.printStackTrace(); return ""; }
     }
 
     private static String extractDocx(Context context, android.net.Uri uri) throws Exception {
+        InputStream raw = context.getContentResolver().openInputStream(uri);
+        if (raw == null) return "";
         String xml = null;
-        try (java.util.zip.ZipInputStream zip = new java.util.zip.ZipInputStream(context.getContentResolver().openInputStream(uri))) {
+        try (java.util.zip.ZipInputStream zip = new java.util.zip.ZipInputStream(raw)) {
             java.util.zip.ZipEntry entry; byte[] buffer = new byte[8192];
             while ((entry = zip.getNextEntry()) != null) if ("word/document.xml".equals(entry.getName())) {
                 ByteArrayOutputStream output = new ByteArrayOutputStream(); int read; while ((read = zip.read(buffer)) != -1) output.write(buffer, 0, read); xml = output.toString(StandardCharsets.UTF_8.name()); break;
@@ -3618,8 +3848,11 @@ public class MainActivity extends AppCompatActivity {
             org.xmlpull.v1.XmlPullParser parser = org.xmlpull.v1.XmlPullParserFactory.newInstance().newPullParser(); parser.setInput(new java.io.StringReader(xml)); boolean inText = false;
             for (int event = parser.getEventType(); event != org.xmlpull.v1.XmlPullParser.END_DOCUMENT; event = parser.next()) {
                 String tag = parser.getName();
-                if (event == org.xmlpull.v1.XmlPullParser.START_TAG && ("t".equals(tag) || "w:t".equals(tag))) inText = true;
-                else if (event == org.xmlpull.v1.XmlPullParser.TEXT && inText) result.append(parser.getText());
+                if (event == org.xmlpull.v1.XmlPullParser.START_TAG) {
+                    if ("t".equals(tag) || "w:t".equals(tag)) inText = true;
+                    else if ("br".equals(tag) || "w:br".equals(tag)) result.append('\n');
+                    else if ("tab".equals(tag) || "w:tab".equals(tag)) result.append('\t');
+                } else if (event == org.xmlpull.v1.XmlPullParser.TEXT && inText) result.append(parser.getText());
                 else if (event == org.xmlpull.v1.XmlPullParser.END_TAG) { if ("t".equals(tag) || "w:t".equals(tag)) inText = false; else if ("p".equals(tag) || "w:p".equals(tag)) result.append('\n'); }
             }
         } catch (Exception ignored) { result.setLength(0); Matcher matcher = WORD_TEXT_PATTERN.matcher(xml); while (matcher.find()) result.append(matcher.group(1)); return decodeXmlEntities(result.toString()); }
@@ -3627,15 +3860,57 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private static String extractPptx(Context context, android.net.Uri uri) throws Exception {
-        StringBuilder result = new StringBuilder();
-        try (java.util.zip.ZipInputStream zip = new java.util.zip.ZipInputStream(context.getContentResolver().openInputStream(uri))) {
+        InputStream raw = context.getContentResolver().openInputStream(uri);
+        if (raw == null) return "";
+        java.util.TreeMap<Integer, String> slides = new java.util.TreeMap<>();
+        try (java.util.zip.ZipInputStream zip = new java.util.zip.ZipInputStream(raw)) {
             java.util.zip.ZipEntry entry; byte[] buffer = new byte[8192];
-            while ((entry = zip.getNextEntry()) != null) if (entry.getName().startsWith("ppt/slides/slide") && entry.getName().endsWith(".xml")) {
-                ByteArrayOutputStream output = new ByteArrayOutputStream(); int read; while ((read = zip.read(buffer)) != -1) output.write(buffer, 0, read);
-                Matcher matcher = PPT_TEXT_PATTERN.matcher(output.toString(StandardCharsets.UTF_8.name())); while (matcher.find()) result.append(matcher.group(1)); result.append("\n\n");
+            while ((entry = zip.getNextEntry()) != null) {
+                String name = entry.getName();
+                if (!name.startsWith("ppt/slides/slide") || !name.endsWith(".xml")) continue;
+                String numText = name.substring("ppt/slides/slide".length(), name.length() - 4);
+                if (numText.isEmpty()) continue;
+                int slideIndex;
+                try { slideIndex = Integer.parseInt(numText); } catch (NumberFormatException ignored) { continue; }
+                ByteArrayOutputStream output = new ByteArrayOutputStream(); int read;
+                while ((read = zip.read(buffer)) != -1) output.write(buffer, 0, read);
+                String xml = output.toString(StandardCharsets.UTF_8.name());
+                StringBuilder slide = new StringBuilder();
+                try {
+                    org.xmlpull.v1.XmlPullParser parser = org.xmlpull.v1.XmlPullParserFactory.newInstance().newPullParser();
+                    parser.setInput(new java.io.StringReader(xml));
+                    boolean inText = false, paragraphHasText = false;
+                    for (int event = parser.getEventType(); event != org.xmlpull.v1.XmlPullParser.END_DOCUMENT; event = parser.next()) {
+                        String tag = parser.getName();
+                        if (event == org.xmlpull.v1.XmlPullParser.START_TAG) {
+                            if ("t".equals(tag) || "a:t".equals(tag)) inText = true;
+                            else if ("br".equals(tag) || "a:br".equals(tag)) { slide.append('\n'); paragraphHasText = false; }
+                        } else if (event == org.xmlpull.v1.XmlPullParser.TEXT && inText) {
+                            String chunk = parser.getText();
+                            if (chunk != null && !chunk.isEmpty()) { slide.append(chunk); paragraphHasText = true; }
+                        } else if (event == org.xmlpull.v1.XmlPullParser.END_TAG) {
+                            if ("t".equals(tag) || "a:t".equals(tag)) inText = false;
+                            else if (("p".equals(tag) || "a:p".equals(tag)) && paragraphHasText) { slide.append('\n'); paragraphHasText = false; }
+                        }
+                    }
+                } catch (Exception ignored) {
+                    slide.setLength(0);
+                    Matcher matcher = PPT_TEXT_PATTERN.matcher(xml);
+                    while (matcher.find()) slide.append(matcher.group(1));
+                    String decoded = decodeXmlEntities(slide.toString());
+                    slide.setLength(0);
+                    slide.append(decoded);
+                }
+                String slideText = slide.toString().trim();
+                if (!slideText.isEmpty()) slides.put(slideIndex, slideText);
             }
         }
-        return decodeXmlEntities(result.toString()).trim();
+        StringBuilder result = new StringBuilder();
+        for (String slideText : slides.values()) {
+            if (result.length() > 0) result.append("\n\n");
+            result.append(slideText);
+        }
+        return result.toString();
     }
 
     private static String decodeXmlEntities(String text) {
@@ -3910,7 +4185,7 @@ public class MainActivity extends AppCompatActivity {
         }
 
         androidx.core.view.WindowInsetsControllerCompat controller = androidx.core.view.WindowCompat.getInsetsController(getWindow(), getWindow().getDecorView());
-        boolean lightBars = !night || !"default".equals(skin);
+        boolean lightBars = !night;
         controller.setAppearanceLightStatusBars(lightBars); controller.setAppearanceLightNavigationBars(lightBars);
         if (android.os.Build.VERSION.SDK_INT < 35) {
             if (gradient != null) {
@@ -4065,11 +4340,14 @@ public class MainActivity extends AppCompatActivity {
 
     private void saveSettings(boolean fast) {
         if (fast) return;
-        SharedPreferences.Editor editor = sp.edit()
-                .putString("pro_th1", editThreshDe1.getText().toString())
-                .putString("pro_th2", editThreshDe2.getText().toString())
-                .putString("pro_th3", editThreshDe3.getText().toString())
-                .putString("pro_th4", editThreshZuo.getText().toString()).putString("pro_th5", editThreshZuo4.getText().toString());
+        SharedPreferences.Editor editor = sp.edit();
+        String[] keys = {"pro_th1", "pro_th2", "pro_th3", "pro_th4", "pro_th5"};
+        EditText[] fields = {editThreshDe1, editThreshDe2, editThreshDe3, editThreshZuo, editThreshZuo4};
+        for (int i = 0; i < keys.length; i++) {
+            String raw = fields[i].getText().toString();
+            float value = parseFloatSafe(raw, Float.NaN);
+            if (Float.isFinite(value) && value >= 0f && value <= 1f) editor.putString(keys[i], raw);
+        }
         float temperature = parseFloatSafe(editTemp.getText().toString(), Float.NaN);
         if (isTemperatureValid(temperature)) editor.putString("pro_temp", editTemp.getText().toString());
         editor.apply();
@@ -4286,7 +4564,7 @@ public class MainActivity extends AppCompatActivity {
         indent.setOnClickListener(v -> applyIndent());
         undo.setOnClickListener(v -> restoreEditorState(editorUndoStack, editorRedoStack, true));
         redo.setOnClickListener(v -> { if (editorRedoStack.isEmpty()) Toast.makeText(this, "上一步非撤销操作，无法还原", Toast.LENGTH_SHORT).show(); else restoreEditorState(editorRedoStack, editorUndoStack, false); });
-        save.setOnClickListener(v -> { isManuallyEditedOut = true; outputText.setText(expandedEditText.getText()); btnSaveTxt.performClick(); });
+        save.setOnClickListener(v -> chooseSaveFormat(extractCleanTextFromSpanned(expandedEditText.getText()), true));
     }
 
     private void stabilizeEditorScrollAfterTap(int expectedScrollY, boolean extendedProtection) {
@@ -4349,7 +4627,7 @@ public class MainActivity extends AppCompatActivity {
         outputText.setOnTouchListener(new View.OnTouchListener() {
             boolean triggered; float startX, startY, rawX, rawY;
             final Runnable longPress = () -> {
-                String current = outputText.getText().toString(); if (current.isEmpty() || "正在加载...".equals(current) || "已加载。".equals(current) || isCheckingMain || lastEditorSpannable == null) return;
+                String current = outputText.getText().toString(); if (current.isEmpty() || "正在加载...".equals(current) || "已加载。".equals(current) || isCheckingMain || (!isManuallyEditedOut && lastEditorSpannable == null)) return;
                 triggered = true; outputText.performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS);
                 ViewGroup parent = (ViewGroup) scrollView.getParent(); int[] location = new int[2]; parent.getLocationOnScreen(location); int centerX = (int) (rawX - location[0]), centerY = (int) (rawY - location[1]);
                 View ripple = new View(MainActivity.this); ripple.setBackgroundColor(Color.parseColor("#20000000")); ripple.setVisibility(View.INVISIBLE); parent.addView(ripple, new ViewGroup.LayoutParams(-1, -1));
@@ -4675,7 +4953,7 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void showHelp() {
-        String text = "【模式介绍】\n极速：不调用神经网络检查“的/地/得/做/作”；仅运行系统内置的错词库和规则。速度最快（毫秒级），适合只想快速检查错别字与语病的场景。\n\n专业：比极速模式额外纠错“的地得做作”使用，速度较快（秒级）。\nHCAM模型是本作者自己设计，并从零训练＋微调的中文掩码模型。该模型会额外纠错“的地得”和“做作”。\n通常建议始终使用专业模式，除非你对“的地得做作”运用得如火纯青。\n\n注：不同手机的速度会有差异；模型也可能出现极少量误判，这是神经网络的通病，在所难免。\n\n单次纠错不建议超过30万字，可能会出现卡顿或闪退。\n\n【温度参数（仅专业模式）】\n控制AI判断的自信（果断）程度。\n• 允许范围：0.5～2.0；推荐默认值1.0。\n• 温度值越高，概率分布越平缓，模型更保守，给出的置信度变低，修改量可能下降。\n• 值越低（如0.5）：概率分布越尖锐，模型更激进，给出的置信度更高，修改量可能上升。\n• 值越高（如2.0）：概率分布越平缓，模型更保守，修改量可能下降。\n举例：0.8会给出更高的置信度，更不容易被阈值拦截。1.2会更保守，更容易被阈值拦截。\n• 温度不得低于0.5或高于2.0。\n\n【置信度拦截阈值（仅专业模式）】\n只有AI的置信度 ≥ 阈值时才修改，否则保留原字，防止过度纠错。\n• 推荐默认值：的0.72、地0.72、得0.75、做0.75、作0.78。阈值按模型预测的目标字应用，范围0～1。\n举例：设置为0.9时，模型修改的置信度超过0.9才会被保留并显示，否则忽略。\n\n【交互与拓展功能】\n• 手动修改：检查后，点击带下划线的字词即可手动修改或还原。\n• 纠错过程中修改原文会中断检查。\n• 输入框展开：点击输入框右上角的展开按钮，可进入全屏输入编辑，支持可拖动滚动条、撤销、还原和首行缩进；完成后内容会自动同步回主输入框。\n• 便签模式：长按底部纠错结果区域，即可展开便签编辑器进行全局修改，完成后支持直接导出。绿色的波浪线为系统或你修改过的文本（原在输出框中呈现红色）。\n• 字体大小与皮肤：点击标题栏“A”进入字体设置，可调节字体大小。底部彩色衣服可切换不同的界面皮肤。\n• 快速跳转：点击纠错清单中的序号 [1]，可以自动滚动定位至全文对应段落。\n• 一键粘贴：点击按钮快速读取剪贴板内容。（不建议一次性粘贴超过20万字，可能导致闪退）\n• 导入文件：支持txt、md、docx、pdf及图片格式(支持直接OCR识图)。\n  不建议一次导入多个过大的文件，可能导致使用卡顿。也不建议导入带有特定格式和排版（如表格类）的文件，会破坏原有排版。\n\n• 系统分享：在其他App中选中文本，点击分享并选择本App，即可跳转至系统进行纠错。\n• 历史记录：最多保存近50条。\n\n 【错词库】\n  手动定义规则，这些规则会在纠错中自动应用。\n  使用方法：\n1.白名单：\n在“原始文本”框输入例如“慢慢的”或“张三”，直接提交。等效于白名单，系统在遇到该词后不会再修改。\n  2.改错：在“修改后”里再添加文本（如：慢慢地），纠错时原始文本就会被自动修改。\n• 自定义规则优先级高于本系统。\n\n【悬浮窗】\n开启后支持后台随时随地纠错。长按悬浮球或点击面板右上角可同步至应用内继续操作。点击面板外可自动收起。\n\n【标点清理：】\n  当检测到包含复制残留的垃圾标点时会触发弹窗，允许自由清理提纯文本。\n\n• 其他：本App和内置模型均由 奇 制作与训练，非其他开源模型，无版权风险。本著作权归奇（qi）所有。想与作者私聊？公众号搜索：Li的信箱";
+        String text = "【模式介绍】\n极速：不调用神经网络检查“的/地/得/做/作”；仅运行系统内置的错词库和规则。速度最快（毫秒级），适合只想快速检查错别字与语病的场景。\n\n专业：比极速模式额外纠错“的地得做作”使用，速度较快（秒级）。\nHCAM模型是本作者自己设计，并从零训练＋微调的中文掩码模型。该模型会额外纠错“的地得”和“做作”。\n通常建议始终使用专业模式，除非你对“的地得做作”运用得如火纯青。\n\n注：不同手机的速度会有差异；模型也可能出现极少量误判，这是神经网络的通病，在所难免。\n\n单次纠错不建议超过30万字，可能会出现卡顿或闪退。\n\n【温度参数（仅专业模式）】\n控制AI判断的自信（果断）程度。\n• 允许范围：0.5～2.0；推荐默认值1.0。\n• 值越低（如0.5）：概率分布越尖锐，模型更激进，给出的置信度更高，修改量可能上升。\n• 值越高（如2.0）：概率分布越平缓，模型更保守，修改量可能下降。\n举例：0.8会给出更高的置信度，更不容易被阈值拦截。1.2会更保守，更容易被阈值拦截。\n• 温度不得低于0.5或高于2.0。\n\n【置信度拦截阈值（仅专业模式）】\n只有AI的置信度 ≥ 阈值时才修改，否则保留原字，防止过度纠错。\n• 推荐默认值：的0.72、地0.72、得0.75、做0.75、作0.78。阈值按模型预测的目标字应用，范围0～1。\n举例：设置为0.9时，模型修改的置信度超过0.9才会被保留并显示，否则忽略。\n\n【交互与拓展功能】\n• 手动修改：检查后，点击带下划线的字词即可手动修改或还原。\n• 纠错过程中修改原文会中断检查。\n• 输入框展开：点击输入框右上角的展开按钮，可进入全屏输入编辑，支持可拖动滚动条、撤销、还原和首行缩进；完成后内容会自动同步回主输入框。\n• 便签模式：长按底部纠错结果区域，即可展开便签编辑器进行全局修改，完成后支持直接导出。绿色的波浪线为系统或你修改过的文本（原在输出框中呈现红色）。\n• 字体大小与皮肤：点击标题栏“A”进入字体设置，可调节字体大小。底部彩色衣服可切换不同的界面皮肤。\n• 快速跳转：点击纠错清单中的序号 [1]，可以自动滚动定位至全文对应段落。\n• 一键粘贴：点击按钮快速读取剪贴板内容。（不建议一次性粘贴超过20万字，可能导致闪退）\n• 导入文件：支持txt、md、docx、pptx、pdf及图片格式(支持OCR识图)。\n  不建议一次导入多个过大的文件，可能导致使用卡顿。也不建议导入带有特定格式和排版（如表格类）的文件，会破坏原有排版。\n\n• 系统分享：在其他App中选中文本，点击分享并选择本App，即可跳转至系统进行纠错。\n• 历史记录：最多保存近50条。\n\n 【错词库】\n  手动定义规则，这些规则会在纠错中自动应用。\n  使用方法：\n1.白名单：\n在“原始文本”框输入例如“慢慢的”或“张三”，直接提交。等效于白名单，系统在遇到该词后不会再修改。\n  2.改错：在“修改后”里再添加文本（如：慢慢地），纠错时原始文本就会被自动修改。\n• 自定义规则优先级高于本系统。\n\n【悬浮窗】\n开启后支持后台随时随地纠错。长按悬浮球或点击面板右上角可同步至应用内继续操作。点击面板外可自动收起。\n\n【标点清理：】\n  当检测到包含复制残留的垃圾标点时会触发弹窗，允许自由清理提纯文本。\n\n• 其他：本App和内置模型均由 奇 制作与训练，非其他开源模型，无版权风险。本著作权归奇（qi）所有。想与作者私聊？公众号搜索：Li的信箱";
         int ui = Math.max(-3, Math.min(3, sp.getInt("font_offset_sys", 0))); TextView view = new TextView(this); view.setText(text); view.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 14 + ui); view.setTextColor(0xFF333333); view.setLineSpacing(0, 1.2f); int padding = (int) (20 * getResources().getDisplayMetrics().density); view.setPadding(padding, padding / 2, padding, 0); ScrollView scroll = new ScrollView(this); scroll.addView(view); new AlertDialog.Builder(this).setTitle("使用说明").setView(scroll).setPositiveButton("知道了", null).show();
     }
 
@@ -4744,13 +5022,21 @@ public class MainActivity extends AppCompatActivity {
         doInference(fast, temperature);
     }
 
-    private void chooseSaveFormat() {
-        String raw = inputText.getText().toString(); if (raw.isEmpty()) return;
+    private void chooseSaveFormat() { chooseSaveFormat(null, false); }
+
+    private void chooseSaveFormat(String overrideText, boolean fromEditor) {
+        String raw = inputText.getText().toString();
+        if (!fromEditor && raw.isEmpty()) return;
+        if (fromEditor && (overrideText == null || overrideText.isEmpty())) { Toast.makeText(this, "文本为空", Toast.LENGTH_SHORT).show(); return; }
+        boolean editorModified = fromEditor && expandedEditText != null && !expandedEditText.getText().toString().equals(originalEditorText);
         String[] options = {"TXT 纯文本", "MD 文档", "PDF 文档", "DOCX 文档", "JPG 图片", "PNG 图片"};
         new AlertDialog.Builder(this).setTitle("选择保存格式").setItems(options, (dialog, which) -> {
-            saveFormat = which; String text = isManuallyEditedOut ? extractCleanTextFromSpanned((Spanned) outputText.getText()) : getCleanTextStatic(); boolean corrected = false;
+            saveFormat = which;
+            String text = fromEditor ? overrideText : (isManuallyEditedOut ? extractCleanTextFromSpanned((Spanned) outputText.getText()) : getCleanTextStatic());
+            boolean corrected = false;
             if (text.isEmpty()) { text = raw; Toast.makeText(this, "未开始纠错，将保存原始文本为" + options[which].split(" ")[0] + "格式", Toast.LENGTH_LONG).show(); }
-            else if (isManuallyEditedOut) corrected = true; else outer: for (List<TextBlock> sentence : allSentencesBlocks) for (TextBlock block : sentence) if (block.isMutable && !block.current.equals(block.original)) { corrected = true; break outer; }
+            else if (isManuallyEditedOut || editorModified) corrected = true;
+            else outer: for (List<TextBlock> sentence : allSentencesBlocks) for (TextBlock block : sentence) if (block.isMutable && !block.current.equals(block.original)) { corrected = true; break outer; }
             pendingSaveText = text; Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT); intent.addCategory(Intent.CATEGORY_OPENABLE); String name = corrected ? "纠错结果" : "原始文本";
             if (which == 0) { intent.setType("text/plain"); intent.putExtra(Intent.EXTRA_TITLE, name + ".txt"); } else if (which == 1) { intent.setType("text/markdown"); intent.putExtra(Intent.EXTRA_TITLE, name + ".md"); } else if (which == 2) { intent.setType("application/pdf"); intent.putExtra(Intent.EXTRA_TITLE, name + ".pdf"); } else if (which == 3) { intent.setType("application/vnd.openxmlformats-officedocument.wordprocessingml.document"); intent.putExtra(Intent.EXTRA_TITLE, name + ".docx"); } else if (which == 4) { intent.setType("image/jpeg"); intent.putExtra(Intent.EXTRA_TITLE, name + ".jpg"); } else { intent.setType("image/png"); intent.putExtra(Intent.EXTRA_TITLE, name + ".png"); }
             try { startActivityForResult(intent, 101); } catch (Exception exception) { Toast.makeText(this, "调起失败: " + exception.getMessage(), Toast.LENGTH_SHORT).show(); }
@@ -4813,7 +5099,7 @@ public class MainActivity extends AppCompatActivity {
                 if (isFinishing() || isDestroyed() || restoreGeneration != historyRestoreGeneration) return;
                 isRestoringHistory = true; inputText.setText(full); isRestoringHistory = false; lastSavedHistoryFileId = fileId;
                 if (!manual.isEmpty()) {
-                    if (restored != null) { isManuallyEditedOut = true; setResultStaleWarning(false); outputText.setText(restored); outputText.setMovementMethod(MyLinkMovementMethod.getInstance()); outputText.setHighlightColor(Color.TRANSPARENT); btnCheck.setText("继续纠错"); btnCopy.setEnabled(true); btnSaveTxt.setEnabled(true); }
+                    if (restored != null) { isManuallyEditedOut = true; lastEditorSpannable = new SpannableStringBuilder(restored); setResultStaleWarning(false); outputText.setText(restored); outputText.setMovementMethod(MyLinkMovementMethod.getInstance()); outputText.setHighlightColor(Color.TRANSPARENT); btnCheck.setText("继续纠错"); btnCopy.setEnabled(true); btnSaveTxt.setEnabled(true); }
                 } else if (!blocks.isEmpty()) {
                     isManuallyEditedOut = false; allSentencesBlocks = restoredBlocks; lastTimeMs = Math.max(0L, record.optLong("elapsedMs", 0L)); showJumpHintForCurrentResult = false; pendingFreshJumpHintDecision = false; setResultStaleWarning(false); renderFinalBlocks(); btnCheck.setText("继续纠错"); btnCopy.setEnabled(true); btnSaveTxt.setEnabled(true);
                 } else { isManuallyEditedOut = false; allSentencesBlocks.clear(); outputText.setText(""); setResultStaleWarning(false); btnCheck.setText("开始纠错"); }
@@ -4888,8 +5174,16 @@ public class MainActivity extends AppCompatActivity {
             lastSavedHistoryFileId = snapshot.optString("file", ""); if (lastSavedHistoryFileId.isEmpty()) lastSavedHistoryFileId = null;
             displayedResultInput = snapshot.isNull("source") ? null : snapshot.optString("source", null);
             if (isManuallyEditedOut) {
-                outputText.setText(deserializeSpannable(snapshot.getString("manual_text")));
-                outputText.setMovementMethod(MyLinkMovementMethod.getInstance()); outputText.setHighlightColor(Color.TRANSPARENT);
+                SpannableStringBuilder restoredManual = deserializeSpannable(snapshot.getString("manual_text"));
+                if (restoredManual != null) {
+                    lastEditorSpannable = new SpannableStringBuilder(restoredManual);
+                    outputText.setText(restoredManual);
+                    outputText.setMovementMethod(MyLinkMovementMethod.getInstance()); outputText.setHighlightColor(Color.TRANSPARENT);
+                } else {
+                    isManuallyEditedOut = false;
+                    lastEditorSpannable = null;
+                    outputText.setText(snapshot.optString("message", ""));
+                }
             } else if (!allSentencesBlocks.isEmpty()) renderFinalBlocks();
             else outputText.setText(snapshot.optString("message", ""));
             setResultStaleWarning(DraftSync.resultIsStale(text, displayedResultInput, hasDisplayedCorrectionResult()));
@@ -5030,17 +5324,20 @@ public class MainActivity extends AppCompatActivity {
     private void saveSelectedDocument(android.net.Uri uri) {
         final int format = saveFormat; final String text = pendingSaveText;
         AppExecutors.IO.execute(() -> {
-            boolean success = false;
+            boolean success = false; String errorMessage = null;
             try (OutputStream output = getContentResolver().openOutputStream(uri)) {
-                if (output == null) return;
+                if (output == null) throw new IOException("无法打开目标文件");
                 if (format == 0 || format == 1) output.write(text.getBytes(StandardCharsets.UTF_8));
                 else if (format == 2) writePdf(output, text);
                 else if (format == 3) writeDocx(output, text);
                 else writeImage(output, text, format == 4);
                 success = true;
+            } catch (IllegalArgumentException exception) {
+                errorMessage = exception.getMessage();
             } catch (Exception ignored) {}
             boolean saved = success;
-            AppExecutors.MAIN.post(() -> Toast.makeText(this, saved ? "保存成功" : "保存过程出现错误", Toast.LENGTH_SHORT).show());
+            String message = saved ? "保存成功" : (errorMessage != null && !errorMessage.isEmpty() ? errorMessage : "保存过程出现错误");
+            AppExecutors.MAIN.post(() -> Toast.makeText(this, message, saved ? Toast.LENGTH_SHORT : Toast.LENGTH_LONG).show());
         });
     }
 
@@ -6137,9 +6434,9 @@ cat > "app/src/main/res/layout/activity_main.xml" <<'DEDEDE_SOURCE_EOF'
                 <com.app.dedede.FlowLayout android:id="@+id/llCustomTypos" android:layout_width="match_parent" android:layout_height="wrap_content"/>
                 <Button android:id="@+id/btnExpandTypos" android:layout_width="match_parent" android:layout_height="36dp" android:text="展开更多" android:textSize="12sp" android:backgroundTint="#E0E0E0" android:textColor="@color/text_primary" android:visibility="gone" android:layout_marginTop="8dp" android:layout_marginBottom="8dp" android:insetTop="0dp" android:insetBottom="0dp"/>
                 <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:gravity="center_vertical" android:layout_marginTop="8dp">
-                    <EditText android:id="@+id/etOriginal" android:layout_width="0dp" android:layout_weight="1" android:layout_height="40dp" android:maxLength="5" android:hint="原始文本" android:textColorHint="#BDBDBD" android:background="@color/card_bg" android:padding="8dp" android:textSize="13sp" android:textColor="@color/text_primary"/>
+                    <EditText android:id="@+id/etOriginal" android:layout_width="0dp" android:layout_weight="1" android:layout_height="40dp" android:maxLength="20" android:singleLine="true" android:hint="原始文本" android:textColorHint="#BDBDBD" android:background="@color/card_bg" android:padding="8dp" android:textSize="13sp" android:textColor="@color/text_primary"/>
                     <TextView android:id="@+id/tvCustomTyposArrow" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text=" → " android:textColor="@color/text_primary"/>
-                    <EditText android:id="@+id/etCorrected" android:layout_width="0dp" android:layout_weight="1" android:layout_height="40dp" android:maxLength="5" android:hint="修改后" android:textColorHint="#BDBDBD" android:background="@color/card_bg" android:padding="8dp" android:textSize="13sp" android:textColor="@color/text_primary"/>
+                    <EditText android:id="@+id/etCorrected" android:layout_width="0dp" android:layout_weight="1" android:layout_height="40dp" android:maxLength="20" android:singleLine="true" android:hint="修改后" android:textColorHint="#BDBDBD" android:background="@color/card_bg" android:padding="8dp" android:textSize="13sp" android:textColor="@color/text_primary"/>
                     <Button android:id="@+id/btnAddTypo" android:layout_width="60dp" android:layout_height="40dp" android:text="添加" android:textSize="12sp" android:backgroundTint="#81C784" android:layout_marginStart="4dp" android:padding="0dp" android:insetTop="0dp" android:insetBottom="0dp"/>
                 </LinearLayout>
                 <TextView android:id="@+id/tvWhitelistJumpHint" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="↑仅在此卡片内输入需保护的词，再点击添加即可。" android:textSize="11sp" android:textColor="#9E9E9E" android:paddingTop="3dp" android:paddingLeft="2dp" android:layout_marginBottom="16dp" android:visibility="gone"/>
