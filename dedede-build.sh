@@ -595,7 +595,7 @@ import java.util.regex.Pattern;
 
 public final class CorrectionCore {
     private static final String[] LABELS = {"的", "地", "得", "做", "作"};
-    private static final int MAX_SEQUENCE_LENGTH = 350;
+    private static final int MAX_SEQUENCE_LENGTH = 300;
     private CorrectionCore() {}
 
     public interface Listener {
