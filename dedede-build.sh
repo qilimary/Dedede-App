@@ -57,8 +57,8 @@ android {
         applicationId "com.app.dededi.pte"
         minSdk 24
         targetSdk 36
-        versionCode 40
-        versionName "4.1.6-PTE"
+        versionCode 41
+        versionName "4.1.7-PTE"
         ndk { abiFilters "arm64-v8a" }
         externalNativeBuild { cmake { cppFlags ""; arguments "-DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON" } }
     }
@@ -4491,6 +4491,136 @@ public class MainActivity extends AppCompatActivity {
         scrollView.setOnScrollChangeListener((v, x, y, oldX, oldY) -> { if (y < oldY) autoScrollEnabled = false; if (!isTouchingScrollView && !v.canScrollVertically(1)) autoScrollEnabled = true; });
         View editorTouch = findViewById(R.id.editorScrollTouchArea);
         editorTouch.setOnTouchListener((v, event) -> { View child = editorScrollView.getChildAt(0); int max = child == null ? 0 : child.getHeight() - editorScrollView.getHeight(); if (max > 0 && v.getHeight() > 0) editorScrollView.scrollTo(0, (int) (Math.max(0, Math.min(event.getY(), v.getHeight())) / v.getHeight() * max)); return true; });
+        setupInputSmoothScroll();
+    }
+
+    @SuppressLint("ClickableViewAccessibility")
+    private void setupInputSmoothScroll() {
+        if (inputText == null) return;
+        final android.view.ViewConfiguration vc = android.view.ViewConfiguration.get(this);
+        final int touchSlop = vc.getScaledTouchSlop();
+        final int minFlingVelocity = vc.getScaledMinimumFlingVelocity();
+        final int maxFlingVelocity = vc.getScaledMaximumFlingVelocity();
+        final int longPressTimeout = android.view.ViewConfiguration.getLongPressTimeout();
+        final float density = getResources().getDisplayMetrics().density;
+        final int maxGlideVelocity = Math.round(1300f * density);
+        final android.widget.OverScroller scroller = new android.widget.OverScroller(this);
+        scroller.setFriction(android.view.ViewConfiguration.getScrollFriction() * 2.8f);
+        final Runnable[] flingTick = new Runnable[1];
+        flingTick[0] = () -> {
+            if (isDestroyed() || isFinishing() || inputText == null || scroller.isFinished()) return;
+            Layout layout = inputText.getLayout();
+            int maxScroll = layout == null ? 0 : Math.max(0, layout.getHeight() - (inputText.getHeight() - inputText.getTotalPaddingTop() - inputText.getTotalPaddingBottom()));
+            if (maxScroll <= 0) { scroller.abortAnimation(); return; }
+            if (scroller.computeScrollOffset()) {
+                int targetY = Math.max(0, Math.min(maxScroll, scroller.getCurrY()));
+                inputText.scrollTo(inputText.getScrollX(), targetY);
+                if (!scroller.isFinished() && targetY == scroller.getCurrY()) inputText.postOnAnimation(flingTick[0]);
+                else if (targetY != scroller.getCurrY()) scroller.abortAnimation();
+            }
+        };
+        inputText.setOnTouchListener(new View.OnTouchListener() {
+            int activePointerId = MotionEvent.INVALID_POINTER_ID;
+            float downX, downY, lastY, remainder;
+            long downTime;
+            boolean dragging;
+            android.view.VelocityTracker tracker;
+
+            private int maxScroll() {
+                Layout layout = inputText.getLayout();
+                if (layout == null) return 0;
+                return Math.max(0, layout.getHeight() - (inputText.getHeight() - inputText.getTotalPaddingTop() - inputText.getTotalPaddingBottom()));
+            }
+            private void releaseTracker() {
+                if (tracker != null) { tracker.recycle(); tracker = null; }
+            }
+
+            @Override public boolean onTouch(View v, MotionEvent event) {
+                int action = event.getActionMasked();
+                switch (action) {
+                    case MotionEvent.ACTION_DOWN:
+                        if (!scroller.isFinished()) { scroller.abortAnimation(); inputText.removeCallbacks(flingTick[0]); }
+                        activePointerId = event.getPointerId(0);
+                        downX = event.getX(); downY = event.getY(); lastY = downY; downTime = event.getEventTime(); remainder = 0f; dragging = false;
+                        releaseTracker();
+                        tracker = android.view.VelocityTracker.obtain();
+                        tracker.addMovement(event);
+                        return false;
+                    case MotionEvent.ACTION_MOVE: {
+                        if (tracker != null) tracker.addMovement(event);
+                        int idx = event.findPointerIndex(activePointerId);
+                        if (idx < 0) return dragging;
+                        float x = event.getX(idx), y = event.getY(idx);
+                        int max = maxScroll();
+                        if (!dragging) {
+                            float dx = Math.abs(x - downX), dy = Math.abs(y - downY);
+                            if (max > 0 && dy > touchSlop && dy >= dx && (event.getEventTime() - downTime) < longPressTimeout) {
+                                dragging = true;
+                                lastY = y;
+                                if (v.getParent() != null) v.getParent().requestDisallowInterceptTouchEvent(true);
+                                MotionEvent cancel = MotionEvent.obtain(event);
+                                cancel.setAction(MotionEvent.ACTION_CANCEL);
+                                inputText.onTouchEvent(cancel);
+                                cancel.recycle();
+                                return true;
+                            }
+                            return false;
+                        }
+                        if (max <= 0) return true;
+                        float delta = (lastY - y) * 1.85f + remainder;
+                        int step = Math.round(delta);
+                        remainder = delta - step;
+                        lastY = y;
+                        if (step != 0) {
+                            int nextY = Math.max(0, Math.min(max, inputText.getScrollY() + step));
+                            inputText.scrollTo(inputText.getScrollX(), nextY);
+                        }
+                        return true;
+                    }
+                    case MotionEvent.ACTION_POINTER_UP: {
+                        int liftedIdx = event.getActionIndex();
+                        if (event.getPointerId(liftedIdx) == activePointerId) {
+                            int nextIdx = liftedIdx == 0 ? 1 : 0;
+                            if (nextIdx < event.getPointerCount()) {
+                                activePointerId = event.getPointerId(nextIdx);
+                                lastY = event.getY(nextIdx);
+                            }
+                        }
+                        return dragging;
+                    }
+                    case MotionEvent.ACTION_UP:
+                        if (dragging) {
+                            int maxUp = maxScroll();
+                            if (tracker != null && maxUp > 0) {
+                                tracker.addMovement(event);
+                                tracker.computeCurrentVelocity(1000, maxFlingVelocity);
+                                float vy = tracker.getYVelocity(activePointerId);
+                                if (Math.abs(vy) >= minFlingVelocity) {
+                                    int flingV = Math.round(-vy * 0.65f);
+                                    flingV = Math.max(-maxGlideVelocity, Math.min(maxGlideVelocity, flingV));
+                                    if (flingV != 0) {
+                                        scroller.fling(0, inputText.getScrollY(), 0, flingV, 0, 0, 0, maxUp);
+                                        inputText.postOnAnimation(flingTick[0]);
+                                    }
+                                }
+                            }
+                            releaseTracker();
+                            dragging = false;
+                            activePointerId = MotionEvent.INVALID_POINTER_ID;
+                            return true;
+                        }
+                        releaseTracker();
+                        activePointerId = MotionEvent.INVALID_POINTER_ID;
+                        return false;
+                    case MotionEvent.ACTION_CANCEL:
+                        releaseTracker();
+                        dragging = false;
+                        activePointerId = MotionEvent.INVALID_POINTER_ID;
+                        return false;
+                }
+                return false;
+            }
+        });
     }
 
     @SuppressLint("ClickableViewAccessibility")
