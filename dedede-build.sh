@@ -4327,10 +4327,21 @@ public class MainActivity extends AppCompatActivity {
         }
         // 两种模式显示同一组专业参数；极速模式只禁用并置灰，不再换成另一套数字。
         editTemp.setText(temperature);
-        editThreshDe1.setText(sp.getString("pro_th1", "0.72"));
-        editThreshDe2.setText(sp.getString("pro_th2", "0.72"));
-        editThreshDe3.setText(sp.getString("pro_th3", "0.75"));
-        editThreshZuo.setText(sp.getString("pro_th4", "0.75")); editThreshZuo4.setText(sp.getString("pro_th5", "0.78"));
+        String[] thKeys = {"pro_th1", "pro_th2", "pro_th3", "pro_th4", "pro_th5"};
+        String[] thDefaults = {"0.72", "0.72", "0.75", "0.75", "0.78"};
+        EditText[] thFields = {editThreshDe1, editThreshDe2, editThreshDe3, editThreshZuo, editThreshZuo4};
+        SharedPreferences.Editor thEditor = null;
+        for (int i = 0; i < 5; i++) {
+            String value = sp.getString(thKeys[i], thDefaults[i]);
+            float parsed = parseFloatSafe(value, Float.NaN);
+            if (!Float.isFinite(parsed) || parsed < 0f || parsed > 1f) {
+                value = thDefaults[i];
+                if (thEditor == null) thEditor = sp.edit();
+                thEditor.putString(thKeys[i], value);
+            }
+            thFields[i].setText(value);
+        }
+        if (thEditor != null) thEditor.apply();
         boolean professional = !fast;
         for (EditText field : new EditText[]{editTemp, editThreshDe1, editThreshDe2, editThreshDe3, editThreshZuo, editThreshZuo4}) {
             field.setEnabled(professional);
@@ -4431,6 +4442,12 @@ public class MainActivity extends AppCompatActivity {
         if (firstActivityInProcess && savedInstanceState == null && !carriesExternalText) DraftSync.publish(sp, "");
         drawerLayout = findViewById(R.id.drawerLayout); inputText = findViewById(R.id.inputText); outputText = findViewById(R.id.outputText); tvWordCount = findViewById(R.id.tvWordCount); tvResultStaleWarning = findViewById(R.id.tvResultStaleWarning); scrollView = findViewById(R.id.scrollView); progressBar = findViewById(R.id.progressBar);
         editTemp = findViewById(R.id.editTemp); editThreshDe1 = findViewById(R.id.editThreshDe1); editThreshDe2 = findViewById(R.id.editThreshDe2); editThreshDe3 = findViewById(R.id.editThreshDe3); editThreshZuo=findViewById(R.id.editThreshZuo); editThreshZuo4=findViewById(R.id.editThreshZuo4);
+        Pattern thresholdInputPattern = Pattern.compile("^(?:|0(?:\\.[0-9]*)?|1(?:\\.0*)?|\\.[0-9]*)$");
+        InputFilter[] thresholdFilters = new InputFilter[]{new InputFilter.LengthFilter(5), (source, start, end, dest, dstart, dend) -> {
+            String next = dest.subSequence(0, dstart).toString() + source.subSequence(start, end) + dest.subSequence(dend, dest.length());
+            return thresholdInputPattern.matcher(next).matches() ? null : dest.subSequence(dstart, dend);
+        }};
+        for (EditText field : new EditText[]{editThreshDe1, editThreshDe2, editThreshDe3, editThreshZuo, editThreshZuo4}) field.setFilters(thresholdFilters);
         btnCheck = findViewById(R.id.btnCheck); btnImport = findViewById(R.id.btnImport); btnPaste = findViewById(R.id.btnPaste); btnClear = findViewById(R.id.btnClear); btnCopy = findViewById(R.id.btnCopy); btnSaveTxt = findViewById(R.id.btnSaveTxt);
         rbFast = findViewById(R.id.rbFast); rbPro = findViewById(R.id.rbPro); rgMode = findViewById(R.id.rgMode); expandedEditorOverlay = findViewById(R.id.expandedEditorOverlay); expandedEditText = findViewById(R.id.expandedEditText); editorScrollView = findViewById(R.id.editorScrollView);
         inputEditorOverlay = findViewById(R.id.inputEditorOverlay); expandedInputEditText = findViewById(R.id.expandedInputEditText); tvInputEditorWordCount = findViewById(R.id.tvInputEditorWordCount);
@@ -5008,6 +5025,21 @@ public class MainActivity extends AppCompatActivity {
                 sp.edit().putString("pro_temp", "1.0").apply();
                 Toast.makeText(this, "温度参数无效，已自动恢复为1.0（允许范围0.5～2.0）", Toast.LENGTH_LONG).show();
             }
+            String[] thKeys = {"pro_th1", "pro_th2", "pro_th3", "pro_th4", "pro_th5"};
+            String[] thDefaults = {"0.72", "0.72", "0.75", "0.75", "0.78"};
+            EditText[] thFields = {editThreshDe1, editThreshDe2, editThreshDe3, editThreshZuo, editThreshZuo4};
+            boolean thReset = false; SharedPreferences.Editor thEditor = null;
+            for (int i = 0; i < 5; i++) {
+                String rawValue = thFields[i].getText().toString();
+                float parsed = parseFloatSafe(rawValue, Float.NaN);
+                if (!Float.isFinite(parsed) || parsed < 0f || parsed > 1f) {
+                    thFields[i].setText(thDefaults[i]);
+                    if (thEditor == null) thEditor = sp.edit();
+                    thEditor.putString(thKeys[i], thDefaults[i]); thReset = true;
+                }
+            }
+            if (thEditor != null) thEditor.apply();
+            if (thReset) Toast.makeText(this, "部分阈值无效，已恢复默认值（范围0～1）", Toast.LENGTH_LONG).show();
         }
         saveSettings(currentIsFast);
 
