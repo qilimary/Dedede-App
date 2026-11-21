@@ -140,7 +140,9 @@ jobs:
           for version in "${versions[@]}"; do
             zip="dist/Dedede-${version}.zip"
             entry="Dedede-${version}.apk"
-            apk="dist/${entry}"
+            prefix="01"
+            if [[ "$version" == Lan ]]; then prefix="02"; fi
+            apk="dist/${prefix}-${entry}"
             test -s "$zip"
             unzip -tqq "$zip"
             test "$(unzip -Z1 "$zip" | wc -l)" -eq 1
@@ -167,7 +169,7 @@ jobs:
         if: steps.verify.outputs.lan == 'true'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          path: dist/Dedede-Lan.apk
+          path: dist/02-Dedede-Lan.apk
           if-no-files-found: error
           retention-days: 30
           archive: false
@@ -176,7 +178,7 @@ jobs:
         if: steps.verify.outputs.normal == 'true'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          path: dist/Dedede-Normal.apk
+          path: dist/01-Dedede-Normal.apk
           if-no-files-found: error
           retention-days: 30
           archive: false
