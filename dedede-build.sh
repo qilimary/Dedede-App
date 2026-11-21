@@ -4338,6 +4338,10 @@ public class MainActivity extends AppCompatActivity {
                 value = thDefaults[i];
                 if (thEditor == null) thEditor = sp.edit();
                 thEditor.putString(thKeys[i], value);
+            } else if (parsed == 1f && !"1".equals(value)) {
+                value = "1";
+                if (thEditor == null) thEditor = sp.edit();
+                thEditor.putString(thKeys[i], value);
             }
             thFields[i].setText(value);
         }
@@ -4442,7 +4446,7 @@ public class MainActivity extends AppCompatActivity {
         if (firstActivityInProcess && savedInstanceState == null && !carriesExternalText) DraftSync.publish(sp, "");
         drawerLayout = findViewById(R.id.drawerLayout); inputText = findViewById(R.id.inputText); outputText = findViewById(R.id.outputText); tvWordCount = findViewById(R.id.tvWordCount); tvResultStaleWarning = findViewById(R.id.tvResultStaleWarning); scrollView = findViewById(R.id.scrollView); progressBar = findViewById(R.id.progressBar);
         editTemp = findViewById(R.id.editTemp); editThreshDe1 = findViewById(R.id.editThreshDe1); editThreshDe2 = findViewById(R.id.editThreshDe2); editThreshDe3 = findViewById(R.id.editThreshDe3); editThreshZuo=findViewById(R.id.editThreshZuo); editThreshZuo4=findViewById(R.id.editThreshZuo4);
-        Pattern thresholdInputPattern = Pattern.compile("^(?:|0(?:\\.[0-9]*)?|1(?:\\.0*)?|\\.[0-9]*)$");
+        Pattern thresholdInputPattern = Pattern.compile("^(?:|0(?:\\.[0-9]*)?|1|\\.[0-9]*)$");
         InputFilter[] thresholdFilters = new InputFilter[]{new InputFilter.LengthFilter(5), (source, start, end, dest, dstart, dend) -> {
             String next = dest.subSequence(0, dstart).toString() + source.subSequence(start, end) + dest.subSequence(dend, dest.length());
             return thresholdInputPattern.matcher(next).matches() ? null : dest.subSequence(dstart, dend);
