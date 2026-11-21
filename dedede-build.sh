@@ -605,14 +605,16 @@ public final class CorrectionCore {
 
     private static final class GrammarHit {
         final MainActivity.GramRule rule;
+        final int optionIndex;
         final int end;
         final String group1;
         final String group2;
         final String group3;
         final String[] gaps = new String[4];
 
-        GrammarHit(MainActivity.GramRule rule, Matcher match, String sentence) {
+        GrammarHit(MainActivity.GramRule rule, int optionIndex, Matcher match, String sentence) {
             this.rule = rule;
+            this.optionIndex = optionIndex;
             this.end = match.end();
             this.group1 = match.group(1);
             this.group2 = match.group(2);
@@ -639,12 +641,13 @@ public final class CorrectionCore {
                 int matchStart = matcher.start();
                 boolean protectedHit = false;
                 for (int i = matchStart; i < matcher.end(); i++) if (protectedPositions[i]) { protectedHit = true; break; }
-                String[] option = rule.options[0];
+                int optionIndex = rule.options.length > 1 ? java.util.concurrent.ThreadLocalRandom.current().nextInt(rule.options.length) : 0;
+                String[] option = rule.options[optionIndex];
                 String replacement = (option[0] != null ? option[0] : matcher.group(1)) + matcher.group(2)
                         + (option.length > 1 && option[1] != null ? option[1] : matcher.group(3));
                 if (Proofreader.altersExact(exactPositions, matchStart, matcher.group(), replacement)) protectedHit = true;
                 if (hits[matchStart] == null && !protectedHit) {
-                    hits[matchStart] = new GrammarHit(rule, matcher, sentence);
+                    hits[matchStart] = new GrammarHit(rule, optionIndex, matcher, sentence);
                 }
                 searchStart = matchStart + 1;
             }
@@ -726,7 +729,7 @@ public final class CorrectionCore {
                     String group1 = grammarHit.group1;
                     String group2 = grammarHit.group2;
                     String group3 = grammarHit.group3;
-                    String[] selected = grammarHit.rule.options[0];
+                    String[] selected = grammarHit.rule.options[grammarHit.optionIndex];
                     String replacement1 = selected[0] != null ? selected[0] : group1;
                     String replacement3 = selected.length > 1 && selected[1] != null ? selected[1] : group3;
                     // Numeric normalization can consume the same quantifier first (e.g. 2个电脑).
@@ -2316,7 +2319,8 @@ public class MainActivity extends AppCompatActivity {
             addRule("(最高|最低|最多|最少)((?:有|是|为|达到)?[ 　]*[0-9零〇一二两三四五六七八九十百千万亿]+(?:\\.[0-9]+)?[ 　]*(?:亿元|万元|亿|万|千|平方公里|平方米|立方米|公里|千米|厘米|毫米|千克|公斤|小时|分钟|个人|岁|元|人|名|位|个|天|年|月|日|米|吨|斤|克|次|台|辆|本|件|层|楼|%|％)?[ 　]*)(以上|以下|左右|上下)(?=$|[的，,。；;！？!?：:\\n])", new String[][]{{null, ""}});
             addRule("(关键在于|关键是)([^。！？\\n]{1,20}?)(是十分重要的|是很重要的|起到重要作用|决定性的)", new String[][]{{"", null}, {null, ""}});
             // 2026-10 回归修复：排除逗号冒号，避免“……避免接触放射性物质,尽量不要做X线片”跨分句误删“不要”造成语义反转。
-            addRule("(切忌)([^，,。；！？、：:\\n]{0,15}?)(不要|不可|不能|不得)", new String[][]{{"千万", null}, {null, ""}});
+            addRule("(切忌)()(不要|不可|不能|不得)", new String[][]{{null, ""}, {"", null}, {"千万", null}});
+            addRule("(切忌)([^，,。；！？、：:\\n]{1,15}?)(不要|不可|不能|不得)", new String[][]{{null, ""}, {"", null}});
             addRule("(避免|防止|严防)([^，,。；！？、：:\\n]{1,15}?)(不要)(?!脸|命|紧)", new String[][]{{null, ""}});
             addRule("(防止)([ 　]*(?:事故|交通事故|火灾|悲剧|灾难|类似事故|类似事件|此类事件|同类事件)[ 　]*)(不再)(?=[ 　]*发生)", new String[][]{{null, "再次"}});
 
