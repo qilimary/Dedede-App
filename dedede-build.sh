@@ -4033,9 +4033,11 @@ public class MainActivity extends AppCompatActivity {
         }
     }
     private final List<ClauseLink> currentClauseLinks = new ArrayList<>();
-    private View expandedEditorOverlay, inputEditorOverlay, inputBoxContainer, btnInputCollapse;
+    private View expandedEditorOverlay, inputEditorOverlay, inputBoxContainer, belowInputContainer, inputBottomHandleLayer, inputBottomOutsideStrip, btnInputCollapse;
     private android.widget.ImageView ivInputCollapseArrow;
     private boolean isInputCollapsed;
+    private int currentInputCardHeight;
+    private float currentInputCollapseFrac;
     private android.animation.ValueAnimator inputCollapseAnimator;
 
     private void pushState(Stack<EditorState> stack, EditorState state) {
@@ -4068,7 +4070,7 @@ public class MainActivity extends AppCompatActivity {
         float inputSize = 15f + textOffset, outputSize = 15.5f + textOffset; int ui = Math.max(-3, Math.min(3, systemOffset));
         if (inputText != null) {
             inputText.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, inputSize);
-            if (isInputCollapsed && inputBoxContainer != null) inputBoxContainer.post(() -> { if (isInputCollapsed && inputCollapseAnimator == null) applyInputPanelHeight(getCollapsedInputHeightPx()); });
+            if (inputBoxContainer != null) inputBoxContainer.post(() -> { if (inputCollapseAnimator == null) syncInputPanelLayout(); });
         }
         if (outputText != null) outputText.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, outputSize);
         if (expandedEditText != null) expandedEditText.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, outputSize);
@@ -4500,7 +4502,7 @@ public class MainActivity extends AppCompatActivity {
         btnCheck = findViewById(R.id.btnCheck); btnImport = findViewById(R.id.btnImport); btnPaste = findViewById(R.id.btnPaste); btnClear = findViewById(R.id.btnClear); btnCopy = findViewById(R.id.btnCopy); btnSaveTxt = findViewById(R.id.btnSaveTxt);
         rbFast = findViewById(R.id.rbFast); rbPro = findViewById(R.id.rbPro); rgMode = findViewById(R.id.rgMode); expandedEditorOverlay = findViewById(R.id.expandedEditorOverlay); expandedEditText = findViewById(R.id.expandedEditText); editorScrollView = findViewById(R.id.editorScrollView);
         inputEditorOverlay = findViewById(R.id.inputEditorOverlay); expandedInputEditText = findViewById(R.id.expandedInputEditText); tvInputEditorWordCount = findViewById(R.id.tvInputEditorWordCount);
-        inputBoxContainer = findViewById(R.id.inputBoxContainer); btnInputCollapse = findViewById(R.id.btnInputCollapse); ivInputCollapseArrow = findViewById(R.id.ivInputCollapseArrow);
+        inputBoxContainer = findViewById(R.id.inputBoxContainer); belowInputContainer = findViewById(R.id.belowInputContainer); inputBottomHandleLayer = findViewById(R.id.inputBottomHandleLayer); inputBottomOutsideStrip = findViewById(R.id.inputBottomOutsideStrip); btnInputCollapse = findViewById(R.id.btnInputCollapse); ivInputCollapseArrow = findViewById(R.id.ivInputCollapseArrow);
         TextView title = findViewById(R.id.tvTitle); Button menu = findViewById(R.id.btnMenu), font = findViewById(R.id.btnFont), inputExpand = findViewById(R.id.btnInputExpand); View floatButton = findViewById(R.id.btnFloat);
         font.setOnClickListener(v -> showFontSizeDialog()); inputExpand.setOnClickListener(v -> openInputEditor()); updateFontSize(sp.getInt("font_offset_text", 0), sp.getInt("font_offset_sys", 0)); applySkin(sp.getString("ui_skin", "default"));
         setupScrollControls(); setupEditor(); setupInputEditor(); setupInputWatcher();
@@ -4544,65 +4546,124 @@ public class MainActivity extends AppCompatActivity {
     private int getExpandedInputHeightPx() { return dpPx(149f); }
     private int getCollapsedInputHeightPx() {
         int lineHeight = inputText != null && inputText.getLineHeight() > 0 ? inputText.getLineHeight() : dpPx(21f);
-        return Math.max(dpPx(48f), lineHeight + dpPx(24f));
+        return Math.max(dpPx(45f), lineHeight + dpPx(24f));
     }
 
-    private void applyInputPanelHeight(int heightPx) {
+    private void setBelowTopMargin(int marginPx) {
+        if (belowInputContainer == null) return;
+        ViewGroup.LayoutParams lp = belowInputContainer.getLayoutParams();
+        if (lp instanceof ViewGroup.MarginLayoutParams) {
+            ViewGroup.MarginLayoutParams mlp = (ViewGroup.MarginLayoutParams) lp;
+            if (mlp.topMargin != marginPx) {
+                mlp.topMargin = marginPx;
+                belowInputContainer.setLayoutParams(mlp);
+            }
+        }
+    }
+
+    private void enterInputPanelGpuMode() {
+        if (belowInputContainer == null) return;
+        int collapsedH = getCollapsedInputHeightPx(), gapPx = dpPx(10f);
+        int baseTop = collapsedH + gapPx;
+        ViewGroup.LayoutParams lp = belowInputContainer.getLayoutParams();
+        if (lp instanceof ViewGroup.MarginLayoutParams) {
+            ViewGroup.MarginLayoutParams mlp = (ViewGroup.MarginLayoutParams) lp;
+            if (mlp.topMargin != baseTop) {
+                mlp.topMargin = baseTop;
+                belowInputContainer.setLayoutParams(mlp);
+            }
+        }
+        int curH = currentInputCardHeight > 0 ? currentInputCardHeight : (isInputCollapsed ? collapsedH : getExpandedInputHeightPx());
+        applyInputPanelGpuFrame(curH, currentInputCollapseFrac, null);
+    }
+
+    private void applyInputPanelGpuFrame(int heightPx, float frac, Float overrideRotation) {
+        int expandedH = getExpandedInputHeightPx(), collapsedH = getCollapsedInputHeightPx(), gapPx = dpPx(10f);
+        float clampedFrac = Math.max(0f, Math.min(1f, frac));
+        currentInputCardHeight = heightPx;
+        currentInputCollapseFrac = clampedFrac;
+        if (inputBoxContainer != null) inputBoxContainer.invalidateOutline();
+        if (tvWordCount != null) {
+            tvWordCount.setTranslationY(heightPx - expandedH);
+            tvWordCount.setAlpha(Math.max(0f, 1f - clampedFrac * 2.2f));
+        }
+        if (inputBottomHandleLayer != null) inputBottomHandleLayer.setTranslationY(heightPx - dpPx(18f));
+        if (ivInputCollapseArrow != null) {
+            ivInputCollapseArrow.setRotation(overrideRotation != null ? overrideRotation : 180f * clampedFrac);
+            ivInputCollapseArrow.setTranslationY(dpPx(9f) * clampedFrac);
+        }
+        if (belowInputContainer != null) {
+            int transY = heightPx - collapsedH;
+            belowInputContainer.setTranslationY(transY);
+            View parent = belowInputContainer.getParent() instanceof View ? (View) belowInputContainer.getParent() : null;
+            int w = belowInputContainer.getWidth(), areaH = parent != null ? parent.getHeight() : 0;
+            if (w > 0 && areaH > 0) {
+                int visibleH = Math.max(0, areaH - (heightPx + gapPx));
+                belowInputContainer.setClipBounds(new android.graphics.Rect(0, 0, w, visibleH));
+            }
+        }
+    }
+
+    private void syncInputPanelLayout() {
         if (inputBoxContainer == null) return;
-        int expandedH = getExpandedInputHeightPx(), collapsedH = getCollapsedInputHeightPx();
-        int span = Math.max(1, expandedH - collapsedH);
-        float frac = Math.max(0f, Math.min(1f, (expandedH - heightPx) / (float) span));
-        ViewGroup.LayoutParams lp = inputBoxContainer.getLayoutParams();
-        if (lp != null && lp.height != heightPx) {
-            lp.height = heightPx;
-            inputBoxContainer.setLayoutParams(lp);
+        int expandedH = getExpandedInputHeightPx(), collapsedH = getCollapsedInputHeightPx(), gapPx = dpPx(10f);
+        int targetH = isInputCollapsed ? collapsedH : expandedH;
+        float frac = isInputCollapsed ? 1f : 0f;
+        currentInputCardHeight = targetH;
+        currentInputCollapseFrac = frac;
+        inputBoxContainer.invalidateOutline();
+        if (tvWordCount != null) {
+            tvWordCount.setTranslationY(targetH - expandedH);
+            tvWordCount.setAlpha(isInputCollapsed ? 0f : 1f);
         }
-        if (inputText != null) {
-            int padTop = Math.round(dpPx(12f) + (dpPx(8f) - dpPx(12f)) * frac);
-            int padBottom = Math.round(dpPx(24f) + (dpPx(15f) - dpPx(24f)) * frac);
-            inputText.setPaddingRelative(dpPx(12f), padTop, dpPx(42f), padBottom);
+        if (inputBottomHandleLayer != null) inputBottomHandleLayer.setTranslationY(targetH - dpPx(18f));
+        if (ivInputCollapseArrow != null) {
+            ivInputCollapseArrow.setRotation(isInputCollapsed ? 180f : 0f);
+            ivInputCollapseArrow.setTranslationY(isInputCollapsed ? dpPx(9f) : 0f);
         }
-        if (ivInputCollapseArrow != null) ivInputCollapseArrow.setRotation(180f * frac);
+        if (belowInputContainer != null) {
+            belowInputContainer.setClipBounds(null);
+            belowInputContainer.setTranslationY(0f);
+            setBelowTopMargin(targetH + gapPx);
+        }
     }
 
     private int rubberBandInputHeight(float rawTarget) {
         int expandedH = getExpandedInputHeightPx(), collapsedH = getCollapsedInputHeightPx();
-        if (rawTarget < collapsedH) return Math.max(collapsedH - dpPx(10f), Math.round(collapsedH - (collapsedH - rawTarget) * 0.22f));
-        if (rawTarget > expandedH) return Math.min(expandedH + dpPx(18f), Math.round(expandedH + (rawTarget - expandedH) * 0.22f));
+        if (rawTarget < collapsedH) return Math.max(collapsedH - dpPx(10f), Math.round(collapsedH - (collapsedH - rawTarget) * 0.24f));
+        if (rawTarget > expandedH) return Math.min(expandedH + dpPx(16f), Math.round(expandedH + (rawTarget - expandedH) * 0.24f));
         return Math.round(rawTarget);
     }
 
     private void animateInputCollapsed(boolean collapse) {
         if (inputBoxContainer == null) return;
         if (inputCollapseAnimator != null) inputCollapseAnimator.cancel();
-        isInputCollapsed = collapse;
         final int expandedH = getExpandedInputHeightPx(), collapsedH = getCollapsedInputHeightPx();
+        final int span = Math.max(1, expandedH - collapsedH);
+        final int startH = currentInputCardHeight > 0 ? currentInputCardHeight : (isInputCollapsed ? collapsedH : expandedH);
         final int targetH = collapse ? collapsedH : expandedH;
-        final int startH = inputBoxContainer.getHeight() > 0 ? inputBoxContainer.getHeight() : (collapse ? expandedH : collapsedH);
-        final float startRot = ivInputCollapseArrow != null ? ivInputCollapseArrow.getRotation() : (collapse ? 0f : 180f);
+        final float startRot = ivInputCollapseArrow != null ? ivInputCollapseArrow.getRotation() : (isInputCollapsed ? 180f : 0f);
         final float targetRot = collapse ? 180f : 0f;
         final int minSafeH = Math.max(dpPx(34f), collapsedH - dpPx(10f));
+        isInputCollapsed = collapse;
+        enterInputPanelGpuMode();
         android.animation.ValueAnimator anim = android.animation.ValueAnimator.ofFloat(0f, 1f);
-        anim.setDuration(360L);
-        anim.setInterpolator(new android.view.animation.OvershootInterpolator(1.05f));
+        anim.setDuration(280L);
+        anim.setInterpolator(new android.view.animation.OvershootInterpolator(1.08f));
+        final boolean[] cancelled = {false};
         anim.addUpdateListener(a -> {
             if (isDestroyed() || isFinishing()) { a.cancel(); return; }
             float t = (float) a.getAnimatedValue();
             int h = Math.max(minSafeH, Math.round(startH + (targetH - startH) * t));
-            int span = Math.max(1, expandedH - collapsedH);
             float frac = Math.max(0f, Math.min(1f, (expandedH - h) / (float) span));
-            ViewGroup.LayoutParams lp = inputBoxContainer.getLayoutParams();
-            if (lp != null) { lp.height = h; inputBoxContainer.setLayoutParams(lp); }
-            if (inputText != null) {
-                int padTop = Math.round(dpPx(12f) + (dpPx(8f) - dpPx(12f)) * frac);
-                int padBottom = Math.round(dpPx(24f) + (dpPx(15f) - dpPx(24f)) * frac);
-                inputText.setPaddingRelative(dpPx(12f), padTop, dpPx(42f), padBottom);
-            }
-            if (ivInputCollapseArrow != null) ivInputCollapseArrow.setRotation(startRot + (targetRot - startRot) * t);
+            applyInputPanelGpuFrame(h, frac, startRot + (targetRot - startRot) * t);
         });
         anim.addListener(new AnimatorListenerAdapter() {
+            @Override public void onAnimationCancel(Animator animation) { cancelled[0] = true; }
             @Override public void onAnimationEnd(Animator animation) {
-                if (inputCollapseAnimator == animation) inputCollapseAnimator = null;
+                if (cancelled[0] || inputCollapseAnimator != animation) return;
+                inputCollapseAnimator = null;
+                syncInputPanelLayout();
                 if (!collapse && inputText != null && inputText.getLayout() != null) {
                     int maxS = Math.max(0, inputText.getLayout().getHeight() - (inputText.getHeight() - inputText.getTotalPaddingTop() - inputText.getTotalPaddingBottom()));
                     if (inputText.getScrollY() > maxS) inputText.scrollTo(inputText.getScrollX(), maxS);
@@ -4615,15 +4676,15 @@ public class MainActivity extends AppCompatActivity {
 
     private void finishInputPanelDrag(boolean startedCollapsed, float smoothVy) {
         if (inputBoxContainer == null) return;
-        float flickThreshold = 320f * getResources().getDisplayMetrics().density;
+        float flickThreshold = 160f * getResources().getDisplayMetrics().density;
         boolean collapse;
         if (smoothVy < -flickThreshold) collapse = true;
         else if (smoothVy > flickThreshold) collapse = false;
         else {
             int expandedH = getExpandedInputHeightPx(), collapsedH = getCollapsedInputHeightPx();
-            int currentH = inputBoxContainer.getHeight();
             int span = Math.max(1, expandedH - collapsedH);
-            collapse = startedCollapsed ? (currentH < collapsedH + span * 0.28f) : (currentH < expandedH - span * 0.30f);
+            int curH = currentInputCardHeight > 0 ? currentInputCardHeight : (startedCollapsed ? collapsedH : expandedH);
+            collapse = startedCollapsed ? (curH < collapsedH + span * 0.18f) : (curH < expandedH - span * 0.18f);
         }
         animateInputCollapsed(collapse);
     }
@@ -4633,12 +4694,13 @@ public class MainActivity extends AppCompatActivity {
         if (inputText == null) return;
         final android.view.ViewConfiguration vc = android.view.ViewConfiguration.get(this);
         final int touchSlop = vc.getScaledTouchSlop();
+        final int panelSlop = Math.max(dpPx(4f), touchSlop / 2);
         final int minFlingVelocity = vc.getScaledMinimumFlingVelocity();
         final int maxFlingVelocity = vc.getScaledMaximumFlingVelocity();
         final int longPressTimeout = android.view.ViewConfiguration.getLongPressTimeout();
         final float density = getResources().getDisplayMetrics().density;
         final int maxGlideVelocity = Math.round(1300f * density);
-        final int bottomEdgeZone = dpPx(28f);
+        final int bottomEdgeZone = dpPx(44f);
         final android.widget.OverScroller scroller = new android.widget.OverScroller(this);
         scroller.setFriction(android.view.ViewConfiguration.getScrollFriction() * 2.8f);
         final Runnable[] flingTick = new Runnable[1];
@@ -4655,54 +4717,78 @@ public class MainActivity extends AppCompatActivity {
             }
         };
 
-        if (btnInputCollapse != null) {
-            btnInputCollapse.setOnTouchListener(new View.OnTouchListener() {
-                float downRawY, dragStartRawY, lastRawY, smoothVy;
-                long lastTime;
-                int startH;
-                boolean handleDragging, startedCollapsed;
-
-                @Override public boolean onTouch(View v, MotionEvent event) {
-                    int action = event.getActionMasked();
-                    float rawY = event.getRawY();
-                    switch (action) {
-                        case MotionEvent.ACTION_DOWN:
-                            if (inputCollapseAnimator != null) inputCollapseAnimator.cancel();
-                            if (!scroller.isFinished()) { scroller.abortAnimation(); inputText.removeCallbacks(flingTick[0]); }
-                            downRawY = rawY; dragStartRawY = rawY; lastRawY = rawY; smoothVy = 0f; lastTime = event.getEventTime();
-                            startedCollapsed = isInputCollapsed;
-                            startH = inputBoxContainer != null && inputBoxContainer.getHeight() > 0 ? inputBoxContainer.getHeight() : (startedCollapsed ? getCollapsedInputHeightPx() : getExpandedInputHeightPx());
-                            handleDragging = false;
-                            if (v.getParent() != null) v.getParent().requestDisallowInterceptTouchEvent(true);
-                            return true;
-                        case MotionEvent.ACTION_MOVE: {
-                            long now = event.getEventTime(), dt = now - lastTime;
-                            if (dt > 0) {
-                                float instant = (rawY - lastRawY) * 1000f / dt;
-                                smoothVy = smoothVy == 0f ? instant : smoothVy * 0.4f + instant * 0.6f;
-                            }
-                            lastRawY = rawY; lastTime = now;
-                            if (!handleDragging && Math.abs(rawY - downRawY) > touchSlop) {
-                                handleDragging = true;
-                                dragStartRawY = rawY;
-                            }
-                            if (handleDragging) applyInputPanelHeight(rubberBandInputHeight(startH + (rawY - dragStartRawY)));
-                            return true;
-                        }
-                        case MotionEvent.ACTION_UP:
-                            if (handleDragging) finishInputPanelDrag(startedCollapsed, smoothVy);
-                            else animateInputCollapsed(!isInputCollapsed);
-                            handleDragging = false;
-                            return true;
-                        case MotionEvent.ACTION_CANCEL:
-                            if (handleDragging) finishInputPanelDrag(startedCollapsed, 0f);
-                            handleDragging = false;
-                            return true;
-                    }
-                    return false;
+        if (inputBoxContainer != null) {
+            currentInputCardHeight = getExpandedInputHeightPx();
+            currentInputCollapseFrac = 0f;
+            inputBoxContainer.setOutlineProvider(new android.view.ViewOutlineProvider() {
+                @Override public void getOutline(View view, android.graphics.Outline outline) {
+                    int h = currentInputCardHeight > 0 ? currentInputCardHeight : view.getHeight();
+                    outline.setRoundRect(0, 0, view.getWidth(), Math.max(dpPx(20f), h), 8f * density);
                 }
             });
+            inputBoxContainer.setClipToOutline(true);
+            syncInputPanelLayout();
+            inputBoxContainer.post(() -> { if (inputCollapseAnimator == null) syncInputPanelLayout(); });
         }
+
+        View.OnTouchListener edgeHandleListener = new View.OnTouchListener() {
+            float downRawX, downRawY, dragStartRawY, lastRawY, smoothVy;
+            long lastTime;
+            int startH;
+            boolean handleDragging, startedCollapsed;
+
+            @Override public boolean onTouch(View v, MotionEvent event) {
+                int action = event.getActionMasked();
+                float rawX = event.getRawX(), rawY = event.getRawY();
+                boolean isButton = v == btnInputCollapse;
+                switch (action) {
+                    case MotionEvent.ACTION_DOWN:
+                        if (inputCollapseAnimator != null) inputCollapseAnimator.cancel();
+                        if (!scroller.isFinished()) { scroller.abortAnimation(); inputText.removeCallbacks(flingTick[0]); }
+                        downRawX = rawX; downRawY = rawY; dragStartRawY = rawY; lastRawY = rawY; smoothVy = 0f; lastTime = event.getEventTime();
+                        startedCollapsed = isInputCollapsed;
+                        startH = currentInputCardHeight > 0 ? currentInputCardHeight : (startedCollapsed ? getCollapsedInputHeightPx() : getExpandedInputHeightPx());
+                        handleDragging = false;
+                        if (v.getParent() != null) v.getParent().requestDisallowInterceptTouchEvent(true);
+                        return true;
+                    case MotionEvent.ACTION_MOVE: {
+                        long now = event.getEventTime(), dt = now - lastTime;
+                        if (dt > 0) {
+                            float instant = (rawY - lastRawY) * 1000f / dt;
+                            smoothVy = smoothVy == 0f ? instant : smoothVy * 0.35f + instant * 0.65f;
+                        }
+                        lastRawY = rawY; lastTime = now;
+                        if (!handleDragging) {
+                            float dy = Math.abs(rawY - downRawY), dx = Math.abs(rawX - downRawX);
+                            if (dy >= panelSlop && dy >= dx * 0.65f) {
+                                handleDragging = true;
+                                dragStartRawY = rawY;
+                                enterInputPanelGpuMode();
+                            }
+                        }
+                        if (handleDragging) {
+                            int expandedH = getExpandedInputHeightPx(), collapsedH = getCollapsedInputHeightPx();
+                            int h = rubberBandInputHeight(startH + (rawY - dragStartRawY));
+                            float frac = (expandedH - h) / (float) Math.max(1, expandedH - collapsedH);
+                            applyInputPanelGpuFrame(h, frac, null);
+                        }
+                        return true;
+                    }
+                    case MotionEvent.ACTION_UP:
+                        if (handleDragging) finishInputPanelDrag(startedCollapsed, smoothVy);
+                        else if (isButton) animateInputCollapsed(!isInputCollapsed);
+                        handleDragging = false;
+                        return true;
+                    case MotionEvent.ACTION_CANCEL:
+                        if (handleDragging) finishInputPanelDrag(startedCollapsed, 0f);
+                        handleDragging = false;
+                        return true;
+                }
+                return false;
+            }
+        };
+        if (btnInputCollapse != null) btnInputCollapse.setOnTouchListener(edgeHandleListener);
+        if (inputBottomOutsideStrip != null) inputBottomOutsideStrip.setOnTouchListener(edgeHandleListener);
 
         inputText.setOnTouchListener(new View.OnTouchListener() {
             int activePointerId = MotionEvent.INVALID_POINTER_ID;
@@ -4740,7 +4826,8 @@ public class MainActivity extends AppCompatActivity {
                         downTime = event.getEventTime(); lastRawTime = downTime;
                         remainder = 0f; dragging = false; panelDragging = false;
                         startedCollapsed = isInputCollapsed;
-                        startedAtBottom = !startedCollapsed && downY >= Math.max(0, inputText.getHeight() - bottomEdgeZone);
+                        int visibleBottom = currentInputCardHeight > 0 ? currentInputCardHeight : inputText.getHeight();
+                        startedAtBottom = !startedCollapsed && downY >= Math.max(0, visibleBottom - bottomEdgeZone);
                         releaseTracker();
                         tracker = android.view.VelocityTracker.obtain();
                         tracker.addMovement(event);
@@ -4753,27 +4840,31 @@ public class MainActivity extends AppCompatActivity {
                         long now = event.getEventTime(), dt = now - lastRawTime;
                         if (dt > 0) {
                             float instant = (rawY - lastRawY) * 1000f / dt;
-                            panelVy = panelVy == 0f ? instant : panelVy * 0.4f + instant * 0.6f;
+                            panelVy = panelVy == 0f ? instant : panelVy * 0.35f + instant * 0.65f;
                         }
                         lastRawY = rawY; lastRawTime = now;
 
                         if (panelDragging) {
-                            applyInputPanelHeight(rubberBandInputHeight(panelStartH + (rawY - dragStartRawY)));
+                            int expandedH = getExpandedInputHeightPx(), collapsedH = getCollapsedInputHeightPx();
+                            int h = rubberBandInputHeight(panelStartH + (rawY - dragStartRawY));
+                            float frac = (expandedH - h) / (float) Math.max(1, expandedH - collapsedH);
+                            applyInputPanelGpuFrame(h, frac, null);
                             return true;
                         }
                         if (!dragging) {
                             float dx = Math.abs(x - downX), dy = Math.abs(y - downY);
-                            if (dy > touchSlop && dy >= dx && (now - downTime) < longPressTimeout) {
-                                boolean pullUpFromBottom = startedAtBottom && (rawY < downRawY);
-                                boolean pullDownWhenCollapsed = startedCollapsed && (rawY > downRawY);
-                                if (pullUpFromBottom || pullDownWhenCollapsed) {
-                                    if (inputCollapseAnimator != null) inputCollapseAnimator.cancel();
-                                    panelDragging = true;
-                                    dragStartRawY = rawY;
-                                    panelStartH = inputBoxContainer != null && inputBoxContainer.getHeight() > 0 ? inputBoxContainer.getHeight() : (startedCollapsed ? getCollapsedInputHeightPx() : getExpandedInputHeightPx());
-                                    cancelEditTouch(v, event);
-                                    return true;
-                                }
+                            boolean pullUpFromBottom = startedAtBottom && (rawY < downRawY) && dy >= panelSlop && dy >= dx * 0.65f;
+                            boolean pullDownWhenCollapsed = startedCollapsed && (rawY > downRawY) && dy >= panelSlop && dy >= dx * 0.65f;
+                            if ((pullUpFromBottom || pullDownWhenCollapsed) && (now - downTime) < longPressTimeout) {
+                                if (inputCollapseAnimator != null) inputCollapseAnimator.cancel();
+                                panelDragging = true;
+                                dragStartRawY = rawY;
+                                panelStartH = currentInputCardHeight > 0 ? currentInputCardHeight : (startedCollapsed ? getCollapsedInputHeightPx() : getExpandedInputHeightPx());
+                                enterInputPanelGpuMode();
+                                cancelEditTouch(v, event);
+                                return true;
+                            }
+                            if (!startedCollapsed && dy > touchSlop && dy >= dx && (now - downTime) < longPressTimeout) {
                                 int max = maxScroll();
                                 if (max > 0) {
                                     dragging = true;
@@ -6706,17 +6797,17 @@ DEDEDE_SOURCE_EOF
 
 mkdir -p "app/src/main/res/drawable"
 cat > "app/src/main/res/drawable/ic_input_collapse_handle.xml" <<'DEDEDE_SOURCE_EOF'
-<vector xmlns:android="http://schemas.android.com/apk/res/android" android:width="46dp" android:height="13dp" android:viewportWidth="46" android:viewportHeight="13">
-    <path android:fillColor="#ECEFF3" android:strokeColor="#22000000" android:strokeWidth="0.6" android:pathData="M7,12.5 Q4.5,12.5 6.2,10.8 L20.2,2.0 Q23,0.4 25.8,2.0 L39.8,10.8 Q41.5,12.5 39,12.5 Z"/>
-    <path android:strokeColor="#8E96A0" android:strokeWidth="1.6" android:strokeLineCap="round" android:strokeLineJoin="round" android:pathData="M18.8,9.4 L23,5.6 L27.2,9.4"/>
+<vector xmlns:android="http://schemas.android.com/apk/res/android" android:width="26dp" android:height="9dp" android:viewportWidth="26" android:viewportHeight="9">
+    <path android:fillColor="#F3F5F7" android:strokeColor="#18000000" android:strokeWidth="0.55" android:pathData="M3.8,8.7 Q2.0,8.7 3.2,7.5 L11.3,1.4 Q13.0,0.3 14.7,1.4 L22.8,7.5 Q24.0,8.7 22.2,8.7 Z"/>
+    <path android:strokeColor="#A4ACB6" android:strokeWidth="1.35" android:strokeLineCap="round" android:strokeLineJoin="round" android:pathData="M9.8,6.5 L13.0,3.6 L16.2,6.5"/>
 </vector>
 DEDEDE_SOURCE_EOF
 
 mkdir -p "app/src/main/res/drawable-night"
 cat > "app/src/main/res/drawable-night/ic_input_collapse_handle.xml" <<'DEDEDE_SOURCE_EOF'
-<vector xmlns:android="http://schemas.android.com/apk/res/android" android:width="46dp" android:height="13dp" android:viewportWidth="46" android:viewportHeight="13">
-    <path android:fillColor="#30343C" android:strokeColor="#28FFFFFF" android:strokeWidth="0.6" android:pathData="M7,12.5 Q4.5,12.5 6.2,10.8 L20.2,2.0 Q23,0.4 25.8,2.0 L39.8,10.8 Q41.5,12.5 39,12.5 Z"/>
-    <path android:strokeColor="#A8B0BA" android:strokeWidth="1.6" android:strokeLineCap="round" android:strokeLineJoin="round" android:pathData="M18.8,9.4 L23,5.6 L27.2,9.4"/>
+<vector xmlns:android="http://schemas.android.com/apk/res/android" android:width="26dp" android:height="9dp" android:viewportWidth="26" android:viewportHeight="9">
+    <path android:fillColor="#363B44" android:strokeColor="#22FFFFFF" android:strokeWidth="0.55" android:pathData="M3.8,8.7 Q2.0,8.7 3.2,7.5 L11.3,1.4 Q13.0,0.3 14.7,1.4 L22.8,7.5 Q24.0,8.7 22.2,8.7 Z"/>
+    <path android:strokeColor="#B4BCC6" android:strokeWidth="1.35" android:strokeLineCap="round" android:strokeLineJoin="round" android:pathData="M9.8,6.5 L13.0,3.6 L16.2,6.5"/>
 </vector>
 DEDEDE_SOURCE_EOF
 
@@ -6774,32 +6865,40 @@ cat > "app/src/main/res/layout/activity_main.xml" <<'DEDEDE_SOURCE_EOF'
                 </LinearLayout>
             </LinearLayout>
 
-            <RelativeLayout android:id="@+id/inputBoxContainer" android:layout_width="match_parent" android:layout_height="149dp" android:layout_marginBottom="10dp">
-                <EditText android:id="@+id/inputText" android:layout_width="match_parent" android:layout_height="match_parent" android:hint="输入或粘贴文本..." android:textColorHint="@color/text_secondary" android:textColor="@color/text_primary" android:gravity="top|start" android:background="@color/card_bg" android:padding="12dp" android:paddingEnd="42dp" android:paddingBottom="24dp" android:textSize="15sp" android:scrollbars="vertical"/>
-                <Button android:id="@+id/btnInputExpand" android:layout_width="32dp" android:layout_height="32dp" android:layout_alignParentTop="true" android:layout_alignParentEnd="true" android:layout_marginTop="0dp" android:layout_marginEnd="0dp" android:translationX="2dp" android:translationY="-2dp" android:text="⛶" android:textSize="16sp" android:textColor="#7B8CA4" android:background="?android:attr/selectableItemBackgroundBorderless" android:padding="0dp" android:insetTop="0dp" android:insetBottom="0dp" android:contentDescription="展开输入框"/>
-                <TextView android:id="@+id/tvWordCount" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_alignParentBottom="true" android:layout_alignParentEnd="true" android:layout_marginEnd="8dp" android:layout_marginBottom="3dp" android:text="0 字" android:textColor="#9E9E9E" android:textSize="11sp"/>
-                <FrameLayout android:id="@+id/btnInputCollapse" android:layout_width="84dp" android:layout_height="22dp" android:layout_alignParentBottom="true" android:layout_centerHorizontal="true" android:clickable="true" android:focusable="true" android:contentDescription="收起或展开输入框">
-                    <ImageView android:id="@+id/ivInputCollapseArrow" android:layout_width="46dp" android:layout_height="13dp" android:layout_gravity="bottom|center_horizontal" android:src="@drawable/ic_input_collapse_handle" android:scaleType="fitCenter" android:importantForAccessibility="no"/>
+            <FrameLayout android:id="@+id/inputOutputArea" android:layout_width="match_parent" android:layout_height="0dp" android:layout_weight="1" android:clipChildren="false" android:clipToPadding="false">
+                <RelativeLayout android:id="@+id/inputBoxContainer" android:layout_width="match_parent" android:layout_height="149dp" android:layout_gravity="top" android:clipChildren="false" android:clipToPadding="false">
+                    <EditText android:id="@+id/inputText" android:layout_width="match_parent" android:layout_height="match_parent" android:hint="输入或粘贴文本..." android:textColorHint="@color/text_secondary" android:textColor="@color/text_primary" android:gravity="top|start" android:background="@color/card_bg" android:padding="12dp" android:textSize="15sp" android:scrollbars="vertical"/>
+                    <Button android:id="@+id/btnInputExpand" android:layout_width="32dp" android:layout_height="32dp" android:layout_alignParentTop="true" android:layout_alignParentEnd="true" android:layout_marginTop="0dp" android:layout_marginEnd="0dp" android:translationX="2dp" android:translationY="-2dp" android:text="⛶" android:textSize="16sp" android:textColor="#7B8CA4" android:background="?android:attr/selectableItemBackgroundBorderless" android:padding="0dp" android:insetTop="0dp" android:insetBottom="0dp" android:contentDescription="展开输入框"/>
+                    <TextView android:id="@+id/tvWordCount" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_alignParentBottom="true" android:layout_alignParentEnd="true" android:layout_marginEnd="8dp" android:layout_marginBottom="3dp" android:text="0 字" android:textColor="#9E9E9E" android:textSize="11sp"/>
+                </RelativeLayout>
+
+                <LinearLayout android:id="@+id/belowInputContainer" android:layout_width="match_parent" android:layout_height="match_parent" android:layout_gravity="top" android:orientation="vertical">
+                    <Button android:id="@+id/btnCheck" android:layout_width="match_parent" android:layout_height="52dp" android:text="开始纠错" android:textSize="16sp" android:letterSpacing="0.075" android:textColor="#ECF5FF" android:layout_marginTop="2dp" android:layout_marginBottom="6dp" android:background="@drawable/bg_check_gradient" android:backgroundTint="@null"/>
+                    <ProgressBar android:id="@+id/progressBar" style="?android:attr/progressBarStyleHorizontal" android:layout_width="match_parent" android:layout_height="4dp" android:progressTint="#81C784" android:max="100" android:progress="0" android:layout_marginTop="-4dp" android:layout_marginBottom="4dp" android:visibility="invisible"/>
+
+                    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:layout_marginBottom="10dp">
+                        <Button android:id="@+id/btnImport" android:layout_width="0dp" android:layout_height="48dp" android:layout_weight="1" android:text="导入" android:textSize="13sp" android:backgroundTint="@color/btn_light_green_bg" android:textColor="@color/btn_light_green_text" android:layout_marginRight="4dp"/>
+                        <Button android:id="@+id/btnPaste" android:layout_width="0dp" android:layout_height="48dp" android:layout_weight="1" android:text="粘贴" android:textSize="13sp" android:backgroundTint="@color/btn_light_green_bg" android:textColor="@color/btn_light_green_text" android:layout_marginRight="4dp"/>
+                        <Button android:id="@+id/btnClear" android:layout_width="0dp" android:layout_height="48dp" android:layout_weight="1" android:text="清空" android:textSize="13sp" android:backgroundTint="@color/btn_light_green_bg" android:textColor="@color/btn_light_green_text" android:layout_marginRight="4dp"/>
+                        <Button android:id="@+id/btnCopy" android:layout_width="0dp" android:layout_height="48dp" android:layout_weight="1" android:text="复制" android:textSize="13sp" android:backgroundTint="@color/btn_light_green_bg" android:textColor="@color/btn_light_green_text" android:layout_marginRight="4dp" android:enabled="false"/>
+                        <Button android:id="@+id/btnSaveTxt" android:layout_width="0dp" android:layout_height="48dp" android:layout_weight="1" android:text="保存" android:textSize="13sp" android:backgroundTint="@color/btn_light_green_bg" android:textColor="@color/btn_light_green_text"/>
+                    </LinearLayout>
+                    <TextView android:id="@+id/tvResultStaleWarning" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="已修改原始文本，以下纠错结果对应修改前的内容，建议重新纠错。" android:textColor="#D32F2F" android:textSize="13sp" android:textStyle="bold" android:paddingLeft="8dp" android:paddingRight="8dp" android:paddingBottom="8dp" android:visibility="gone"/>
+
+                    <FrameLayout android:layout_width="match_parent" android:layout_height="0dp" android:layout_weight="1">
+                        <ScrollView android:id="@+id/scrollView" android:layout_width="match_parent" android:layout_height="match_parent" android:scrollbarSize="16dp" android:scrollbarThumbVertical="@drawable/scrollbar_thumb" android:fadeScrollbars="false">
+                            <TextView android:id="@+id/outputText" android:layout_width="match_parent" android:layout_height="wrap_content" android:textSize="15.5sp" android:background="@color/card_bg" android:padding="12dp" android:paddingEnd="30dp" android:textColor="@color/text_primary" android:lineSpacingExtra="5dp"/>
+                        </ScrollView>
+                        <View android:id="@+id/scrollTouchArea" android:layout_width="40dp" android:layout_height="match_parent" android:layout_gravity="end"/>
+                    </FrameLayout>
+                </LinearLayout>
+
+                <FrameLayout android:id="@+id/inputBottomHandleLayer" android:layout_width="match_parent" android:layout_height="30dp" android:layout_gravity="top" android:elevation="3dp" android:clipChildren="false" android:clipToPadding="false">
+                    <View android:id="@+id/inputBottomOutsideStrip" android:layout_width="match_parent" android:layout_height="12dp" android:layout_gravity="bottom"/>
+                    <FrameLayout android:id="@+id/btnInputCollapse" android:layout_width="68dp" android:layout_height="30dp" android:layout_gravity="center_horizontal|bottom" android:clickable="true" android:focusable="true" android:clipChildren="false" android:clipToPadding="false" android:contentDescription="收起或展开输入框">
+                        <ImageView android:id="@+id/ivInputCollapseArrow" android:layout_width="26dp" android:layout_height="9dp" android:layout_gravity="center_horizontal|bottom" android:layout_marginBottom="12dp" android:alpha="0.82" android:src="@drawable/ic_input_collapse_handle" android:scaleType="fitCenter" android:importantForAccessibility="no"/>
+                    </FrameLayout>
                 </FrameLayout>
-            </RelativeLayout>
-
-            <Button android:id="@+id/btnCheck" android:layout_width="match_parent" android:layout_height="52dp" android:text="开始纠错" android:textSize="16sp" android:letterSpacing="0.075" android:textColor="#ECF5FF" android:layout_marginTop="2dp" android:layout_marginBottom="6dp" android:background="@drawable/bg_check_gradient" android:backgroundTint="@null"/>
-            <ProgressBar android:id="@+id/progressBar" style="?android:attr/progressBarStyleHorizontal" android:layout_width="match_parent" android:layout_height="4dp" android:progressTint="#81C784" android:max="100" android:progress="0" android:layout_marginTop="-4dp" android:layout_marginBottom="4dp" android:visibility="invisible"/>
-
-            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:layout_marginBottom="10dp">
-                <Button android:id="@+id/btnImport" android:layout_width="0dp" android:layout_height="48dp" android:layout_weight="1" android:text="导入" android:textSize="13sp" android:backgroundTint="@color/btn_light_green_bg" android:textColor="@color/btn_light_green_text" android:layout_marginRight="4dp"/>
-                <Button android:id="@+id/btnPaste" android:layout_width="0dp" android:layout_height="48dp" android:layout_weight="1" android:text="粘贴" android:textSize="13sp" android:backgroundTint="@color/btn_light_green_bg" android:textColor="@color/btn_light_green_text" android:layout_marginRight="4dp"/>
-                <Button android:id="@+id/btnClear" android:layout_width="0dp" android:layout_height="48dp" android:layout_weight="1" android:text="清空" android:textSize="13sp" android:backgroundTint="@color/btn_light_green_bg" android:textColor="@color/btn_light_green_text" android:layout_marginRight="4dp"/>
-                <Button android:id="@+id/btnCopy" android:layout_width="0dp" android:layout_height="48dp" android:layout_weight="1" android:text="复制" android:textSize="13sp" android:backgroundTint="@color/btn_light_green_bg" android:textColor="@color/btn_light_green_text" android:layout_marginRight="4dp" android:enabled="false"/>
-                <Button android:id="@+id/btnSaveTxt" android:layout_width="0dp" android:layout_height="48dp" android:layout_weight="1" android:text="保存" android:textSize="13sp" android:backgroundTint="@color/btn_light_green_bg" android:textColor="@color/btn_light_green_text"/>
-            </LinearLayout>
-            <TextView android:id="@+id/tvResultStaleWarning" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="已修改原始文本，以下纠错结果对应修改前的内容，建议重新纠错。" android:textColor="#D32F2F" android:textSize="13sp" android:textStyle="bold" android:paddingLeft="8dp" android:paddingRight="8dp" android:paddingBottom="8dp" android:visibility="gone"/>
-
-            <FrameLayout android:layout_width="match_parent" android:layout_height="match_parent">
-                <ScrollView android:id="@+id/scrollView" android:layout_width="match_parent" android:layout_height="match_parent" android:scrollbarSize="16dp" android:scrollbarThumbVertical="@drawable/scrollbar_thumb" android:fadeScrollbars="false">
-                    <TextView android:id="@+id/outputText" android:layout_width="match_parent" android:layout_height="wrap_content" android:textSize="15.5sp" android:background="@color/card_bg" android:padding="12dp" android:paddingEnd="30dp" android:textColor="@color/text_primary" android:lineSpacingExtra="5dp"/>
-                </ScrollView>
-                <View android:id="@+id/scrollTouchArea" android:layout_width="40dp" android:layout_height="match_parent" android:layout_gravity="end"/>
             </FrameLayout>
         </LinearLayout>
 
