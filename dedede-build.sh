@@ -4700,7 +4700,8 @@ public class MainActivity extends AppCompatActivity {
         final int longPressTimeout = android.view.ViewConfiguration.getLongPressTimeout();
         final float density = getResources().getDisplayMetrics().density;
         final int maxGlideVelocity = Math.round(1300f * density);
-        final int bottomEdgeZone = dpPx(44f);
+        // 上滑收起判定区：展开高度149dp的底部19%（≈28dp；原44dp≈29.5%）。想再调只改0.19f。
+        final int bottomEdgeZone = Math.round(getExpandedInputHeightPx() * 0.19f);
         final android.widget.OverScroller scroller = new android.widget.OverScroller(this);
         scroller.setFriction(android.view.ViewConfiguration.getScrollFriction() * 2.8f);
         final Runnable[] flingTick = new Runnable[1];
