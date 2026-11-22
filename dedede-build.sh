@@ -4929,6 +4929,18 @@ public class MainActivity extends AppCompatActivity {
                         }
                         releaseTracker();
                         activePointerId = MotionEvent.INVALID_POINTER_ID;
+                        // 收起态轻点：先展开输入框再聚焦弹键盘，不在一行小框里直接编辑；下拉手势和三角按钮逻辑不变。
+                        if (startedCollapsed && Math.abs(event.getX() - downX) < touchSlop && Math.abs(event.getY() - downY) < touchSlop) {
+                            cancelEditTouch(v, event);
+                            animateInputCollapsed(false);
+                            inputText.postDelayed(() -> {
+                                if (isDestroyed() || isFinishing()) return;
+                                inputText.requestFocus();
+                                android.view.inputmethod.InputMethodManager imm = (android.view.inputmethod.InputMethodManager) getSystemService(INPUT_METHOD_SERVICE);
+                                if (imm != null) imm.showSoftInput(inputText, android.view.inputmethod.InputMethodManager.SHOW_IMPLICIT);
+                            }, 300L);
+                            return true;
+                        }
                         return false;
                     case MotionEvent.ACTION_CANCEL:
                         if (panelDragging) finishInputPanelDrag(startedCollapsed, 0f);
