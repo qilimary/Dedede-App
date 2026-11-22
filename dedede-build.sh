@@ -4033,7 +4033,10 @@ public class MainActivity extends AppCompatActivity {
         }
     }
     private final List<ClauseLink> currentClauseLinks = new ArrayList<>();
-    private View expandedEditorOverlay, inputEditorOverlay;
+    private View expandedEditorOverlay, inputEditorOverlay, inputBoxContainer, btnInputCollapse;
+    private android.widget.ImageView ivInputCollapseArrow;
+    private boolean isInputCollapsed;
+    private android.animation.ValueAnimator inputCollapseAnimator;
 
     private void pushState(Stack<EditorState> stack, EditorState state) {
         stack.push(state);
@@ -4063,7 +4066,10 @@ public class MainActivity extends AppCompatActivity {
 
     private void updateFontSize(int textOffset, int systemOffset) {
         float inputSize = 15f + textOffset, outputSize = 15.5f + textOffset; int ui = Math.max(-3, Math.min(3, systemOffset));
-        if (inputText != null) inputText.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, inputSize);
+        if (inputText != null) {
+            inputText.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, inputSize);
+            if (isInputCollapsed && inputBoxContainer != null) inputBoxContainer.post(() -> { if (isInputCollapsed && inputCollapseAnimator == null) applyInputPanelHeight(getCollapsedInputHeightPx()); });
+        }
         if (outputText != null) outputText.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, outputSize);
         if (expandedEditText != null) expandedEditText.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, outputSize);
         if (expandedInputEditText != null) expandedInputEditText.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, inputSize);
@@ -4494,6 +4500,7 @@ public class MainActivity extends AppCompatActivity {
         btnCheck = findViewById(R.id.btnCheck); btnImport = findViewById(R.id.btnImport); btnPaste = findViewById(R.id.btnPaste); btnClear = findViewById(R.id.btnClear); btnCopy = findViewById(R.id.btnCopy); btnSaveTxt = findViewById(R.id.btnSaveTxt);
         rbFast = findViewById(R.id.rbFast); rbPro = findViewById(R.id.rbPro); rgMode = findViewById(R.id.rgMode); expandedEditorOverlay = findViewById(R.id.expandedEditorOverlay); expandedEditText = findViewById(R.id.expandedEditText); editorScrollView = findViewById(R.id.editorScrollView);
         inputEditorOverlay = findViewById(R.id.inputEditorOverlay); expandedInputEditText = findViewById(R.id.expandedInputEditText); tvInputEditorWordCount = findViewById(R.id.tvInputEditorWordCount);
+        inputBoxContainer = findViewById(R.id.inputBoxContainer); btnInputCollapse = findViewById(R.id.btnInputCollapse); ivInputCollapseArrow = findViewById(R.id.ivInputCollapseArrow);
         TextView title = findViewById(R.id.tvTitle); Button menu = findViewById(R.id.btnMenu), font = findViewById(R.id.btnFont), inputExpand = findViewById(R.id.btnInputExpand); View floatButton = findViewById(R.id.btnFloat);
         font.setOnClickListener(v -> showFontSizeDialog()); inputExpand.setOnClickListener(v -> openInputEditor()); updateFontSize(sp.getInt("font_offset_text", 0), sp.getInt("font_offset_sys", 0)); applySkin(sp.getString("ui_skin", "default"));
         setupScrollControls(); setupEditor(); setupInputEditor(); setupInputWatcher();
@@ -4533,6 +4540,94 @@ public class MainActivity extends AppCompatActivity {
         setupInputSmoothScroll();
     }
 
+    private int dpPx(float dp) { return Math.round(dp * getResources().getDisplayMetrics().density); }
+    private int getExpandedInputHeightPx() { return dpPx(149f); }
+    private int getCollapsedInputHeightPx() {
+        int lineHeight = inputText != null && inputText.getLineHeight() > 0 ? inputText.getLineHeight() : dpPx(21f);
+        return Math.max(dpPx(48f), lineHeight + dpPx(24f));
+    }
+
+    private void applyInputPanelHeight(int heightPx) {
+        if (inputBoxContainer == null) return;
+        int expandedH = getExpandedInputHeightPx(), collapsedH = getCollapsedInputHeightPx();
+        int span = Math.max(1, expandedH - collapsedH);
+        float frac = Math.max(0f, Math.min(1f, (expandedH - heightPx) / (float) span));
+        ViewGroup.LayoutParams lp = inputBoxContainer.getLayoutParams();
+        if (lp != null && lp.height != heightPx) {
+            lp.height = heightPx;
+            inputBoxContainer.setLayoutParams(lp);
+        }
+        if (inputText != null) {
+            int padTop = Math.round(dpPx(12f) + (dpPx(8f) - dpPx(12f)) * frac);
+            int padBottom = Math.round(dpPx(24f) + (dpPx(15f) - dpPx(24f)) * frac);
+            inputText.setPaddingRelative(dpPx(12f), padTop, dpPx(42f), padBottom);
+        }
+        if (ivInputCollapseArrow != null) ivInputCollapseArrow.setRotation(180f * frac);
+    }
+
+    private int rubberBandInputHeight(float rawTarget) {
+        int expandedH = getExpandedInputHeightPx(), collapsedH = getCollapsedInputHeightPx();
+        if (rawTarget < collapsedH) return Math.max(collapsedH - dpPx(10f), Math.round(collapsedH - (collapsedH - rawTarget) * 0.22f));
+        if (rawTarget > expandedH) return Math.min(expandedH + dpPx(18f), Math.round(expandedH + (rawTarget - expandedH) * 0.22f));
+        return Math.round(rawTarget);
+    }
+
+    private void animateInputCollapsed(boolean collapse) {
+        if (inputBoxContainer == null) return;
+        if (inputCollapseAnimator != null) inputCollapseAnimator.cancel();
+        isInputCollapsed = collapse;
+        final int expandedH = getExpandedInputHeightPx(), collapsedH = getCollapsedInputHeightPx();
+        final int targetH = collapse ? collapsedH : expandedH;
+        final int startH = inputBoxContainer.getHeight() > 0 ? inputBoxContainer.getHeight() : (collapse ? expandedH : collapsedH);
+        final float startRot = ivInputCollapseArrow != null ? ivInputCollapseArrow.getRotation() : (collapse ? 0f : 180f);
+        final float targetRot = collapse ? 180f : 0f;
+        final int minSafeH = Math.max(dpPx(34f), collapsedH - dpPx(10f));
+        android.animation.ValueAnimator anim = android.animation.ValueAnimator.ofFloat(0f, 1f);
+        anim.setDuration(360L);
+        anim.setInterpolator(new android.view.animation.OvershootInterpolator(1.05f));
+        anim.addUpdateListener(a -> {
+            if (isDestroyed() || isFinishing()) { a.cancel(); return; }
+            float t = (float) a.getAnimatedValue();
+            int h = Math.max(minSafeH, Math.round(startH + (targetH - startH) * t));
+            int span = Math.max(1, expandedH - collapsedH);
+            float frac = Math.max(0f, Math.min(1f, (expandedH - h) / (float) span));
+            ViewGroup.LayoutParams lp = inputBoxContainer.getLayoutParams();
+            if (lp != null) { lp.height = h; inputBoxContainer.setLayoutParams(lp); }
+            if (inputText != null) {
+                int padTop = Math.round(dpPx(12f) + (dpPx(8f) - dpPx(12f)) * frac);
+                int padBottom = Math.round(dpPx(24f) + (dpPx(15f) - dpPx(24f)) * frac);
+                inputText.setPaddingRelative(dpPx(12f), padTop, dpPx(42f), padBottom);
+            }
+            if (ivInputCollapseArrow != null) ivInputCollapseArrow.setRotation(startRot + (targetRot - startRot) * t);
+        });
+        anim.addListener(new AnimatorListenerAdapter() {
+            @Override public void onAnimationEnd(Animator animation) {
+                if (inputCollapseAnimator == animation) inputCollapseAnimator = null;
+                if (!collapse && inputText != null && inputText.getLayout() != null) {
+                    int maxS = Math.max(0, inputText.getLayout().getHeight() - (inputText.getHeight() - inputText.getTotalPaddingTop() - inputText.getTotalPaddingBottom()));
+                    if (inputText.getScrollY() > maxS) inputText.scrollTo(inputText.getScrollX(), maxS);
+                }
+            }
+        });
+        inputCollapseAnimator = anim;
+        anim.start();
+    }
+
+    private void finishInputPanelDrag(boolean startedCollapsed, float smoothVy) {
+        if (inputBoxContainer == null) return;
+        float flickThreshold = 320f * getResources().getDisplayMetrics().density;
+        boolean collapse;
+        if (smoothVy < -flickThreshold) collapse = true;
+        else if (smoothVy > flickThreshold) collapse = false;
+        else {
+            int expandedH = getExpandedInputHeightPx(), collapsedH = getCollapsedInputHeightPx();
+            int currentH = inputBoxContainer.getHeight();
+            int span = Math.max(1, expandedH - collapsedH);
+            collapse = startedCollapsed ? (currentH < collapsedH + span * 0.28f) : (currentH < expandedH - span * 0.30f);
+        }
+        animateInputCollapsed(collapse);
+    }
+
     @SuppressLint("ClickableViewAccessibility")
     private void setupInputSmoothScroll() {
         if (inputText == null) return;
@@ -4543,6 +4638,7 @@ public class MainActivity extends AppCompatActivity {
         final int longPressTimeout = android.view.ViewConfiguration.getLongPressTimeout();
         final float density = getResources().getDisplayMetrics().density;
         final int maxGlideVelocity = Math.round(1300f * density);
+        final int bottomEdgeZone = dpPx(28f);
         final android.widget.OverScroller scroller = new android.widget.OverScroller(this);
         scroller.setFriction(android.view.ViewConfiguration.getScrollFriction() * 2.8f);
         final Runnable[] flingTick = new Runnable[1];
@@ -4558,11 +4654,62 @@ public class MainActivity extends AppCompatActivity {
                 else if (targetY != scroller.getCurrY()) scroller.abortAnimation();
             }
         };
+
+        if (btnInputCollapse != null) {
+            btnInputCollapse.setOnTouchListener(new View.OnTouchListener() {
+                float downRawY, dragStartRawY, lastRawY, smoothVy;
+                long lastTime;
+                int startH;
+                boolean handleDragging, startedCollapsed;
+
+                @Override public boolean onTouch(View v, MotionEvent event) {
+                    int action = event.getActionMasked();
+                    float rawY = event.getRawY();
+                    switch (action) {
+                        case MotionEvent.ACTION_DOWN:
+                            if (inputCollapseAnimator != null) inputCollapseAnimator.cancel();
+                            if (!scroller.isFinished()) { scroller.abortAnimation(); inputText.removeCallbacks(flingTick[0]); }
+                            downRawY = rawY; dragStartRawY = rawY; lastRawY = rawY; smoothVy = 0f; lastTime = event.getEventTime();
+                            startedCollapsed = isInputCollapsed;
+                            startH = inputBoxContainer != null && inputBoxContainer.getHeight() > 0 ? inputBoxContainer.getHeight() : (startedCollapsed ? getCollapsedInputHeightPx() : getExpandedInputHeightPx());
+                            handleDragging = false;
+                            if (v.getParent() != null) v.getParent().requestDisallowInterceptTouchEvent(true);
+                            return true;
+                        case MotionEvent.ACTION_MOVE: {
+                            long now = event.getEventTime(), dt = now - lastTime;
+                            if (dt > 0) {
+                                float instant = (rawY - lastRawY) * 1000f / dt;
+                                smoothVy = smoothVy == 0f ? instant : smoothVy * 0.4f + instant * 0.6f;
+                            }
+                            lastRawY = rawY; lastTime = now;
+                            if (!handleDragging && Math.abs(rawY - downRawY) > touchSlop) {
+                                handleDragging = true;
+                                dragStartRawY = rawY;
+                            }
+                            if (handleDragging) applyInputPanelHeight(rubberBandInputHeight(startH + (rawY - dragStartRawY)));
+                            return true;
+                        }
+                        case MotionEvent.ACTION_UP:
+                            if (handleDragging) finishInputPanelDrag(startedCollapsed, smoothVy);
+                            else animateInputCollapsed(!isInputCollapsed);
+                            handleDragging = false;
+                            return true;
+                        case MotionEvent.ACTION_CANCEL:
+                            if (handleDragging) finishInputPanelDrag(startedCollapsed, 0f);
+                            handleDragging = false;
+                            return true;
+                    }
+                    return false;
+                }
+            });
+        }
+
         inputText.setOnTouchListener(new View.OnTouchListener() {
             int activePointerId = MotionEvent.INVALID_POINTER_ID;
-            float downX, downY, lastY, remainder;
-            long downTime;
-            boolean dragging;
+            float downX, downY, lastY, remainder, downRawY, dragStartRawY, lastRawY, panelVy;
+            long downTime, lastRawTime;
+            int panelStartH;
+            boolean dragging, panelDragging, startedAtBottom, startedCollapsed;
             android.view.VelocityTracker tracker;
 
             private int maxScroll() {
@@ -4573,14 +4720,27 @@ public class MainActivity extends AppCompatActivity {
             private void releaseTracker() {
                 if (tracker != null) { tracker.recycle(); tracker = null; }
             }
+            private void cancelEditTouch(View v, MotionEvent event) {
+                if (v.getParent() != null) v.getParent().requestDisallowInterceptTouchEvent(true);
+                MotionEvent cancel = MotionEvent.obtain(event);
+                cancel.setAction(MotionEvent.ACTION_CANCEL);
+                inputText.onTouchEvent(cancel);
+                cancel.recycle();
+            }
 
             @Override public boolean onTouch(View v, MotionEvent event) {
                 int action = event.getActionMasked();
+                float rawY = event.getRawY();
                 switch (action) {
                     case MotionEvent.ACTION_DOWN:
                         if (!scroller.isFinished()) { scroller.abortAnimation(); inputText.removeCallbacks(flingTick[0]); }
                         activePointerId = event.getPointerId(0);
-                        downX = event.getX(); downY = event.getY(); lastY = downY; downTime = event.getEventTime(); remainder = 0f; dragging = false;
+                        downX = event.getX(); downY = event.getY(); lastY = downY;
+                        downRawY = rawY; dragStartRawY = rawY; lastRawY = rawY; panelVy = 0f;
+                        downTime = event.getEventTime(); lastRawTime = downTime;
+                        remainder = 0f; dragging = false; panelDragging = false;
+                        startedCollapsed = isInputCollapsed;
+                        startedAtBottom = !startedCollapsed && downY >= Math.max(0, inputText.getHeight() - bottomEdgeZone);
                         releaseTracker();
                         tracker = android.view.VelocityTracker.obtain();
                         tracker.addMovement(event);
@@ -4588,23 +4748,43 @@ public class MainActivity extends AppCompatActivity {
                     case MotionEvent.ACTION_MOVE: {
                         if (tracker != null) tracker.addMovement(event);
                         int idx = event.findPointerIndex(activePointerId);
-                        if (idx < 0) return dragging;
+                        if (idx < 0) return dragging || panelDragging;
                         float x = event.getX(idx), y = event.getY(idx);
-                        int max = maxScroll();
+                        long now = event.getEventTime(), dt = now - lastRawTime;
+                        if (dt > 0) {
+                            float instant = (rawY - lastRawY) * 1000f / dt;
+                            panelVy = panelVy == 0f ? instant : panelVy * 0.4f + instant * 0.6f;
+                        }
+                        lastRawY = rawY; lastRawTime = now;
+
+                        if (panelDragging) {
+                            applyInputPanelHeight(rubberBandInputHeight(panelStartH + (rawY - dragStartRawY)));
+                            return true;
+                        }
                         if (!dragging) {
                             float dx = Math.abs(x - downX), dy = Math.abs(y - downY);
-                            if (max > 0 && dy > touchSlop && dy >= dx && (event.getEventTime() - downTime) < longPressTimeout) {
-                                dragging = true;
-                                lastY = y;
-                                if (v.getParent() != null) v.getParent().requestDisallowInterceptTouchEvent(true);
-                                MotionEvent cancel = MotionEvent.obtain(event);
-                                cancel.setAction(MotionEvent.ACTION_CANCEL);
-                                inputText.onTouchEvent(cancel);
-                                cancel.recycle();
-                                return true;
+                            if (dy > touchSlop && dy >= dx && (now - downTime) < longPressTimeout) {
+                                boolean pullUpFromBottom = startedAtBottom && (rawY < downRawY);
+                                boolean pullDownWhenCollapsed = startedCollapsed && (rawY > downRawY);
+                                if (pullUpFromBottom || pullDownWhenCollapsed) {
+                                    if (inputCollapseAnimator != null) inputCollapseAnimator.cancel();
+                                    panelDragging = true;
+                                    dragStartRawY = rawY;
+                                    panelStartH = inputBoxContainer != null && inputBoxContainer.getHeight() > 0 ? inputBoxContainer.getHeight() : (startedCollapsed ? getCollapsedInputHeightPx() : getExpandedInputHeightPx());
+                                    cancelEditTouch(v, event);
+                                    return true;
+                                }
+                                int max = maxScroll();
+                                if (max > 0) {
+                                    dragging = true;
+                                    lastY = y;
+                                    cancelEditTouch(v, event);
+                                    return true;
+                                }
                             }
                             return false;
                         }
+                        int max = maxScroll();
                         if (max <= 0) return true;
                         float delta = (lastY - y) * 1.85f + remainder;
                         int step = Math.round(delta);
@@ -4625,9 +4805,16 @@ public class MainActivity extends AppCompatActivity {
                                 lastY = event.getY(nextIdx);
                             }
                         }
-                        return dragging;
+                        return dragging || panelDragging;
                     }
                     case MotionEvent.ACTION_UP:
+                        if (panelDragging) {
+                            finishInputPanelDrag(startedCollapsed, panelVy);
+                            releaseTracker();
+                            panelDragging = false;
+                            activePointerId = MotionEvent.INVALID_POINTER_ID;
+                            return true;
+                        }
                         if (dragging) {
                             int maxUp = maxScroll();
                             if (tracker != null && maxUp > 0) {
@@ -4652,8 +4839,9 @@ public class MainActivity extends AppCompatActivity {
                         activePointerId = MotionEvent.INVALID_POINTER_ID;
                         return false;
                     case MotionEvent.ACTION_CANCEL:
+                        if (panelDragging) finishInputPanelDrag(startedCollapsed, 0f);
                         releaseTracker();
-                        dragging = false;
+                        dragging = false; panelDragging = false;
                         activePointerId = MotionEvent.INVALID_POINTER_ID;
                         return false;
                 }
@@ -6516,6 +6704,22 @@ cat > "app/src/main/res/drawable/scrollbar_thumb.xml" <<'DEDEDE_SOURCE_EOF'
 <shape xmlns:android="http://schemas.android.com/apk/res/android"><solid android:color="#B39E9E9E"/><corners android:radius="4dp"/><size android:width="8dp"/></shape>
 DEDEDE_SOURCE_EOF
 
+mkdir -p "app/src/main/res/drawable"
+cat > "app/src/main/res/drawable/ic_input_collapse_handle.xml" <<'DEDEDE_SOURCE_EOF'
+<vector xmlns:android="http://schemas.android.com/apk/res/android" android:width="46dp" android:height="13dp" android:viewportWidth="46" android:viewportHeight="13">
+    <path android:fillColor="#ECEFF3" android:strokeColor="#22000000" android:strokeWidth="0.6" android:pathData="M7,12.5 Q4.5,12.5 6.2,10.8 L20.2,2.0 Q23,0.4 25.8,2.0 L39.8,10.8 Q41.5,12.5 39,12.5 Z"/>
+    <path android:strokeColor="#8E96A0" android:strokeWidth="1.6" android:strokeLineCap="round" android:strokeLineJoin="round" android:pathData="M18.8,9.4 L23,5.6 L27.2,9.4"/>
+</vector>
+DEDEDE_SOURCE_EOF
+
+mkdir -p "app/src/main/res/drawable-night"
+cat > "app/src/main/res/drawable-night/ic_input_collapse_handle.xml" <<'DEDEDE_SOURCE_EOF'
+<vector xmlns:android="http://schemas.android.com/apk/res/android" android:width="46dp" android:height="13dp" android:viewportWidth="46" android:viewportHeight="13">
+    <path android:fillColor="#30343C" android:strokeColor="#28FFFFFF" android:strokeWidth="0.6" android:pathData="M7,12.5 Q4.5,12.5 6.2,10.8 L20.2,2.0 Q23,0.4 25.8,2.0 L39.8,10.8 Q41.5,12.5 39,12.5 Z"/>
+    <path android:strokeColor="#A8B0BA" android:strokeWidth="1.6" android:strokeLineCap="round" android:strokeLineJoin="round" android:pathData="M18.8,9.4 L23,5.6 L27.2,9.4"/>
+</vector>
+DEDEDE_SOURCE_EOF
+
 mkdir -p "app/src/main/res/layout"
 cat > "app/src/main/res/layout/activity_main.xml" <<'DEDEDE_SOURCE_EOF'
 <?xml version="1.0" encoding="utf-8"?>
@@ -6570,10 +6774,13 @@ cat > "app/src/main/res/layout/activity_main.xml" <<'DEDEDE_SOURCE_EOF'
                 </LinearLayout>
             </LinearLayout>
 
-            <RelativeLayout android:layout_width="match_parent" android:layout_height="149dp" android:layout_marginBottom="10dp">
+            <RelativeLayout android:id="@+id/inputBoxContainer" android:layout_width="match_parent" android:layout_height="149dp" android:layout_marginBottom="10dp">
                 <EditText android:id="@+id/inputText" android:layout_width="match_parent" android:layout_height="match_parent" android:hint="输入或粘贴文本..." android:textColorHint="@color/text_secondary" android:textColor="@color/text_primary" android:gravity="top|start" android:background="@color/card_bg" android:padding="12dp" android:paddingEnd="42dp" android:paddingBottom="24dp" android:textSize="15sp" android:scrollbars="vertical"/>
                 <Button android:id="@+id/btnInputExpand" android:layout_width="32dp" android:layout_height="32dp" android:layout_alignParentTop="true" android:layout_alignParentEnd="true" android:layout_marginTop="0dp" android:layout_marginEnd="0dp" android:translationX="2dp" android:translationY="-2dp" android:text="⛶" android:textSize="16sp" android:textColor="#7B8CA4" android:background="?android:attr/selectableItemBackgroundBorderless" android:padding="0dp" android:insetTop="0dp" android:insetBottom="0dp" android:contentDescription="展开输入框"/>
                 <TextView android:id="@+id/tvWordCount" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_alignParentBottom="true" android:layout_alignParentEnd="true" android:layout_marginEnd="8dp" android:layout_marginBottom="3dp" android:text="0 字" android:textColor="#9E9E9E" android:textSize="11sp"/>
+                <FrameLayout android:id="@+id/btnInputCollapse" android:layout_width="84dp" android:layout_height="22dp" android:layout_alignParentBottom="true" android:layout_centerHorizontal="true" android:clickable="true" android:focusable="true" android:contentDescription="收起或展开输入框">
+                    <ImageView android:id="@+id/ivInputCollapseArrow" android:layout_width="46dp" android:layout_height="13dp" android:layout_gravity="bottom|center_horizontal" android:src="@drawable/ic_input_collapse_handle" android:scaleType="fitCenter" android:importantForAccessibility="no"/>
+                </FrameLayout>
             </RelativeLayout>
 
             <Button android:id="@+id/btnCheck" android:layout_width="match_parent" android:layout_height="52dp" android:text="开始纠错" android:textSize="16sp" android:letterSpacing="0.075" android:textColor="#ECF5FF" android:layout_marginTop="2dp" android:layout_marginBottom="6dp" android:background="@drawable/bg_check_gradient" android:backgroundTint="@null"/>
