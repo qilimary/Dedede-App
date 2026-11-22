@@ -4929,7 +4929,7 @@ public class MainActivity extends AppCompatActivity {
                         }
                         releaseTracker();
                         activePointerId = MotionEvent.INVALID_POINTER_ID;
-                        // 收起态轻点：先记住手指点中的文字位置，展开后把光标放到该处再弹键盘。
+                        // 收起态轻点：抬手瞬间就定位光标、聚焦并弹键盘，与展开动画同步进行，不再等动画结束。
                         if (startedCollapsed && Math.abs(event.getX() - downX) < touchSlop && Math.abs(event.getY() - downY) < touchSlop) {
                             int tapOffset = -1;
                             Layout tapLayout = inputText.getLayout();
@@ -4938,20 +4938,12 @@ public class MainActivity extends AppCompatActivity {
                                 int tapY = Math.round(event.getY()) - inputText.getTotalPaddingTop() + inputText.getScrollY();
                                 tapOffset = tapLayout.getOffsetForHorizontal(tapLayout.getLineForVertical(tapY), tapX);
                             }
-                            final int cursorOffset = tapOffset;
                             cancelEditTouch(v, event);
+                            inputText.requestFocus();
+                            if (tapOffset >= 0) inputText.setSelection(Math.min(tapOffset, inputText.length()));
                             animateInputCollapsed(false);
-                            inputText.postDelayed(() -> {
-                                if (isDestroyed() || isFinishing()) return;
-                                inputText.requestFocus();
-                                if (cursorOffset >= 0) {
-                                    int safeOffset = Math.min(cursorOffset, inputText.length());
-                                    inputText.setSelection(safeOffset);
-                                    inputText.bringPointIntoView(safeOffset);
-                                }
-                                android.view.inputmethod.InputMethodManager imm = (android.view.inputmethod.InputMethodManager) getSystemService(INPUT_METHOD_SERVICE);
-                                if (imm != null) imm.showSoftInput(inputText, android.view.inputmethod.InputMethodManager.SHOW_IMPLICIT);
-                            }, 300L);
+                            android.view.inputmethod.InputMethodManager imm = (android.view.inputmethod.InputMethodManager) getSystemService(INPUT_METHOD_SERVICE);
+                            if (imm != null) imm.showSoftInput(inputText, android.view.inputmethod.InputMethodManager.SHOW_IMPLICIT);
                             return true;
                         }
                         return false;
