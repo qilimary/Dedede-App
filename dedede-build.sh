@@ -596,7 +596,8 @@ import java.util.regex.Pattern;
 
 public final class CorrectionCore {
     private static final String[] LABELS = {"的", "地", "得", "做", "作"};
-    private static final int MAX_SEQUENCE_LENGTH = 300;
+    // Desktop builds read this value via scripts/sync_android.py.
+    static final int MAX_SEQUENCE_LENGTH = 340;
     private CorrectionCore() {}
 
     public interface Listener {
@@ -642,7 +643,8 @@ public final class CorrectionCore {
         }
     }
 
-    private static GrammarHit[] collectGrammarHits(String sentence, boolean fastMode, boolean[] protectedPositions, boolean[] exactPositions) {
+    private static GrammarHit[] collectGrammarHits(String sentence, boolean fastMode, boolean[] protectedPositions,
+            boolean[] exactPositions, java.util.function.BiPredicate<MainActivity.GramRule, Matcher> eligible) {
         GrammarHit[] hits = new GrammarHit[sentence.length()];
         for (MainActivity.GramRule rule : MainActivity.gramRules) {
             if (fastMode && rule.professionalOnly) continue;
@@ -660,69 +662,8 @@ public final class CorrectionCore {
                 String replacement = (option[0] != null ? option[0] : matcher.group(1)) + matcher.group(2)
                         + (option.length > 1 && option[1] != null ? option[1] : matcher.group(3));
                 if (Proofreader.altersExact(exactPositions, matchStart, matcher.group(), replacement)) protectedHit = true;
-                if (hits[matchStart] == null && !protectedHit) {
-                    hits[matchStart] = new GrammarHit(rule, optionIndex, matcher, sentence);
-                }
-                searchStart = matchStart + 1;
-            }
-        }
-        return hits;
-    }
-
-    private static final class GrammarHit {
-        final MainActivity.GramRule rule;
-        final int optionIndex;
-        int end;
-        int projStart;
-        final int[] projStarts = new int[3], projEnds = new int[3];
-        final String group1, group2, group3;
-        String origGroup1, origGroup2, origGroup3;
-        final String[] gaps = new String[4];
-
-        GrammarHit(MainActivity.GramRule rule, int optionIndex, Matcher match, String sentence) {
-            this.rule = rule;
-            this.optionIndex = optionIndex;
-            this.end = match.end();
-            this.projStart = match.start();
-            this.group1 = match.group(1);
-            this.group2 = match.group(2);
-            this.group3 = match.group(3);
-            this.origGroup1 = group1;
-            this.origGroup2 = group2;
-            this.origGroup3 = group3;
-            for (int i = 1; i <= 3; i++) {
-                projStarts[i - 1] = match.start(i);
-                projEnds[i - 1] = match.end(i);
-            }
-            int at = match.start();
-            for (int i = 1; i <= 3; i++) {
-                int start = match.start(i);
-                gaps[i - 1] = start >= at ? sentence.substring(at, start) : "";
-                if (start >= at) at = match.end(i);
-            }
-            gaps[3] = sentence.substring(at, end);
-        }
-    }
-
-    private static GrammarHit[] collectGrammarHits(String sentence, boolean fastMode, boolean[] protectedPositions, boolean[] exactPositions) {
-        GrammarHit[] hits = new GrammarHit[sentence.length()];
-        for (MainActivity.GramRule rule : MainActivity.gramRules) {
-            if (fastMode && rule.professionalOnly) continue;
-            if (!rule.mayMatch(sentence)) continue;
-            Matcher matcher = rule.pattern.matcher(sentence).useTransparentBounds(true).useAnchoringBounds(false);
-            int searchStart = 0;
-            while (searchStart < sentence.length()) {
-                matcher.region(searchStart, sentence.length());
-                if (!matcher.find()) break;
-                int matchStart = matcher.start();
-                boolean protectedHit = false;
-                for (int i = matchStart; i < matcher.end(); i++) if (protectedPositions[i]) { protectedHit = true; break; }
-                int optionIndex = rule.options.length > 1 ? java.util.concurrent.ThreadLocalRandom.current().nextInt(rule.options.length) : 0;
-                String[] option = rule.options[optionIndex];
-                String replacement = (option[0] != null ? option[0] : matcher.group(1)) + matcher.group(2)
-                        + (option.length > 1 && option[1] != null ? option[1] : matcher.group(3));
-                if (Proofreader.altersExact(exactPositions, matchStart, matcher.group(), replacement)) protectedHit = true;
-                if (hits[matchStart] == null && !protectedHit) {
+                if (hits[matchStart] == null && !protectedHit && matcher.end() > matchStart
+                        && (eligible == null || eligible.test(rule, matcher))) {
                     hits[matchStart] = new GrammarHit(rule, optionIndex, matcher, sentence);
                 }
                 searchStart = matchStart + 1;
@@ -732,9 +673,9 @@ public final class CorrectionCore {
     }
 
     public static Result run(String text, boolean fastMode, float temperature, float thresholdDe, float thresholdDi, float thresholdDe3, float thresholdZuo, float thresholdZuo4, Listener listener) throws Exception {
-        float[] thresholds = {thresholdDe, thresholdDi, thresholdDe3, thresholdZuo, thresholdZuo4};
-        if (!fastMode) for (float v : thresholds) if (!Float.isFinite(v) || v < 0f || v > 1f) throw new IllegalArgumentException("五字阈值必须是0～1之间的数字");
-        long modelNanos = 0; int modelCalls = 0, reviewCalls = 0;
+        float[] thresholds={thresholdDe,thresholdDi,thresholdDe3,thresholdZuo,thresholdZuo4};
+        if(!fastMode) for(float v:thresholds) if(!Float.isFinite(v)||v<0f||v>1f) throw new IllegalArgumentException("五字阈值必须是0～1之间的数字");
+        long modelNanos=0;int modelCalls=0,reviewCalls=0;
         MainActivity.ensureTypoMapLoaded(DededeApp.context());
         MainActivity.ensureRulesLoaded();
         final MainActivity.TypoIndex dictionary = MainActivity.currentTypoIndex();
@@ -768,96 +709,21 @@ public final class CorrectionCore {
             boolean[] blockedPositions = Arrays.copyOfRange(blockedAll, sentenceStart, sentenceOffset);
             boolean[] protectedPositions = blockedPositions.clone();
             for (int i = 0; i < protectedPositions.length; i++) protectedPositions[i] |= exactPositions[i];
-
-            // 先按与主循环完全相同的优先级，把错词库/重复修正应用到“投影句”，再在投影句上匹配语法规则。
-            // 例：“众多辛辛学子” -> 投影句“众多莘莘学子” -> 规则才有机会删掉“众多”。
-            // projToOrig 把投影句坐标映射回原句坐标：TextBlock.original 仍取原文，还原与计数不会错位。
-            StringBuilder projected = new StringBuilder(sentence.length());
-            int[] projToOrig = new int[sentence.length() + 16];
-            boolean[] projBlocked = new boolean[sentence.length() + 16];
-            boolean[] projExact = new boolean[sentence.length() + 16];
-            MainActivity.TypoMatch[] typoAt = new MainActivity.TypoMatch[sentence.length()];
-            int scan = 0;
-            while (scan < sentence.length()) {
-                if (listener != null && listener.isCancelled()) return null;
-                MainActivity.TypoMatch match = customAll[sentenceStart + scan] ? dictionary.findCustom(text, sentenceStart + scan) : null;
-                if (match == null) match = dictionary.find(sentence, scan, protectedPositions);
-                typoAt[scan] = match;
-                Proofreader.Edit edit = proofEdits[sentenceStart + scan];
-                String piece;
-                int consumed;
-                boolean locked = false;
-                if (edit != null && (match == null || !match.custom)) {
-                    piece = edit.replacement;
-                    consumed = edit.source.length();
-                } else if (match != null) {
-                    piece = match.correction;
-                    consumed = match.source.length();
-                    locked = match.custom && match.source.equals(match.correction);
-                } else {
-                    piece = sentence.substring(scan, scan + 1);
-                    consumed = 1;
-                }
-                int need = projected.length() + piece.length() + 1;
-                if (need > projToOrig.length) {
-                    int size = Math.max(projToOrig.length * 2, need);
-                    projToOrig = Arrays.copyOf(projToOrig, size);
-                    projBlocked = Arrays.copyOf(projBlocked, size);
-                    projExact = Arrays.copyOf(projExact, size);
-                }
-                boolean exactSpan = false;
-                int spanEnd = Math.min(sentence.length(), scan + consumed);
-                for (int i = scan; i < spanEnd; i++) if (exactPositions[i]) { exactSpan = true; break; }
-                int base = projected.length();
-                for (int i = 0; i < piece.length(); i++) {
-                    projToOrig[base + i] = scan;
-                    projBlocked[base + i] = locked;
-                    projExact[base + i] = exactSpan;
-                }
-                projected.append(piece);
-                scan += consumed;
-            }
-            projToOrig[projected.length()] = sentence.length();
-            String projectedText = projected.toString();
-            GrammarHit[] rawHits = collectGrammarHits(projectedText, fastMode,
-                    Arrays.copyOf(projBlocked, projectedText.length()), Arrays.copyOf(projExact, projectedText.length()));
-            GrammarHit[] grammarHits = new GrammarHit[sentence.length()];
-            for (int q = 0; q < rawHits.length; q++) {
-                GrammarHit hit = rawHits[q];
-                if (hit == null) continue;
-                int origStart = projToOrig[hit.projStart], origEnd = projToOrig[hit.end];
-                if (origStart >= origEnd || origStart >= grammarHits.length || grammarHits[origStart] != null) continue;
-                String[] origGroups = new String[3];
-                int at = origStart;
-                for (int i = 0; i < 3; i++) {
-                    int gs = Math.max(at, projToOrig[hit.projStarts[i]]);
-                    int ge = Math.max(gs, projToOrig[hit.projEnds[i]]);
-                    hit.gaps[i] = sentence.substring(at, gs);
-                    origGroups[i] = sentence.substring(gs, ge);
-                    at = ge;
-                }
-                hit.gaps[3] = sentence.substring(Math.min(at, origEnd), origEnd);
-                hit.origGroup1 = origGroups[0];
-                hit.origGroup2 = origGroups[1];
-                hit.origGroup3 = origGroups[2];
-                hit.end = origEnd;
-                grammarHits[origStart] = hit;
-            }
-
+            GrammarHit[] grammarHits = collectGrammarHits(sentence, fastMode, blockedPositions, exactPositions, null);
             List<MainActivity.TextBlock> intermediate = new ArrayList<>(Math.max(16, sentence.length() / 4));
             StringBuilder plain = new StringBuilder();
             int cursor = Math.max(0, skipUntil - sentenceStart);
             int originalStart = sentenceStart + cursor;
-
+            boolean hasDictionaryCorrection = false;
             while (cursor < sentence.length()) {
                 if (listener != null && listener.isCancelled()) return null;
 
                 MainActivity.TypoMatch typoMatch = customAll[sentenceStart + cursor] ? dictionary.findCustom(text, sentenceStart + cursor) : null;
-                if (typoMatch == null) typoMatch = typoAt[cursor];
+                if (typoMatch == null) typoMatch = dictionary.find(sentence, cursor, protectedPositions);
                 Proofreader.Edit proof = proofEdits[sentenceStart + cursor];
                 if (proof != null && (typoMatch == null || !typoMatch.custom)) {
                     flushPlain(intermediate, plain);
-                    errorCount = appendProofChange(intermediate, proof.source, proof.replacement, proof.idiom, errorCount, listener);
+                    appendProofChange(intermediate, proof.source, proof.replacement, proof.idiom);
                     skipUntil = proof.end;
                     cursor += proof.source.length(); continue;
                 }
@@ -866,86 +732,29 @@ public final class CorrectionCore {
                     boolean real = !typoMatch.source.equals(typoMatch.correction);
                     int type = typoMatch.custom ? 4 : 2;
                     intermediate.add(new MainActivity.TextBlock(typoMatch.source, typoMatch.correction, real, 1.0f, type));
-                    if (real) {
-                        errorCount++;
-                        if (listener != null) listener.onError("发现错误：" + typoMatch.source + " → " + typoMatch.correction + " | 共 " + errorCount + " 处", true);
-                    }
+                    hasDictionaryCorrection |= real && !typoMatch.custom;
                     cursor += typoMatch.source.length();
                     skipUntil = Math.max(skipUntil, sentenceStart + cursor);
                     continue;
                 }
 
                 GrammarHit grammarHit = grammarHits[cursor];
-                if (grammarHit != null) {
+                if (grammarHit != null
+                        && !coversDictionaryCorrection(sentence, cursor + 1, grammarHit.end, dictionary, protectedPositions)) {
                     flushPlain(intermediate, plain);
-                    String group1 = grammarHit.origGroup1;
-                    String group2 = grammarHit.origGroup2;
-                    String group3 = grammarHit.origGroup3;
-                    String[] selected = grammarHit.rule.options[grammarHit.optionIndex];
-                    String replacement1 = selected[0] != null ? selected[0] : grammarHit.group1;
-                    String replacement3 = selected.length > 1 && selected[1] != null ? selected[1] : grammarHit.group3;
-                    // Numeric normalization can consume the same quantifier first (e.g. 2个电脑).
-                    // Carry over the already collected, guarded computer rule without a second scan.
-                    if ("个".equals(group3) && "个".equals(replacement3) && grammarHit.end > 0) {
-                        GrammarHit computer = grammarHits[grammarHit.end - 1];
-                        if (computer != null && "个".equals(computer.group1) && computer.group2.isEmpty()
-                                && "电脑".equals(computer.group3) && "台".equals(computer.rule.options[0][0])) replacement3 = "台";
-                    }
-                    String explanation = selected.length > 2 && selected[2] != null ? selected[2] : "";
-                    // 相邻冲突标点作为一个整体纠错：保留句末/分句标点，与桌面端一致。
-                    boolean g1Pause = isPausePunct(group1), g3Pause = isPausePunct(group3);
-                    boolean punctuationConflict = "标点多余".equals(explanation) && group2.isEmpty()
-                            && ((g1Pause && isMajorPunct(group3)) || (isMajorPunct(group1) && g3Pause));
-                    if (punctuationConflict && (replacement1.isEmpty() ^ replacement3.isEmpty())) {
-                        String kept = g1Pause ? group3 : group1;
-                        if (kept.length() > 1 && isPausePunct(kept)) kept = kept.substring(0, 1);
-                        String originalPunctuation = group1 + group3;
-                        MainActivity.TextBlock block = new MainActivity.TextBlock(originalPunctuation, kept, true, 1.0f, 6);
-                        block.exp = explanation;
-                        intermediate.add(block);
-                        errorCount++;
-                        if (listener != null) listener.onError("发现错误：" + originalPunctuation + " → " + kept + " | 共 " + errorCount + " 处", true);
-                        cursor = grammarHit.end;
-                        continue;
-                    }
-                    // 缩减倍数涉及整个短语，一块 TextBlock 负责整段删除线、一次纠正、单击还原及计数。
-                    if ("下降/缩短等不能直接用倍数表示".equals(explanation)) {
-                        String originalPhrase = grammarHit.gaps[0] + group1 + grammarHit.gaps[1] + group2
-                                + grammarHit.gaps[2] + group3 + grammarHit.gaps[3];
-                        String correctedPhrase = replacement1 + grammarHit.group2 + replacement3;
-                        errorCount = appendGrammarChange(intermediate, originalPhrase, correctedPhrase,
-                                explanation, errorCount, listener);
-                        cursor = grammarHit.end;
-                        continue;
-                    }
-                    // 非捕获部分也可能被规则删除；必须记录下来，确保逐项/全部还原不丢字。
-                    errorCount = appendGrammarChange(intermediate, grammarHit.gaps[0], "", explanation, errorCount, listener);
-                    errorCount = appendGrammarChange(intermediate, group1, replacement1, explanation, errorCount, listener);
-                    errorCount = appendGrammarChange(intermediate, grammarHit.gaps[1], "", explanation, errorCount, listener);
-                    errorCount = appendGrammarChange(intermediate, group2, grammarHit.group2, "", errorCount, listener);
-                    errorCount = appendGrammarChange(intermediate, grammarHit.gaps[2], "", explanation, errorCount, listener);
-                    errorCount = appendGrammarChange(intermediate, group3, replacement3, explanation, errorCount, listener);
-                    errorCount = appendGrammarChange(intermediate, grammarHit.gaps[3], "", explanation, errorCount, listener);
+                    appendGrammarHit(intermediate, grammarHit, grammarHits);
                     cursor = grammarHit.end;
                     continue;
                 }
-                if (!protectedPositions[cursor] && cursor > 0 && cursor + 1 < sentence.length()) {
-                    char number = sentence.charAt(cursor - 1), quantifier = sentence.charAt(cursor), noun = sentence.charAt(cursor + 1);
-                    if (MainActivity.KNOWN_QUANTS.indexOf(quantifier) >= 0 && MainActivity.NUMS.indexOf(number) >= 0) {
-                        MainActivity.QuantifierRule rule = MainActivity.quantRules.get(noun);
-                        if (rule != null && rule.allowedQuants.indexOf(quantifier) < 0) {
-                            char next = cursor + 2 < sentence.length() ? sentence.charAt(cursor + 2) : '\0';
-                            if (MainActivity.isSafeCharAfterNoun(next)) {
-                                flushPlain(intermediate, plain);
-                                intermediate.add(new MainActivity.TextBlock(String.valueOf(quantifier), rule.primaryQuant, true, 1.0f, 3));
-                                errorCount++;
-                                if (listener != null) listener.onError("发现错误：" + number + quantifier + noun + " → " + number + rule.primaryQuant + noun + " | 共 " + errorCount + " 处", true);
-                                cursor++;
-                                continue;
-                            }
-                        }
-                    }
+
+                String quantifier = protectedPositions[cursor] ? null : quantifierReplacement(sentence, cursor);
+                if (quantifier != null) {
+                    flushPlain(intermediate, plain);
+                    intermediate.add(new MainActivity.TextBlock(sentence.substring(cursor, cursor + 1), quantifier, true, 1.0f, 3));
+                    cursor++;
+                    continue;
                 }
+
                 char current = sentence.charAt(cursor++);
                 if (isTarget(current)) {
                     flushPlain(intermediate, plain);
@@ -955,13 +764,29 @@ public final class CorrectionCore {
             }
             flushPlain(intermediate, plain);
 
+            if (hasDictionaryCorrection) {
+                intermediate = cascadeDictionaryRules(intermediate, fastMode, proofreader, exactAll, originalStart, listener);
+                if (intermediate == null) return null;
+            }
             int originalPosition = originalStart;
             for (MainActivity.TextBlock block : intermediate) {
+                if (block.isMutable) {
+                    errorCount++;
+                    if (listener != null) {
+                        String message = block.current.isEmpty() && block.type == 6 ? "删除：" + block.original
+                                : "发现错误：" + block.original + " → " + block.current;
+                        if (block.type == 3) {
+                            String left = text.substring(originalPosition - 1, originalPosition);
+                            String right = text.substring(originalPosition + 1, originalPosition + 2);
+                            message = "发现错误：" + left + block.original + right + " → " + left + block.current + right;
+                        }
+                        listener.onError(message + " | 共 " + errorCount + " 处", true);
+                    }
+                }
                 if (block.type == 0) for (int i = originalPosition; i < originalPosition + block.original.length(); i++)
                     if (exactAll[i]) { block.type = 2; break; }
                 originalPosition += block.original.length();
             }
-
             boolean candidateTarget = false;
             if (!fastMode) for (MainActivity.TextBlock block : intermediate) {
                 if (block.type == 0 && block.current.length() == 1 && isTarget(block.current.charAt(0))) { candidateTarget = true; break; }
@@ -981,22 +806,31 @@ public final class CorrectionCore {
                 }
                 markIgnoreWords(inferText, ignored);
                 markProtectedTargets(inferText, ignored);
+
                 boolean hasTarget = false;
                 for (int i = 0; i < inferText.length(); i++) if (!ignored[i] && isTarget(inferText.charAt(i))) { hasTarget = true; break; }
-                if (!fastMode && hasTarget) {
+                if (hasTarget) {
                     if (!MainActivity.isTemperatureValid(temperature)) {
                         throw new IllegalArgumentException("温度参数必须在 0.5～2.0 之间");
                     }
-                    FiveCharInference.Prediction prediction = FiveCharInference.predict(inferText, ignored, MainActivity.proTokenizer, MainActivity.proModule, temperature, () -> listener != null && listener.isCancelled());
-                    if (prediction == null) return null;
-                    modelNanos += prediction.modelNanos; modelCalls += prediction.calls; reviewCalls += prediction.reviews;
-                    for (int i = 0; i < inferText.length(); i++) {
-                        int label = prediction.labels[i]; if (label < 0) continue;
-                        String replacement = LABELS[label]; float confidence = prediction.confidence[i]; char character = inferText.charAt(i);
-                        if (!replacement.equals(String.valueOf(character)) && confidence >= thresholds[label]) {
-                            MainActivity.TextBlock block = map[i]; block.current = replacement; block.modelCorrected = replacement; block.isMutable = true; block.conf = confidence; block.type = 1; errorCount++;
-                            if (listener != null) listener.onError("发现错误：" + character + " → " + replacement + " (置信度:" + String.format(Locale.getDefault(), "%.2f", confidence) + ") | 共 " + errorCount + " 处", false);
+                    int inferenceOffset = 0;
+                    List<String> inferenceSegments = inferText.length() <= MAX_SEQUENCE_LENGTH
+                            ? java.util.Collections.singletonList(inferText) : splitText(inferText);
+                    for (String part : inferenceSegments) {
+                        int end = inferenceOffset + part.length();
+                        boolean[] partIgnored = inferenceSegments.size() == 1 ? ignored : Arrays.copyOfRange(ignored, inferenceOffset, end);
+                        FiveCharInference.Prediction prediction = FiveCharInference.predict(part, partIgnored, MainActivity.proTokenizer, MainActivity.proModule, temperature, () -> listener != null && listener.isCancelled());
+                        if (prediction == null) return null;
+                        modelNanos += prediction.modelNanos; modelCalls += prediction.calls; reviewCalls += prediction.reviews;
+                        for (int i = 0; i < part.length(); i++) {
+                            int label = prediction.labels[i]; if (label < 0) continue;
+                            String replacement = LABELS[label]; float confidence = prediction.confidence[i]; char character = part.charAt(i);
+                            if (!replacement.equals(String.valueOf(character)) && confidence >= thresholds[label]) {
+                                MainActivity.TextBlock block = map[inferenceOffset + i]; block.current = replacement; block.modelCorrected = replacement; block.isMutable = true; block.conf = confidence; block.type = 1; errorCount++;
+                                if (listener != null) listener.onError("发现错误：" + character + " → " + replacement + " (置信度:" + String.format(Locale.getDefault(), "%.2f", confidence) + ") | 共 " + errorCount + " 处", false);
+                            }
                         }
+                        inferenceOffset = end;
                     }
                 }
             }
@@ -1012,13 +846,212 @@ public final class CorrectionCore {
         }
         if (listener != null && listener.isCancelled()) return null;
         long elapsed = android.os.SystemClock.elapsedRealtime() - startTime;
-        Result result = new Result(allBlocks, fullCleanText.toString(), errorCount, elapsed);
-        result.modelNanos = modelNanos; result.modelCalls = modelCalls; result.reviewCalls = reviewCalls;
-        return result;
+        Result result=new Result(allBlocks, fullCleanText.toString(), errorCount, elapsed); result.modelNanos=modelNanos;result.modelCalls=modelCalls;result.reviewCalls=reviewCalls;return result;
     }
 
     private static int progressInterval(int length) { return length > 100000 ? 1200 : (length > 30000 ? 700 : 350); }
-    private static int appendProofChange(List<MainActivity.TextBlock> blocks, String source, String replacement, boolean idiom, int count, Listener listener) {
+
+    private static boolean coversDictionaryCorrection(String sentence, int from, int end,
+            MainActivity.TypoIndex dictionary, boolean[] protectedPositions) {
+        for (int at = from; at < end; at++) {
+            if (protectedPositions[at]) continue;
+            MainActivity.TypoMatch match = dictionary.find(sentence, at, protectedPositions);
+            if (match != null && !match.custom && !match.source.equals(match.correction)) return true;
+        }
+        return false;
+    }
+
+    private static String quantifierReplacement(String sentence, int at) {
+        if (at <= 0 || at + 1 >= sentence.length()) return null;
+        char number = sentence.charAt(at - 1), quantifier = sentence.charAt(at), noun = sentence.charAt(at + 1);
+        if (MainActivity.KNOWN_QUANTS.indexOf(quantifier) < 0 || MainActivity.NUMS.indexOf(number) < 0) return null;
+        MainActivity.QuantifierRule rule = MainActivity.quantRules.get(noun);
+        if (rule == null || rule.allowedQuants.indexOf(quantifier) >= 0) return null;
+        char next = at + 2 < sentence.length() ? sentence.charAt(at + 2) : '\0';
+        return MainActivity.isSafeCharAfterNoun(next) ? rule.primaryQuant : null;
+    }
+
+    private static void appendGrammarHit(List<MainActivity.TextBlock> intermediate, GrammarHit grammarHit,
+            GrammarHit[] grammarHits) {
+        String group1 = grammarHit.group1;
+        String group2 = grammarHit.group2;
+        String group3 = grammarHit.group3;
+        String[] selected = grammarHit.rule.options[grammarHit.optionIndex];
+        String replacement1 = selected[0] != null ? selected[0] : group1;
+        String replacement3 = selected.length > 1 && selected[1] != null ? selected[1] : group3;
+        // Numeric normalization can consume the same quantifier first (e.g. 2个电脑).
+        // Carry over the already collected, guarded computer rule without a second scan.
+        if ("个".equals(group3) && "个".equals(replacement3) && grammarHit.end > 0) {
+            GrammarHit computer = grammarHits[grammarHit.end - 1];
+            if (computer != null && "个".equals(computer.group1) && computer.group2.isEmpty()
+                    && "电脑".equals(computer.group3) && "台".equals(computer.rule.options[0][0])) replacement3 = "台";
+        }
+        String explanation = selected.length > 2 && selected[2] != null ? selected[2] : "";
+
+        // 相邻冲突标点作为一个整体纠错：保留句末/分句标点，与桌面端一致。
+        // 这样删除一侧后，修正后的全文会把红色可点击标记落在实际保留下来的标点上，
+        // 而不是因为“删除结果长度为 0”错误地借用前一个汉字作为视觉锚点。
+        boolean g1Pause = isPausePunct(group1), g3Pause = isPausePunct(group3);
+        boolean punctuationConflict = "标点多余".equals(explanation) && group2.isEmpty()
+                && ((g1Pause && isMajorPunct(group3)) || (isMajorPunct(group1) && g3Pause));
+        if (punctuationConflict && (replacement1.isEmpty() ^ replacement3.isEmpty())) {
+            String kept = g1Pause ? group3 : group1;
+            // 若逗号/顿号一侧本身重复，只保留一个，避免“，，。”随机后留下“，，”。
+            if (kept.length() > 1 && isPausePunct(kept)) kept = kept.substring(0, 1);
+            String originalPunctuation = group1 + group3;
+            MainActivity.TextBlock block = new MainActivity.TextBlock(originalPunctuation, kept, true, 1.0f, 6);
+            block.exp = explanation;
+            intermediate.add(block);
+            return;
+        }
+
+        // 缩减倍数涉及整个短语，不能按正则三组分别记录，否则清单会划两次、数字也会错位。
+        // 一块 TextBlock 负责整段删除线、一次纠正、单击还原及计数。
+        if ("下降/缩短等不能直接用倍数表示".equals(explanation)) {
+            String originalPhrase = grammarHit.gaps[0] + group1 + grammarHit.gaps[1] + group2
+                    + grammarHit.gaps[2] + group3 + grammarHit.gaps[3];
+            String correctedPhrase = replacement1 + group2 + replacement3;
+            appendGrammarChange(intermediate, originalPhrase, correctedPhrase,
+                    explanation);
+            return;
+        }
+
+        // 非捕获部分也可能被规则删除；必须记录下来，确保逐项/全部还原不丢字。
+        appendGrammarChange(intermediate, grammarHit.gaps[0], "", explanation);
+        appendGrammarChange(intermediate, group1, replacement1, explanation);
+        appendGrammarChange(intermediate, grammarHit.gaps[1], "", explanation);
+        appendNormalText(intermediate, group2);
+        appendGrammarChange(intermediate, grammarHit.gaps[2], "", explanation);
+        appendGrammarChange(intermediate, group3, replacement3, explanation);
+        appendGrammarChange(intermediate, grammarHit.gaps[3], "", explanation);
+    }
+
+    private static boolean isDictionaryCorrection(MainActivity.TextBlock block) {
+        return block.type == 2 && block.isMutable && !block.current.isEmpty();
+    }
+
+    private static List<MainActivity.TextBlock> cascadeDictionaryRules(List<MainActivity.TextBlock> blocks,
+            boolean fastMode, Proofreader proofreader, boolean[] exactAll, int originalStart, Listener listener) {
+        StringBuilder corrected = new StringBuilder(), beforeTypos = new StringBuilder();
+        int[] starts = new int[blocks.size() + 1];
+        for (int i = 0; i < blocks.size(); i++) {
+            MainActivity.TextBlock block = blocks.get(i);
+            starts[i] = corrected.length();
+            corrected.append(block.current);
+            beforeTypos.append(isDictionaryCorrection(block) ? block.original : block.current);
+        }
+        String projected = corrected.toString(), before = beforeTypos.toString();
+        if (projected.equals(before)) return blocks;
+        int length = projected.length();
+        starts[blocks.size()] = length;
+        boolean[] exact = proofreader.exactPositions(projected, () -> listener != null && listener.isCancelled());
+        if (exact == null) return null;
+        boolean[] blocked = new boolean[length];
+        int[] owners = new int[length], beforePositions = new int[length + 1];
+        int original = originalStart, beforeOffset = 0;
+        for (int i = 0; i < blocks.size(); i++) {
+            MainActivity.TextBlock block = blocks.get(i);
+            int start = starts[i], end = starts[i + 1];
+            boolean typo = isDictionaryCorrection(block);
+            if (typo) Arrays.fill(owners, start, end, i + 1);
+            else if (block.type != 0) {
+                // Keep custom mappings, whitelist entries and edits from the first pass intact.
+                Arrays.fill(blocked, start, end, true);
+                if (start == end) Arrays.fill(blocked, Math.max(0, start - 1), Math.min(length, end + 1), true);
+            }
+            for (int at = start; at < end; at++) {
+                int offset = at - start;
+                beforePositions[at] = beforeOffset + (typo ? 0 : offset);
+                if (block.type == 0) exact[at] |= exactAll[original + offset];
+            }
+            beforeOffset += typo ? block.original.length() : block.current.length();
+            original += block.original.length();
+        }
+        beforePositions[length] = before.length();
+        GrammarHit[] hits = collectGrammarHits(projected, fastMode, blocked, exact, (rule, match) -> {
+            // Also detect rules whose lookaround was enabled by a correction outside the match.
+            int start = match.start(), end = match.end(), beforeStart = beforePositions[start];
+            for (int i = start; i < end; i++) if (owners[i] != 0) return true;
+            Matcher prior = rule.pattern.matcher(before).useTransparentBounds(true).useAnchoringBounds(false);
+            return !prior.region(beforeStart, before.length()).lookingAt() || !prior.group().equals(match.group());
+        });
+
+        List<MainActivity.TextBlock> result = new ArrayList<>(blocks.size());
+        BlockCursor source = new BlockCursor(blocks);
+        List<MainActivity.TextBlock> rendered = new ArrayList<>();
+        StringBuilder replacement = new StringBuilder();
+        int changeEnd = -1, copiedTo = -1;
+        String explanation = "";
+        for (int at = 0; at < length;) {
+            if (listener != null && listener.isCancelled()) return null;
+            GrammarHit hit = hits[at];
+            rendered.clear();
+            if (hit != null) {
+                appendGrammarHit(rendered, hit, hits);
+            } else if (!blocked[at] && !exact[at]) {
+                String quantifier = quantifierReplacement(projected, at);
+                if (quantifier != null && (owners[at] != 0 || !quantifier.equals(quantifierReplacement(before, beforePositions[at]))))
+                    appendGrammarChange(rendered, projected.substring(at, at + 1), quantifier, "量词搭配");
+            }
+            int next = at;
+            for (MainActivity.TextBlock change : rendered) {
+                int start = next;
+                next += change.original.length();
+                if (!change.isMutable) continue;
+                int left = start < length ? owners[start] : 0;
+                int right = next > start ? owners[next - 1] : 0;
+                // A replacement inside a dictionary correction must still restore the whole source word.
+                int spanStart = left == 0 ? start : starts[left - 1];
+                int spanEnd = right == 0 ? next : starts[right];
+                if (start == next && left > 0 && start > spanStart) spanEnd = starts[left];
+                if (changeEnd < 0 || spanStart >= changeEnd) {
+                    if (changeEnd >= 0) {
+                        replacement.append(projected, copiedTo, changeEnd);
+                        appendGrammarChange(result, source.take(changeEnd, null), replacement.toString(), explanation);
+                    }
+                    source.take(spanStart, result);
+                    changeEnd = spanEnd;
+                    copiedTo = spanStart;
+                    explanation = change.exp;
+                    replacement.setLength(0);
+                }
+                changeEnd = Math.max(changeEnd, spanEnd);
+                replacement.append(projected, copiedTo, start).append(change.current);
+                copiedTo = next;
+            }
+            at = hit == null ? at + 1 : hit.end;
+        }
+        if (changeEnd < 0) return blocks;
+        replacement.append(projected, copiedTo, changeEnd);
+        appendGrammarChange(result, source.take(changeEnd, null), replacement.toString(), explanation);
+        source.take(length, result);
+        return result;
+    }
+
+    private static final class BlockCursor {
+        final List<MainActivity.TextBlock> blocks;
+        int index, offset, position;
+        BlockCursor(List<MainActivity.TextBlock> blocks) { this.blocks = blocks; }
+
+        String take(int end, List<MainActivity.TextBlock> kept) {
+            StringBuilder original = kept == null ? new StringBuilder() : null;
+            while (index < blocks.size()) {
+                MainActivity.TextBlock block = blocks.get(index);
+                if (position == end && !(kept != null && block.current.isEmpty())) break;
+                int stop = Math.min(block.current.length(), offset + end - position);
+                boolean whole = offset == 0 && stop == block.current.length();
+                if (kept == null) original.append(whole ? block.original : block.original.substring(offset, stop));
+                else if (whole) kept.add(block);
+                else appendNormalText(kept, block.current.substring(offset, stop));
+                position += stop - offset;
+                if (stop == block.current.length()) { index++; offset = 0; }
+                else offset = stop;
+            }
+            return original == null ? "" : original.toString();
+        }
+    }
+
+    private static void appendProofChange(List<MainActivity.TextBlock> blocks, String source, String replacement, boolean idiom) {
         // Keep only the changed characters in the review mark. A duplicate is a deletion, without a parenthetical note.
         int prefix=0,suffix=0;
         if(source.length()>replacement.length()&&!idiom){
@@ -1030,19 +1063,17 @@ public final class CorrectionCore {
             while(suffix<source.length()-prefix&&suffix<replacement.length()-prefix&&source.charAt(source.length()-1-suffix)==replacement.charAt(replacement.length()-1-suffix))suffix++;
         }
         appendProtectedText(blocks,source.substring(0,prefix));
-        count=appendGrammarChange(blocks,source.substring(prefix,source.length()-suffix),replacement.substring(prefix,replacement.length()-suffix),"",count,listener);
+        appendGrammarChange(blocks,source.substring(prefix,source.length()-suffix),replacement.substring(prefix,replacement.length()-suffix),"");
         appendProtectedText(blocks,source.substring(source.length()-suffix));
-        return count;
     }
     private static void appendProtectedText(List<MainActivity.TextBlock> blocks,String text) {
         if(!text.isEmpty())blocks.add(new MainActivity.TextBlock(text,text,false,0f,2));
     }
-    private static int appendGrammarChange(List<MainActivity.TextBlock> blocks, String original, String replacement, String explanation, int count, Listener listener) {
-        if (original.equals(replacement)) { appendNormalText(blocks, original); return count; }
+    private static void appendGrammarChange(List<MainActivity.TextBlock> blocks, String original, String replacement, String explanation) {
+        if (original.equals(replacement)) { appendNormalText(blocks, original); return; }
         MainActivity.TextBlock block = new MainActivity.TextBlock(original, replacement, true, 1.0f, 6);
-        block.exp = replacement.isEmpty() ? "" : explanation; blocks.add(block); count++;
-        if (listener != null) listener.onError((replacement.isEmpty() ? "删除：" + original : "发现错误：" + original + " → " + replacement) + " | 共 " + count + " 处", true);
-        return count;
+        block.exp = replacement.isEmpty() ? "" : explanation;
+        blocks.add(block);
     }
     private static boolean isTarget(char c) { return FiveCharInference.target(c); }
     private static boolean isPausePunct(String s) {
@@ -1086,10 +1117,12 @@ public final class CorrectionCore {
         List<String> result=new ArrayList<>();int start=0;
         while(start<text.length()){
             int limit=Math.min(start+MAX_SEQUENCE_LENGTH,text.length()),end=limit;
+            boolean foundSentenceEnd=false;
             for(int i=start;i<limit;i++)if("。！？!?\n".indexOf(text.charAt(i))>=0){
+                foundSentenceEnd=true;
                 end=i+1;if(text.charAt(i)!='\n')while(end<limit&&"。！？!?，、；：”’\"」』".indexOf(text.charAt(end))>=0)end++;break;
             }
-            if(end==limit&&end<text.length())for(int i=end-1;i>=Math.max(start+1,end-60);i--)if("，,；;、".indexOf(text.charAt(i))>=0){end=i+1;break;}
+            if(!foundSentenceEnd&&end<text.length())for(int i=end-1;i>=Math.max(start+1,end-60);i--)if("，,；;、".indexOf(text.charAt(i))>=0){end=i+1;break;}
             if(end<text.length()&&Character.isLowSurrogate(text.charAt(end))&&Character.isHighSurrogate(text.charAt(end-1)))end--;
             if(end<text.length()&&text.charAt(end-1)=='\r'&&text.charAt(end)=='\n')end--;
             result.add(text.substring(start,end));start=end;
@@ -2730,7 +2763,7 @@ public class MainActivity extends AppCompatActivity {
             addRule("(之所以)([^，,。；;！？!?：:\\n]{2,36}?)(的原因)(?=[ 　]*(?:是|在于|就是))", new String[][]{{"", null, "句式杂糅"}});
             addRule("(由)([ 　]*(?:他|她|他们|她们|大家|我们|你们|负责人|领导|班长|队长|老师|经理|校长|主席|主任|委员|将军|首领|组长|代表|专家|成员|学生|学者)(?:等人)?[ 　]*)(为首)(?=的)", new String[][]{{"以", null, "句式杂糅"}});
             addRule("(具有)([ 　]*(?:消食|化积|润肠|通便|清热|解毒|活血|化瘀|消肿|止痛|健脾|养胃|安神|补血|益气|滋阴|补肾|祛风|除湿|润肺|化痰|止咳|平喘|抗氧化|抗菌|抑菌|消炎)(?:[、和及与 　]*(?:消食|化积|润肠|通便|清热|解毒|活血|化瘀|消肿|止痛|健脾|养胃|安神|补血|益气|滋阴|补肾|祛风|除湿|润肺|化痰|止咳|平喘|抗氧化|抗菌|抑菌|消炎))*[ 　]*)()(?=[，,。；;！？!?：:\\n]|$)", new String[][]{{null, "的功效", "成分残缺，补充宾语"}});
-            addRule("(的原因)([ \\u3000]*)(是因为|是由于)", new String[][]{{null, "", "句式杂糅"}});
+            addRule("(?<=的)(原因)([ \\u3000]*)(是因为|是由于)", new String[][]{{null, "是", "句式杂糅"}});
 
             // ==========================================
             // 6. 词语辨析与用词不当
@@ -3041,7 +3074,7 @@ public class MainActivity extends AppCompatActivity {
             return positions;
         }
         public TypoMatch find(String text, int index) { return find(text, index, null); }
-        // User mappings may span an internal 300-character cut or a newline.
+        // User mappings may span an internal segment boundary or a newline.
         TypoMatch findCustom(String text, int index) {
             int node = 0, chosen = -1;
             for (int p = index; p < text.length(); p++) {
