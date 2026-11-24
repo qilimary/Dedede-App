@@ -1,4 +1,4 @@
-# 纠错 Pro（Dedede-App）
+# 纠错 Pro（Dedede-Corrector-App）
 
 **一个离线本地纠错工具。**
 
