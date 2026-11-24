@@ -1,0 +1,198 @@
+name: Dedede Current Engine Benchmark - 20 datasets
+'on':
+  workflow_dispatch: {}
+permissions:
+  contents: read
+concurrency:
+  group: dedede-current-benchmark-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  benchmark:
+    runs-on: windows-2022
+    timeout-minutes: 330
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [professional, fast]
+    env:
+      PYTHONUTF8: '1'
+      DOTNET_CLI_TELEMETRY_OPTOUT: '1'
+      BENCH_MODE: ${{ matrix.mode }}
+      DATA_REV: fc611214776a37d033ace8a2ca9d0fd121f060d0
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Restore current Windows production sources and sync rules
+        run: |
+          set -euo pipefail
+          python dedede-windows.py
+          python windows/scripts/sync_android.py --repo .
+          mkdir -p benchmark-output
+          cp source-verification.json windows/assets/android-sync.json benchmark-output/
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: windows/global.json
+      - name: Cache current model
+        if: matrix.mode == 'professional'
+        uses: actions/cache@v4
+        with:
+          path: windows/assets/models/HCAM_V2_5CHAR_INT8_PT.onnx
+          key: dedede-benchmark-current-${{ runner.os }}-${{ hashFiles('windows/src/Dedede.Core/ModelRuntime.cs', 'windows/scripts/fetch_model.py') }}
+      - name: Fetch and verify production model resources
+        if: matrix.mode == 'professional'
+        run: |
+          set -euo pipefail
+          python -m pip install gdown==5.2.0
+          python windows/scripts/fetch_model.py
+      - name: Fetch the original fixed benchmark revision
+        run: |
+          set -euo pipefail
+          git init .benchmark-data
+          git -C .benchmark-data remote add origin https://github.com/zejunwang1/CTCDataset.git
+          git -C .benchmark-data fetch --depth 1 origin "$DATA_REV"
+          git -C .benchmark-data checkout --detach FETCH_HEAD
+          test "$(git -C .benchmark-data rev-parse HEAD)" = "$DATA_REV"
+          python - <<'PY'
+          import json, hashlib, pathlib, os
+          paths = [
+            ('NLPCC2023-Task8','NLPCC2023/spell/data.jsonl',1000),
+            ('SIGHAN15-Revised','yacsc/sighan_revised/test_sighan15.jsonl',1100),
+            ('SIGHAN13-Revised','yacsc/sighan_revised/test_sighan13.jsonl',1000),
+            ('SIGHAN14-Revised','yacsc/sighan_revised/test_sighan14.jsonl',1062),
+            ('CSCD-NS-Test','cscd-ns/test.jsonl',5000),
+            ('MCSCSet-Medical-Test','MCSCSet/test.jsonl',19650),
+            ('ECSpell-Law','ECSpell/ec_law.jsonl',2460),
+            ('ECSpell-Medical','ECSpell/ec_med.jsonl',3500),
+            ('ECSpell-Official','ECSpell/ec_odw.jsonl',2220),
+            ('LEMON-Car','lemon/car.jsonl',3410),
+            ('LEMON-Contract','lemon/cot.jsonl',1026),
+            ('LEMON-Enc','lemon/enc.jsonl',3434),
+            ('LEMON-Medical','lemon/mec.jsonl',2090),
+            ('LEMON-News','lemon/new.jsonl',5892),
+            ('LEMON-Novel','lemon/nov.jsonl',6000),
+            ('CCTC-Test-Wide','CCTC/cctc_test_wide.jsonl',2311),
+            ('CTC2021-Val-Revised','CTC2021/val_revised.jsonl',969),
+            ('YACSC-NoGE','yacsc/YACSC/YACSC-no_GE.jsonl',2550),
+            ('Midu2022-Preliminary-Val','midu2022/preliminary_val.jsonl',1014),
+            ('Midu2022-Final','midu2022/final.jsonl',2919),
+          ]
+          manifest=[]
+          with open('benchmark-input.jsonl','w',encoding='utf-8',newline='\n') as out:
+              for name,rel,expected in paths:
+                  p=pathlib.Path('.benchmark-data')/rel
+                  with p.open(encoding='utf-8-sig') as src:
+                      rows=[json.loads(line) for line in src if line.strip()]
+                  if not rows: raise RuntimeError(f'Empty corpus: {name}')
+                  if len(rows)!=expected: print(f'COUNT NOTE {name}: {len(rows)} vs {expected}')
+                  for i,row in enumerate(rows):
+                      if not isinstance(row.get('source'),str) or not isinstance(row.get('target'),str): raise ValueError(f'{name}:{i} invalid pair')
+                      out.write(json.dumps(dict(dataset=name,index=i,source=row['source'],target=row['target']),ensure_ascii=False)+'\n')
+                  manifest.append(dict(name=name,path=rel,rows=len(rows),expected_rows=expected,sha256=hashlib.sha256(p.read_bytes()).hexdigest()))
+          doc=dict(revision=os.environ['DATA_REV'],source_commit=os.environ['GITHUB_SHA'],datasets=manifest,total=sum(x['rows'] for x in manifest))
+          pathlib.Path('benchmark-output/manifest.json').write_text(json.dumps(doc,ensure_ascii=False,indent=2),encoding='utf-8')
+          print('Full datasets:',len(manifest),'sentences:',doc['total'])
+          if doc['total']!=68607: print('NOTE: actual count differs from historical 68607; inspect manifest before comparison')
+          PY
+      - name: Build a console adapter to the actual production correction engine
+        run: |
+          set -euo pipefail
+          mkdir -p windows/BenchmarkCurrent
+          cat > windows/BenchmarkCurrent/BenchmarkCurrent.csproj <<'XML'
+          <Project Sdk="Microsoft.NET.Sdk">
+            <PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net10.0</TargetFramework></PropertyGroup>
+            <ItemGroup><ProjectReference Include="../src/Dedede.Core/Dedede.Core.csproj" /></ItemGroup>
+          </Project>
+          XML
+          cat > windows/BenchmarkCurrent/Program.cs <<'CS'
+          using Dedede.Core;
+          using System.Diagnostics;
+          using System.IO.Compression;
+          using System.Text;
+          using System.Text.Json;
+          var mode=args[0];
+          if(mode!="professional" && mode!="fast")throw new ArgumentException("invalid mode");
+          var settings=new CheckSettings{Professional=mode=="professional"};
+          using var engine=new CorrectionEngine(Path.GetFullPath(args[1]));
+          File.WriteAllText(Path.Combine(args[3],"settings.json"),JsonSerializer.Serialize(settings,new JsonSerializerOptions{WriteIndented=true}));
+          var smoke=await engine.CheckAsync("他认真的检查了这份报告，又把遗漏地细节补充完整。她高兴的跑进温室，看到植物长的很好。他做的作业已经交了。地理老师说，这张地图画得很清楚。",settings);
+          if(settings.Professional && smoke.ModelCalls<=0)throw new Exception("Professional smoke did not invoke the model");
+          if(!settings.Professional && smoke.ModelCalls!=0)throw new Exception("Fast smoke unexpectedly invoked the model");
+          Console.WriteLine($"Smoke: {smoke.Corrected}; model calls={smoke.ModelCalls}");
+          using var stream=File.Create(Path.Combine(args[3],"predictions.jsonl.gz"));
+          using var gzip=new GZipStream(stream,CompressionLevel.Fastest);
+          using var writer=new StreamWriter(gzip,new UTF8Encoding(false));
+          string last="";int done=0;long calls=0;var timer=Stopwatch.StartNew();
+          foreach(var line in File.ReadLines(args[2])) {
+              using var doc=JsonDocument.Parse(line);var row=doc.RootElement;
+              var name=row.GetProperty("dataset").GetString()!;
+              int index=row.GetProperty("index").GetInt32();
+              var source=row.GetProperty("source").GetString()!;var target=row.GetProperty("target").GetString()!;
+              if(name!=last){writer.Flush();Console.WriteLine($"[START] {name}");last=name;}
+              var watch=Stopwatch.StartNew();
+              var result=await engine.CheckAsync(source,settings);
+              watch.Stop();calls+=result.ModelCalls;
+              writer.WriteLine(JsonSerializer.Serialize(new {dataset=name,index,source,target,prediction=result.Corrected,model_calls=result.ModelCalls,ms=watch.Elapsed.TotalMilliseconds}));
+              done++;
+              if(done%200==0){writer.Flush();Console.WriteLine($"[PROGRESS] {done:N0}; {name} {index+1}; model calls={calls:N0}");}
+          }
+          if(settings.Professional && calls==0)throw new Exception("No model inference in benchmark");
+          if(!settings.Professional && calls!=0)throw new Exception("Model used in fast mode");
+          Console.WriteLine($"[DONE] {done:N0}; {timer.Elapsed}; model calls={calls:N0}");
+          CS
+          dotnet build windows/BenchmarkCurrent/BenchmarkCurrent.csproj -c Release
+      - name: Run the full current-engine benchmark
+        run: |
+          set -euo pipefail
+          dotnet run --no-build -c Release --project windows/BenchmarkCurrent/BenchmarkCurrent.csproj -- "$BENCH_MODE" windows/assets benchmark-input.jsonl benchmark-output
+      - name: Score and write Markdown and JSON reports
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import gzip,json,os,collections,pathlib
+          out=pathlib.Path('benchmark-output'); manifest=json.loads((out/'manifest.json').read_text(encoding='utf-8'))
+          metrics=collections.defaultdict(collections.Counter)
+          with gzip.open(out/'predictions.jsonl.gz','rt',encoding='utf-8') as inp, open('benchmark-input.jsonl',encoding='utf-8') as gold:
+              from itertools import zip_longest
+              for line,expected in zip_longest(inp,gold):
+                  if line is None or expected is None: raise RuntimeError('Incomplete or extra predictions')
+                  r=json.loads(line); ref=json.loads(expected)
+                  if any(r[k]!=ref[k] for k in ('dataset','index','source','target')): raise RuntimeError('Prediction ordering or data mismatch')
+                  c=metrics[r['dataset']]; s,t,p=r['source'],r['target'],r['prediction']
+                  c['n']+=1;c['exact']+=p==t;c['clean']+=s==t;c['kept']+=s==t and p==s;c['wrong']+=s!=t;c['wrong_fixed']+=s!=t and p==t
+                  c['ms']+=r['ms'];c['model_calls']+=r['model_calls']
+                  if len(s)==len(t)==len(p):
+                      c['aligned']+=1
+                      g={i for i,(a,b) in enumerate(zip(s,t)) if a!=b}; a={i for i,(x,y) in enumerate(zip(s,p)) if x!=y}
+                      ok={i for i in a&g if p[i]==t[i]}
+                      c['dtp']+=len(a&g);c['dfp']+=len(a-g);c['dfn']+=len(g-a)
+                      c['ctp']+=len(ok);c['cfp']+=len(a-ok);c['cfn']+=len(g-ok)
+                  if len(p)!=len(s):c['length_changed']+=1
+          def ratio(a,b):return a/b if b else None
+          def prf(c,k):
+              p=ratio(c[k+'tp'],c[k+'tp']+c[k+'fp']);r=ratio(c[k+'tp'],c[k+'tp']+c[k+'fn']);f=ratio(2*c[k+'tp'],2*c[k+'tp']+c[k+'fp']+c[k+'fn'])
+              return [p,r,f]
+          def pct(v):return '—' if v is None else f'{v:.2%}'
+          results={}; lines=['# Dedede 当前真实纠错引擎评测','',f'模式：{os.environ["BENCH_MODE"]}；源码提交：`{manifest["source_commit"]}`；数据提交：`{manifest["revision"]}`。','',f'20套数据集，共 {manifest["total"]:,} 条；不抽样，不去重；采用当前 Windows 核心、默认设置和构建同步后的词库/规则，无用户自定义词库。','', '整句正确率和正确句保持率包含全部句子；字符级 P/R/F1 仅对原文、参考和预测等长的句子计分，与旧工作流一致。另列等长样本数，防止将不等长语法错误的 F1 当成完整语法纠错分数。公开领域集不等于独立官方测试集，历史数据可能参与规则开发。','', '| 数据集 | 句数 | 整句正确 | 错句整句修好 | 正确句保持率 | 句误改率 | 检测 P/R/F1 | 纠正 P/R/F1 | 等长样本 | 预测变长/变短 |','|---|---:|---:|---:|---:|---:|---|---|---:|---:|']
+          for m in manifest['datasets']:
+              name=m['name'];c=metrics[name]
+              if c['n']!=m['rows']:raise RuntimeError(f'Wrong prediction count: {name}')
+              d=prf(c,'d');p=prf(c,'c');exact=ratio(c['exact'],c['n']);fixed=ratio(c['wrong_fixed'],c['wrong']);keep=ratio(c['kept'],c['clean']);fp=ratio(c['clean']-c['kept'],c['clean'])
+              results[name]=dict(counts=dict(c),exact=exact,wrong_exact_fix=fixed,correct_preserve=keep,overcorrection=fp,det_p=d[0],det_r=d[1],det_f1=d[2],cor_p=p[0],cor_r=p[1],cor_f1=p[2])
+              lines.append(f'| {name} | {c["n"]:,} | {pct(exact)} | {pct(fixed)} | {pct(keep)} | {pct(fp)} | {" / ".join(map(pct,d))} | {" / ".join(map(pct,p))} | {c["aligned"]:,} | {c["length_changed"]:,} |')
+          report='\n'.join(lines)+'\n';(out/'benchmark-report.md').write_text(report,encoding='utf-8');(out/'benchmark-results.json').write_text(json.dumps(results,ensure_ascii=False,indent=2),encoding='utf-8')
+          with open(os.environ['GITHUB_STEP_SUMMARY'],'a',encoding='utf-8') as f:f.write(report)
+          print(report)
+          PY
+      - name: Upload report and raw predictions
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dedede-current-benchmark-${{ matrix.mode }}
+          path: benchmark-output/
+          if-no-files-found: warn
+          retention-days: 30
