@@ -707,58 +707,13 @@ public final class CorrectionCore {
             boolean[] protectedPositions = blockedPositions.clone();
             for (int i = 0; i < protectedPositions.length; i++) protectedPositions[i] |= exactPositions[i];
             
-            // 【终极修复：新旧索引映射表机制】
-            // 解决需求1：语法规则必须在错词修正后的句子上跑（避免漏掉“辛辛->莘莘”等连环错）。
-            // 解决需求2：下方的 UI 渲染循环使用的是原句子的 cursor，所以 GrammarHits 必须还原到原句长度，绝不越界。
-            StringBuilder correctedSentence = new StringBuilder(sentence.length() + 16);
-            List<Boolean> newBlockedList = new ArrayList<>(sentence.length() + 16);
-            List<Boolean> newExactList = new ArrayList<>(sentence.length() + 16);
-            List<Integer> newToOriginalMap = new ArrayList<>(sentence.length() + 16);
+            // 回归最稳定的原始架构：直接在原句上匹配，绝对不会越界或报错
+            GrammarHit[] grammarHits = collectGrammarHits(sentence, fastMode, blockedPositions, exactPositions);
             
-            int buildCursor = 0;
-            while (buildCursor < sentence.length()) {
-                MainActivity.TypoMatch typoMatch = customAll[sentenceStart + buildCursor] ? dictionary.findCustom(text, sentenceStart + buildCursor) : null;
-                if (typoMatch == null) typoMatch = dictionary.find(sentence, buildCursor, protectedPositions);
-                Proofreader.Edit proof = proofEdits[sentenceStart + buildCursor];
-                
-                int sourceLen;
-                String replacement;
-                boolean isProtected = false;
-                
-                if (proof != null && (typoMatch == null || !typoMatch.custom)) {
-                    sourceLen = proof.source.length();
-                    replacement = proof.replacement;
-                    isProtected = true;
-                } else if (typoMatch != null) {
-                    sourceLen = typoMatch.source.length();
-                    replacement = typoMatch.correction;
-                    isProtected = true;
-                } else {
-                    sourceLen = 1;
-                    replacement = String.valueOf(sentence.charAt(buildCursor));
-                    isProtected = blockedPositions[buildCursor];
-                }
-                
-                // 核心：记录新句子的每一个字符，对应的是原句子的哪一个下标
-                for (int k = 0; k < replacement.length(); k++) {
-                    correctedSentence.append(replacement.charAt(k));
-                    newBlockedList.add(isProtected);
-                    newExactList.add(exactPositions[buildCursor]);
-                    newToOriginalMap.add(buildCursor);
-                }
-                buildCursor += sourceLen;
-            }
-            newToOriginalMap.add(sentence.length()); // 补齐终点边界，防止句尾越界
-            
-            boolean[] newBlockedPositions = new boolean[newBlockedList.size()];
-            boolean[] newExactPositions = new boolean[newExactList.size()];
-            for (int i = 0; i < newBlockedList.size(); i++) {
-                newBlockedPositions[i] = newBlockedList.get(i);
-                newExactPositions[i] = newExactList.get(i);
-            }
-            
-            // 语法规则在完全修正后的新句子上跑，能抓到连环错别字
-            GrammarHit[] rawHits = collectGrammarHits(correctedSentence.toString(), fastMode, newBlockedPositions, newExactPositions);
+            List<MainActivity.TextBlock> intermediate = new ArrayList<>(Math.max(16, sentence.length() / 4));
+            StringBuilder plain = new StringBuilder();
+            int cursor = Math.max(0, skipUntil - sentenceStart);
+            int originalStart = sentenceStart + cursor;
             
             // 【关键映射还原】把新句子的 Hit，按照账本映射回长度等同于原句的数组，彻底消灭 ArrayIndexOutOfBoundsException！
             GrammarHit[] grammarHits = new GrammarHit[sentence.length()];
