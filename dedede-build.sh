@@ -702,7 +702,7 @@ public final class CorrectionCore {
                 continue;
             }
             
-                        boolean[] exactPositions = Arrays.copyOfRange(exactAll, sentenceStart, sentenceOffset);
+            boolean[] exactPositions = Arrays.copyOfRange(exactAll, sentenceStart, sentenceOffset);
             boolean[] blockedPositions = Arrays.copyOfRange(blockedAll, sentenceStart, sentenceOffset);
             boolean[] protectedPositions = blockedPositions.clone();
             for (int i = 0; i < protectedPositions.length; i++) protectedPositions[i] |= exactPositions[i];
