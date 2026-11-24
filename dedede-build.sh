@@ -58,8 +58,8 @@ android {
         applicationId "com.app.dededi.pte"
         minSdk 24
         targetSdk 36
-        versionCode 42
-        versionName "4.18"
+        versionCode 43
+        versionName "4.3"
         ndk { abiFilters "arm64-v8a" }
         externalNativeBuild { cmake { cppFlags ""; arguments "-DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON" } }
     }
@@ -309,6 +309,40 @@ public final class AppExecutors {
             thread.setPriority(Thread.NORM_PRIORITY - 1);
             return thread;
         };
+    }
+}
+DEDEDE_SOURCE_EOF
+
+mkdir -p "app/src/main/java/com/app/dedede"
+cat > "app/src/main/java/com/app/dedede/AppToast.java" <<'DEDEDE_SOURCE_EOF'
+package com.app.dedede;
+
+import android.content.Context;
+import android.os.Looper;
+import android.widget.Toast;
+import java.util.concurrent.atomic.AtomicInteger;
+
+final class AppToast {
+    private static final AtomicInteger latestRequest = new AtomicInteger();
+    private static Toast currentToast;
+
+    private AppToast() {}
+
+    static void show(Context context, CharSequence message, int duration) {
+        int request = latestRequest.incrementAndGet();
+        Context app = context.getApplicationContext();
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            showOnMain(app, message, duration, request);
+        } else {
+            AppExecutors.MAIN.post(() -> showOnMain(app, message, duration, request));
+        }
+    }
+
+    private static void showOnMain(Context context, CharSequence message, int duration, int request) {
+        if (request != latestRequest.get()) return;
+        if (currentToast != null) currentToast.cancel();
+        currentToast = Toast.makeText(context, message, duration);
+        currentToast.show();
     }
 }
 DEDEDE_SOURCE_EOF
@@ -1109,7 +1143,7 @@ import java.util.List;
 public class FilePickerActivity extends Activity {
     @Override protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        Toast.makeText(this, "支持 txt、md、docx、pptx、pdf 及图片格式\n(最多支持上传20个)", Toast.LENGTH_LONG).show();
+        AppToast.show(this, "支持 txt、md、docx、pptx、pdf 及图片格式\n(最多支持上传20个)", Toast.LENGTH_LONG);
         Intent intent = new Intent(Intent.ACTION_GET_CONTENT);
         intent.setType("*/*");
         intent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true);
@@ -1128,7 +1162,7 @@ public class FilePickerActivity extends Activity {
             uris.add(data.getData());
         }
         if (uris.isEmpty()) { finish(); return; }
-        Toast.makeText(this, "正在处理导入文件，请稍候...", Toast.LENGTH_SHORT).show();
+        AppToast.show(this, "正在处理导入文件，请稍候...", Toast.LENGTH_SHORT);
         AppExecutors.IO.execute(() -> {
             StringBuilder combined = new StringBuilder(); String failure = "";
             for (int i = 0; i < uris.size(); i++) {
@@ -1148,7 +1182,7 @@ public class FilePickerActivity extends Activity {
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) ContextCompat.startForegroundService(this, serviceIntent);
                     else startService(serviceIntent);
                 } else {
-                    Toast.makeText(this, detail.isEmpty() ? "无法读取文件内容或内容为空" : "导入失败：" + detail, Toast.LENGTH_LONG).show();
+                    AppToast.show(this, detail.isEmpty() ? "无法读取文件内容或内容为空" : "导入失败：" + detail, Toast.LENGTH_LONG);
                 }
                 finish();
             });
@@ -1314,7 +1348,7 @@ public class FloatingService extends Service {
                 editFloatInput.setText(cleaned);
                 publishFloatText(cleaned);
                 saveHistory(cleaned, null);
-                Toast.makeText(this, "导入成功", Toast.LENGTH_SHORT).show();
+                AppToast.show(this, "导入成功", Toast.LENGTH_SHORT);
                 if (panelInput.getVisibility() != View.VISIBLE) { panelInput.setVisibility(View.VISIBLE); setFocusable(true); }
             });
         }
@@ -1408,7 +1442,7 @@ public class FloatingService extends Service {
         btnCheck.setOnClickListener(v -> {
             flushFloatInputSync();
             String text = editFloatInput.getText().toString();
-            if (text.isEmpty()) { Toast.makeText(this, "文本为空", Toast.LENGTH_SHORT).show(); return; }
+            if (text.isEmpty()) { AppToast.show(this, "文本为空", Toast.LENGTH_SHORT); return; }
             if (currentHistoryFileId == null) currentHistoryFileId = java.util.UUID.randomUUID().toString();
             String fileId = currentHistoryFileId; saveHistory(text, fileId); setFocusable(false); panelInput.setVisibility(View.GONE); startInference(text, fileId);
         });
@@ -1427,7 +1461,7 @@ public class FloatingService extends Service {
         Runnable jumpToApp = () -> {
             flushFloatInputSync();
             publishFloatText(editFloatInput.getText().toString());
-            if (MainActivity.isEditorOpen) { Toast.makeText(this, "编辑模式中无法跳转，请先保存或退出。", Toast.LENGTH_SHORT).show(); return; }
+            if (MainActivity.isEditorOpen) { AppToast.show(this, "编辑模式中无法跳转，请先保存或退出。", Toast.LENGTH_SHORT); return; }
             Intent intent = new Intent(this, MainActivity.class); intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP); intent.putExtra("SYNC_TEXT", editFloatInput.getText().toString()); intent.putExtra("FROM_FLOAT_JUMP", true); startActivity(intent);
             panelInput.setVisibility(View.GONE); setFocusable(false);
         };
@@ -1530,7 +1564,7 @@ public class FloatingService extends Service {
         if (!fast && !MainActivity.isTemperatureValid(storedTemperature)) {
             storedTemperature = 1.0f;
             sp.edit().putString("pro_temp", "1.0").apply();
-            Toast.makeText(this, "温度参数无效，已自动恢复为1.0（允许范围0.5～2.0）", Toast.LENGTH_LONG).show();
+            AppToast.show(this, "温度参数无效，已自动恢复为1.0（允许范围0.5～2.0）", Toast.LENGTH_LONG);
         }
         final float temperature = fast ? 1f : storedTemperature;
         // 极速模式不使用模型；专业模式会在输入变动时预热，纠错结束后按使用间隔自适应保留30～120秒再释放。
@@ -1551,7 +1585,7 @@ public class FloatingService extends Service {
             thValues[i] = v;
         }
         if (thEditor != null) thEditor.apply();
-        if (thReset) Toast.makeText(this, "部分阈值无效，已自动恢复默认值（允许范围0～1）", Toast.LENGTH_LONG).show();
+        if (thReset) AppToast.show(this, "部分阈值无效，已自动恢复默认值（允许范围0～1）", Toast.LENGTH_LONG);
         final float tDe = thValues[0], tDi = thValues[1], tDe3 = thValues[2], tZuo = thValues[3], tZuo4 = thValues[4];
         if (!fast) MainActivity.noteProCorrectionStart(this);
         lastCorrectedText = "";
@@ -4414,7 +4448,7 @@ public class MainActivity extends AppCompatActivity {
         if (!isTemperatureValid(parseFloatSafe(temperature, Float.NaN))) {
             temperature = "1.0";
             sp.edit().putString("pro_temp", temperature).apply();
-            Toast.makeText(this, "温度参数无效，已自动恢复为1.0（允许范围0.5～2.0）", Toast.LENGTH_LONG).show();
+            AppToast.show(this, "温度参数无效，已自动恢复为1.0（允许范围0.5～2.0）", Toast.LENGTH_LONG);
         }
         // 两种模式显示同一组专业参数；极速模式只禁用并置灰，不再换成另一套数字。
         editTemp.setText(temperature);
@@ -4474,7 +4508,7 @@ public class MainActivity extends AppCompatActivity {
         flushInputSync();
         Intent intent = new Intent(this, FloatingService.class);
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) startForegroundService(intent); else startService(intent);
-        Toast.makeText(this, "悬浮窗已开启", Toast.LENGTH_SHORT).show(); moveTaskToBack(true);
+        AppToast.show(this, "悬浮窗已开启", Toast.LENGTH_SHORT); moveTaskToBack(true);
     }
 
     private static void loadCharVocab(Context context, String asset) throws Exception {
@@ -5094,7 +5128,7 @@ public class MainActivity extends AppCompatActivity {
         });
         indent.setOnClickListener(v -> applyIndent());
         undo.setOnClickListener(v -> restoreEditorState(editorUndoStack, editorRedoStack, true));
-        redo.setOnClickListener(v -> { if (editorRedoStack.isEmpty()) Toast.makeText(this, "上一步非撤销操作，无法还原", Toast.LENGTH_SHORT).show(); else restoreEditorState(editorRedoStack, editorUndoStack, false); });
+        redo.setOnClickListener(v -> { if (editorRedoStack.isEmpty()) AppToast.show(this, "上一步非撤销操作，无法还原", Toast.LENGTH_SHORT); else restoreEditorState(editorRedoStack, editorUndoStack, false); });
         save.setOnClickListener(v -> chooseSaveFormat(extractCleanTextFromSpanned(expandedEditText.getText()), true));
     }
 
@@ -5181,7 +5215,7 @@ public class MainActivity extends AppCompatActivity {
         originalEditorText = lastEditorSpannable.toString(); isEditorSelfModifying = true; expandedEditText.setText(lastEditorSpannable);
         if (isManuallyEditedOut) rebindPortableJumpsForEditor(expandedEditText.getText());
         isEditorSelfModifying = false; editorUndoStack.clear(); editorRedoStack.clear(); firstEditorCursorTapPending = true; drawerLayout.setDrawerLockMode(DrawerLayout.LOCK_MODE_LOCKED_CLOSED);
-        expandedEditorOverlay.setAlpha(0); expandedEditorOverlay.setTranslationY(150); expandedEditorOverlay.setVisibility(View.VISIBLE); expandedEditorOverlay.animate().alpha(1).translationY(0).setDuration(250).start(); Toast.makeText(this, "进入编辑模式：波浪线为系统或你修改过的文字。", Toast.LENGTH_SHORT).show(); isEditorOpen = true;
+        expandedEditorOverlay.setAlpha(0); expandedEditorOverlay.setTranslationY(150); expandedEditorOverlay.setVisibility(View.VISIBLE); expandedEditorOverlay.animate().alpha(1).translationY(0).setDuration(250).start(); AppToast.show(this, "进入编辑模式：波浪线为系统或你修改过的文字。", Toast.LENGTH_SHORT); isEditorOpen = true;
     }
 
     private void applyEditorChanges() {
@@ -5213,7 +5247,7 @@ public class MainActivity extends AppCompatActivity {
         }
         isEditorSelfModifying = true;
         for (int i = replacements.size() - 1; i >= 0; i--) { int[] range = replacements.get(i); if (range[0] == range[1] && range[0] < editable.length() && editable.charAt(range[0]) == '\n') continue; editable.replace(range[0], range[1], range[0] == range[1] && range[0] >= editable.length() ? "" : "　　"); }
-        isEditorSelfModifying = false; Toast.makeText(this, "已添加首行缩进", Toast.LENGTH_SHORT).show();
+        isEditorSelfModifying = false; AppToast.show(this, "已添加首行缩进", Toast.LENGTH_SHORT);
     }
 
     private void restoreEditorState(Stack<EditorState> source, Stack<EditorState> destination, boolean undo) {
@@ -5261,7 +5295,7 @@ public class MainActivity extends AppCompatActivity {
         done.setOnClickListener(v -> closeInputEditor(true));
         indent.setOnClickListener(v -> applyInputIndent());
         undo.setOnClickListener(v -> restoreInputEditorState(inputUndoStack, inputRedoStack));
-        redo.setOnClickListener(v -> { if (inputRedoStack.isEmpty()) Toast.makeText(this, "没有可还原的操作", Toast.LENGTH_SHORT).show(); else restoreInputEditorState(inputRedoStack, inputUndoStack); });
+        redo.setOnClickListener(v -> { if (inputRedoStack.isEmpty()) AppToast.show(this, "没有可还原的操作", Toast.LENGTH_SHORT); else restoreInputEditorState(inputRedoStack, inputUndoStack); });
     }
 
     private void openInputEditor() {
@@ -5489,7 +5523,7 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void setupMainButtons() {
-        btnImport.setOnClickListener(v -> { Toast.makeText(this, "支持 txt、md、docx、pptx、pdf 及各种图片格式。（最多上传20个）", Toast.LENGTH_SHORT).show(); openFilePicker(); });
+        btnImport.setOnClickListener(v -> { AppToast.show(this, "支持 txt、md、docx、pptx、pdf 及各种图片格式。（最多上传20个）", Toast.LENGTH_SHORT); openFilePicker(); });
         btnPaste.setOnClickListener(v -> {
             ClipboardManager clipboard = (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
             if (clipboard != null && clipboard.hasPrimaryClip() && clipboard.getPrimaryClip().getItemCount() > 0) { CharSequence value = clipboard.getPrimaryClip().getItemAt(0).getText(); if (value != null) checkAndPromptCleanup(this, value.toString(), cleaned -> { lastSavedHistoryFileId = null; inputText.setText(cleaned); DraftSync.publish(sp, cleaned); }); }
@@ -5515,13 +5549,13 @@ public class MainActivity extends AppCompatActivity {
         });
         btnCopy.setOnClickListener(v -> {
             String value = isManuallyEditedOut ? extractCleanTextFromSpanned((Spanned) outputText.getText()) : getCleanTextStatic(); if (value.isEmpty()) return;
-            ClipboardManager clipboard = (ClipboardManager) getSystemService(CLIPBOARD_SERVICE); if (clipboard != null) clipboard.setPrimaryClip(ClipData.newPlainText("Corrected Article", value)); Toast.makeText(this, "已复制修正后的全文。", Toast.LENGTH_SHORT).show();
+            ClipboardManager clipboard = (ClipboardManager) getSystemService(CLIPBOARD_SERVICE); if (clipboard != null) clipboard.setPrimaryClip(ClipData.newPlainText("Corrected Article", value)); AppToast.show(this, "已复制修正后的全文。", Toast.LENGTH_SHORT);
         });
         btnSaveTxt.setOnClickListener(v -> chooseSaveFormat());
     }
 
     private void beginCheck() {
-        if (inputText.length() == 0) { Toast.makeText(this, "文本为空", Toast.LENGTH_SHORT).show(); return; }
+        if (inputText.length() == 0) { AppToast.show(this, "文本为空", Toast.LENGTH_SHORT); return; }
         autoScrollEnabled = true;
         isManuallyEditedOut = false;
         setResultStaleWarning(false);
@@ -5537,7 +5571,7 @@ public class MainActivity extends AppCompatActivity {
                 temperature = 1.0f;
                 editTemp.setText("1.0");
                 sp.edit().putString("pro_temp", "1.0").apply();
-                Toast.makeText(this, "温度参数无效，已自动恢复为1.0（允许范围0.5～2.0）", Toast.LENGTH_LONG).show();
+                AppToast.show(this, "温度参数无效，已自动恢复为1.0（允许范围0.5～2.0）", Toast.LENGTH_LONG);
             }
             String[] thKeys = {"pro_th1", "pro_th2", "pro_th3", "pro_th4", "pro_th5"};
             String[] thDefaults = {"0.72", "0.72", "0.75", "0.75", "0.78"};
@@ -5553,7 +5587,7 @@ public class MainActivity extends AppCompatActivity {
                 }
             }
             if (thEditor != null) thEditor.apply();
-            if (thReset) Toast.makeText(this, "部分阈值无效，已恢复默认值（范围0～1）", Toast.LENGTH_LONG).show();
+            if (thReset) AppToast.show(this, "部分阈值无效，已恢复默认值（范围0～1）", Toast.LENGTH_LONG);
         }
         saveSettings(currentIsFast);
 
@@ -5573,19 +5607,19 @@ public class MainActivity extends AppCompatActivity {
     private void chooseSaveFormat(String overrideText, boolean fromEditor) {
         String raw = inputText.getText().toString();
         if (!fromEditor && raw.isEmpty()) return;
-        if (fromEditor && (overrideText == null || overrideText.isEmpty())) { Toast.makeText(this, "文本为空", Toast.LENGTH_SHORT).show(); return; }
+        if (fromEditor && (overrideText == null || overrideText.isEmpty())) { AppToast.show(this, "文本为空", Toast.LENGTH_SHORT); return; }
         boolean editorModified = fromEditor && expandedEditText != null && !expandedEditText.getText().toString().equals(originalEditorText);
         String[] options = {"TXT 纯文本", "MD 文档", "PDF 文档", "DOCX 文档", "JPG 图片", "PNG 图片"};
         new AlertDialog.Builder(this).setTitle("选择保存格式").setItems(options, (dialog, which) -> {
             saveFormat = which;
             String text = fromEditor ? overrideText : (isManuallyEditedOut ? extractCleanTextFromSpanned((Spanned) outputText.getText()) : getCleanTextStatic());
             boolean corrected = false;
-            if (text.isEmpty()) { text = raw; Toast.makeText(this, "未开始纠错，将保存原始文本为" + options[which].split(" ")[0] + "格式", Toast.LENGTH_LONG).show(); }
+            if (text.isEmpty()) { text = raw; AppToast.show(this, "未开始纠错，将保存原始文本为" + options[which].split(" ")[0] + "格式", Toast.LENGTH_LONG); }
             else if (isManuallyEditedOut || editorModified) corrected = true;
             else outer: for (List<TextBlock> sentence : allSentencesBlocks) for (TextBlock block : sentence) if (block.isMutable && !block.current.equals(block.original)) { corrected = true; break outer; }
             pendingSaveText = text; Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT); intent.addCategory(Intent.CATEGORY_OPENABLE); String name = corrected ? "纠错结果" : "原始文本";
             if (which == 0) { intent.setType("text/plain"); intent.putExtra(Intent.EXTRA_TITLE, name + ".txt"); } else if (which == 1) { intent.setType("text/markdown"); intent.putExtra(Intent.EXTRA_TITLE, name + ".md"); } else if (which == 2) { intent.setType("application/pdf"); intent.putExtra(Intent.EXTRA_TITLE, name + ".pdf"); } else if (which == 3) { intent.setType("application/vnd.openxmlformats-officedocument.wordprocessingml.document"); intent.putExtra(Intent.EXTRA_TITLE, name + ".docx"); } else if (which == 4) { intent.setType("image/jpeg"); intent.putExtra(Intent.EXTRA_TITLE, name + ".jpg"); } else { intent.setType("image/png"); intent.putExtra(Intent.EXTRA_TITLE, name + ".png"); }
-            try { startActivityForResult(intent, 101); } catch (Exception exception) { Toast.makeText(this, "调起失败: " + exception.getMessage(), Toast.LENGTH_SHORT).show(); }
+            try { startActivityForResult(intent, 101); } catch (Exception exception) { AppToast.show(this, "调起失败: " + exception.getMessage(), Toast.LENGTH_SHORT); }
         }).show();
     }
 
@@ -5594,13 +5628,13 @@ public class MainActivity extends AppCompatActivity {
         findViewById(R.id.btnExportCustomRules).setOnClickListener(v -> pickCustomRuleFile(true));
         Button add = findViewById(R.id.btnAddTypo); EditText original = findViewById(R.id.etOriginal), corrected = findViewById(R.id.etCorrected);
         add.setOnClickListener(v -> {
-            String source = original.getText().toString().trim(), target = corrected.getText().toString().trim(); if (source.isEmpty()) { Toast.makeText(this, "原始文本不能为空", Toast.LENGTH_SHORT).show(); return; } if (target.isEmpty()) target = source;
+            String source = original.getText().toString().trim(), target = corrected.getText().toString().trim(); if (source.isEmpty()) { AppToast.show(this, "原始文本不能为空", Toast.LENGTH_SHORT); return; } if (target.isEmpty()) target = source;
             try {
-                JSONObject object = new JSONObject(sp.getString("custom_typos", "{}")); if (editingTypoKey != null && !editingTypoKey.equals(source)) object.remove(editingTypoKey); object.put(source, target); sp.edit().putString("custom_typos", object.toString()).apply(); reloadTypoMapAsync(this); renderCustomTyposUI(); original.setText(""); original.setHint("原始文本"); corrected.setText(""); TextView whitelistHint = findViewById(R.id.tvWhitelistJumpHint); if (whitelistHint != null) whitelistHint.setVisibility(View.GONE); editingTypoKey = null; add.setText("添加"); Toast.makeText(this, "保存成功", Toast.LENGTH_SHORT).show();
+                JSONObject object = new JSONObject(sp.getString("custom_typos", "{}")); if (editingTypoKey != null && !editingTypoKey.equals(source)) object.remove(editingTypoKey); object.put(source, target); sp.edit().putString("custom_typos", object.toString()).apply(); reloadTypoMapAsync(this); renderCustomTyposUI(); original.setText(""); original.setHint("原始文本"); corrected.setText(""); TextView whitelistHint = findViewById(R.id.tvWhitelistJumpHint); if (whitelistHint != null) whitelistHint.setVisibility(View.GONE); editingTypoKey = null; add.setText("添加"); AppToast.show(this, "保存成功", Toast.LENGTH_SHORT);
             } catch (Exception ignored) {}
         });
         findViewById(R.id.btnClearHistory).setOnClickListener(v -> new AlertDialog.Builder(this).setMessage("是否清空全部历史记录？").setPositiveButton("是", (d, w) -> {
-            HistoryStore.clear(this); sp.edit().putString("history_records", "[]").apply(); lastSavedHistoryFileId = null; isManuallyEditedOut = false; boolean old = isRestoringHistory; isRestoringHistory = true; inputText.setText(""); isRestoringHistory = old; allSentencesBlocks.clear(); outputText.setText(""); setResultStaleWarning(false); btnCheck.setText("开始纠错"); btnCopy.setEnabled(false); btnSaveTxt.setEnabled(false); renderHistoryUI(); Toast.makeText(this, "历史记录已全部清空", Toast.LENGTH_SHORT).show();
+            HistoryStore.clear(this); sp.edit().putString("history_records", "[]").apply(); lastSavedHistoryFileId = null; isManuallyEditedOut = false; boolean old = isRestoringHistory; isRestoringHistory = true; inputText.setText(""); isRestoringHistory = old; allSentencesBlocks.clear(); outputText.setText(""); setResultStaleWarning(false); btnCheck.setText("开始纠错"); btnCopy.setEnabled(false); btnSaveTxt.setEnabled(false); renderHistoryUI(); AppToast.show(this, "历史记录已全部清空", Toast.LENGTH_SHORT);
         }).setNegativeButton("否", null).show());
     }
 
@@ -5608,12 +5642,11 @@ public class MainActivity extends AppCompatActivity {
         if (export) {
             try {
                 if (new JSONObject(sp.getString("custom_typos", "{}")).length() == 0) {
-                    new AlertDialog.Builder(this).setMessage("还没有自定义规则可导出")
-                        .setPositiveButton("确定", null).show();
+                    AppToast.show(this, "还没有自定义规则可导出", Toast.LENGTH_SHORT);
                     return;
                 }
             } catch (org.json.JSONException e) {
-                Toast.makeText(this, "错词库读取失败", Toast.LENGTH_SHORT).show();
+                AppToast.show(this, "错词库读取失败", Toast.LENGTH_SHORT);
                 return;
             }
         }
@@ -5624,7 +5657,7 @@ public class MainActivity extends AppCompatActivity {
         try {
             startActivityForResult(intent, export ? REQUEST_EXPORT_CUSTOM_RULES : REQUEST_IMPORT_CUSTOM_RULES);
         } catch (android.content.ActivityNotFoundException e) {
-            Toast.makeText(this, "无法打开文件选择器", Toast.LENGTH_SHORT).show();
+            AppToast.show(this, "无法打开文件选择器", Toast.LENGTH_SHORT);
         }
     }
 
@@ -5664,9 +5697,9 @@ public class MainActivity extends AppCompatActivity {
                         activity.drawerLayout.openDrawer(GravityCompat.END);
                         activity.renderCustomTyposUI();
                     }
-                    Toast.makeText(app, "已导入 " + imported.size() + " 条规则", Toast.LENGTH_SHORT).show();
+                    AppToast.show(app, "已导入 " + imported.size() + " 条规则", Toast.LENGTH_SHORT);
                 } catch (org.json.JSONException e) {
-                    Toast.makeText(app, "错词库保存失败", Toast.LENGTH_SHORT).show();
+                    AppToast.show(app, "错词库保存失败", Toast.LENGTH_SHORT);
                 }
             });
         });
@@ -5694,7 +5727,7 @@ public class MainActivity extends AppCompatActivity {
                 message = "错词库导出失败";
             }
             String result = message;
-            AppExecutors.MAIN.post(() -> Toast.makeText(app, result, Toast.LENGTH_SHORT).show());
+            AppExecutors.MAIN.post(() -> AppToast.show(app, result, Toast.LENGTH_SHORT));
         });
     }
 
@@ -5706,7 +5739,7 @@ public class MainActivity extends AppCompatActivity {
             reloadTypoMapAsync(this);
             renderCustomTyposUI();
         } catch (org.json.JSONException e) {
-            Toast.makeText(this, "错词库保存失败", Toast.LENGTH_SHORT).show();
+            AppToast.show(this, "错词库保存失败", Toast.LENGTH_SHORT);
         }
     }
 
@@ -5764,7 +5797,7 @@ public class MainActivity extends AppCompatActivity {
 
     private void deleteHistoryRecord(JSONArray records, int index, String fileId) {
         HistoryStore.deleteRecord(this, fileId);
-        if (fileId.equals(lastSavedHistoryFileId)) { lastSavedHistoryFileId = null; isManuallyEditedOut = false; boolean old = isRestoringHistory; isRestoringHistory = true; inputText.setText(""); isRestoringHistory = old; allSentencesBlocks.clear(); outputText.setText(""); setResultStaleWarning(false); btnCheck.setText("开始纠错"); btnCopy.setEnabled(false); btnSaveTxt.setEnabled(false); Toast.makeText(this, "当前显示的历史记录已被删除", Toast.LENGTH_SHORT).show(); }
+        if (fileId.equals(lastSavedHistoryFileId)) { lastSavedHistoryFileId = null; isManuallyEditedOut = false; boolean old = isRestoringHistory; isRestoringHistory = true; inputText.setText(""); isRestoringHistory = old; allSentencesBlocks.clear(); outputText.setText(""); setResultStaleWarning(false); btnCheck.setText("开始纠错"); btnCopy.setEnabled(false); btnSaveTxt.setEnabled(false); AppToast.show(this, "当前显示的历史记录已被删除", Toast.LENGTH_SHORT); }
         records.remove(index); sp.edit().putString("history_records", records.toString()).apply(); renderHistoryUI();
     }
 
@@ -5800,7 +5833,7 @@ public class MainActivity extends AppCompatActivity {
                     .put("scroll", scrollView.getScrollY());
             ScreenStateStore.write(new File(getFilesDir(), "screen_state.json"), snapshot);
             state.putString("screen_state_token", screenStateToken);
-        } catch (Exception error) { Toast.makeText(this, "界面状态保存失败：" + errorDetails(error), Toast.LENGTH_LONG).show(); }
+        } catch (Exception error) { AppToast.show(this, "界面状态保存失败：" + errorDetails(error), Toast.LENGTH_LONG); }
         super.onSaveInstanceState(state);
     }
 
@@ -5931,7 +5964,7 @@ public class MainActivity extends AppCompatActivity {
             return;
         }
         if (requestCode == 201) {
-            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M && android.provider.Settings.canDrawOverlays(this)) startFloatingService(); else Toast.makeText(this, "悬浮窗权限未被授予，无法开启", Toast.LENGTH_SHORT).show();
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M && android.provider.Settings.canDrawOverlays(this)) startFloatingService(); else AppToast.show(this, "悬浮窗权限未被授予，无法开启", Toast.LENGTH_SHORT);
             return;
         }
         if (requestCode == 102 && resultCode == RESULT_OK && data != null) { importSelectedFiles(data); return; }
@@ -5948,7 +5981,7 @@ public class MainActivity extends AppCompatActivity {
 
     private void importSelectedFiles(Intent data) {
         List<android.net.Uri> uris = new ArrayList<>();
-        if (data.getClipData() != null) { int count = data.getClipData().getItemCount(), limit = Math.min(count, 20); for (int i = 0; i < limit; i++) uris.add(data.getClipData().getItemAt(i).getUri()); if (count > 20) Toast.makeText(this, "最多支持选择20个文件，已截断前20个", Toast.LENGTH_SHORT).show(); }
+        if (data.getClipData() != null) { int count = data.getClipData().getItemCount(), limit = Math.min(count, 20); for (int i = 0; i < limit; i++) uris.add(data.getClipData().getItemAt(i).getUri()); if (count > 20) AppToast.show(this, "最多支持选择20个文件，已截断前20个", Toast.LENGTH_SHORT); }
         else if (data.getData() != null) uris.add(data.getData());
         importFiles(uris);
     }
@@ -5958,7 +5991,7 @@ public class MainActivity extends AppCompatActivity {
         if (isCheckingMain) cancelMainCheck();
         final long generation = ++importGeneration; importing = true;
         Context app = getApplicationContext();
-        Toast.makeText(this, "正在处理导入文件，请稍候...", Toast.LENGTH_SHORT).show(); progressBar.setMax(100); progressBar.setVisibility(View.VISIBLE); progressBar.setProgress(0);
+        AppToast.show(this, "正在处理导入文件，请稍候...", Toast.LENGTH_SHORT); progressBar.setMax(100); progressBar.setVisibility(View.VISIBLE); progressBar.setProgress(0);
         AppExecutors.IO.execute(() -> {
             StringBuilder combined = new StringBuilder(); String failure = ""; int failed = 0;
             for (int i = 0; i < uris.size(); i++) {
@@ -5976,8 +6009,8 @@ public class MainActivity extends AppCompatActivity {
             String finalText = combined.toString(), detail = failure; int failedCount = failed; AppExecutors.MAIN.post(() -> {
                 if (generation != importGeneration || isDestroyed() || isFinishing()) return;
                 importing = false; progressBar.setVisibility(View.INVISIBLE);
-                if (!finalText.trim().isEmpty()) checkAndPromptCleanup(this, finalText, cleaned -> { if (generation != importGeneration || isDestroyed() || isFinishing()) return; lastSavedHistoryFileId = null; inputText.setText(cleaned); DraftSync.publish(sp, cleaned); saveHistory(cleaned, null); Toast.makeText(this, failedCount == 0 ? "导入成功" : "已导入可读取的文件；另有" + failedCount + "个文件为空或读取失败", Toast.LENGTH_LONG).show(); });
-                else { Toast.makeText(this, detail.isEmpty() ? "无法读取文件内容或未识别到文字" : "导入失败：" + detail, Toast.LENGTH_LONG).show(); }
+                if (!finalText.trim().isEmpty()) checkAndPromptCleanup(this, finalText, cleaned -> { if (generation != importGeneration || isDestroyed() || isFinishing()) return; lastSavedHistoryFileId = null; inputText.setText(cleaned); DraftSync.publish(sp, cleaned); saveHistory(cleaned, null); AppToast.show(this, failedCount == 0 ? "导入成功" : "已导入可读取的文件；另有" + failedCount + "个文件为空或读取失败", Toast.LENGTH_LONG); });
+                else { AppToast.show(this, detail.isEmpty() ? "无法读取文件内容或未识别到文字" : "导入失败：" + detail, Toast.LENGTH_LONG); }
             });
         });
     }
@@ -5998,7 +6031,7 @@ public class MainActivity extends AppCompatActivity {
             } catch (Exception ignored) {}
             boolean saved = success;
             String message = saved ? "保存成功" : (errorMessage != null && !errorMessage.isEmpty() ? errorMessage : "保存过程出现错误");
-            AppExecutors.MAIN.post(() -> Toast.makeText(this, message, saved ? Toast.LENGTH_SHORT : Toast.LENGTH_LONG).show());
+            AppExecutors.MAIN.post(() -> AppToast.show(this, message, saved ? Toast.LENGTH_SHORT : Toast.LENGTH_LONG));
         });
     }
 
@@ -6193,7 +6226,7 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void showEditDialog(TextBlock block) {
-        if (isManuallyEditedOut) { Toast.makeText(this, "文本已手动编辑，无法使用还原。请长按进入便签模式修改。", Toast.LENGTH_LONG).show(); return; }
+        if (isManuallyEditedOut) { AppToast.show(this, "文本已手动编辑，无法使用还原。请长按进入便签模式修改。", Toast.LENGTH_LONG); return; }
         if (block.type == 1) {
             String[] choices = "做作".contains(block.original) ? new String[]{"做","作"} : new String[]{"的","地","得"};
             String[] options=Arrays.copyOf(choices,choices.length+2); options[choices.length]="还原为原字 ("+block.original+")"; options[choices.length+1]="错改？点击这里加入白名单";
@@ -6856,7 +6889,7 @@ public class SymbolCleanActivity extends Activity {
                         String value = custom.getText().toString();
                         if (!value.isEmpty() && !symbols.add(value)) duplicate = true;
                     }
-                    if (duplicate) Toast.makeText(this, "提示：已勾选的符号无需重复输入", Toast.LENGTH_SHORT).show();
+                    if (duplicate) AppToast.show(this, "提示：已勾选的符号无需重复输入", Toast.LENGTH_SHORT);
                     String result = finalText;
                     for (String symbol : symbols) {
                         result = result.replace(symbol, "");
