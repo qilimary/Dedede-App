@@ -320,64 +320,39 @@ package com.app.dedede;
 import java.io.*;
 import java.util.*;
 import java.util.function.BooleanSupplier;
-import java.util.regex.Pattern;
 
-/** Exact matches are collected globally before approximate matching. No segmentation/model dependency. */
+/** Exact idiom protection and duplicate text checks. No segmentation/model dependency. */
 public final class Proofreader {
     // sync_android.py exports these policy strings to Windows. Maintain the word lists here only.
     public static final String POLICY_VERSION = "3";
     public static final String LEFT = "我|你|他|她|它|您|咱|我们|你们|他们|她们|它们|咱们|您们|大家|真是|真|太|很|十分|非常|格外|特别|确实|实在|简直|可谓|堪称|令人|让人|使人|感到|觉得|显得|变得|表现得|不禁|仍然|依然|已经|总是|一直|竟然|居然|于是|因此|所以|可是|但是|却|也|都|又";
-    public static final String RIGHT = "的|地|得|了|着|过|般|似的|一样|一般|啊|呀|吧|呢|吗|嘛|想|要|去|来|起来|下去";
     public static final String DUP_LEFT = "今天|昨天|明天|刚才|现在|后来|于是|因此|所以|其实|不过|可是|但是|而且|然后|最近|当时|这次|这时|随后|目前|本来|原来|因为|如果|假如|既然|虽然|只要";
     public static final String DUP_RIGHT = "今天|昨天|明天|刚才|现在|已经|正在|刚刚|刚|曾经|从来|一直|总是|终于|马上|即将|明明|确实|真的|真|都|也|又|还|就|才|只|正|先|再|不|没|别|很|太|更|最|是|有|要|会|能|想|去|来|说|看|听|吃|喝|做|走|跑|买|把|被|在|对|向|给|让|喜欢|觉得|认为|知道|希望|准备|打算|决定|需要|应该|必须|可以|愿意|敢|将|已|不曾|未曾";
     public static final String PRONOUNS = "我你他她它您咱";
     public static final String REPEATED_WORDS = "我们|你们|他们|她们|它们|咱们|您们|已经|正在|因为|所以|但是|而且|如果|虽然|于是|以及|还是|就是|是否|可以|能够|需要|必须|应该";
-    public static final String FUNCTION = "不无未非莫勿别难免没休的地得了着过在是也又还很和与而就都才要会能可给让被把将一二三四五六七八九十百千万亿零两其此彼之于以为乃则者所乎焉耶哉矣兮些每各任某该本这那我你他她它您咱们";
     public static final String NAMING = "笔名|网名|姓名|名字|昵称|称呼|书名|篇名|标题|词语|词组|字样|写法|变量名|函数名|角色名|代号|署名|个词|个字";
-    public static final String NUMERALS = "零〇一二两三四五六七八九十百千万亿兆几数半0123456789";
-    public static final String QUANTITY_UNITS = "个只条头匹辆部台口尾座把本名位双对件张枚颗棵根支枝朵艘架间所套份册块片段次遍趟场回岁年月日天时分秒斤克吨米升元角毛";
-    private static final String[] LEFT_WORDS=LEFT.split("\\|"),RIGHT_WORDS=RIGHT.split("\\|"),
+    private static final String[] LEFT_WORDS=LEFT.split("\\|"),
         DUP_LEFT_WORDS=DUP_LEFT.split("\\|"),DUP_RIGHT_WORDS=DUP_RIGHT.split("\\|"),
         NAMES=NAMING.split("\\|"),REPEATS=REPEATED_WORDS.split("\\|");
-    private static final Pattern CUE=Pattern.compile(".*(?:成语|四字词语|四字词|熟语)(?:[：: 　]|是|为|叫|叫作|写成|写作|应该是|应为|应写作){0,4}");
     public static final class Edit {
         public final int start,end;
         public final String source,replacement,explanation;
-        public final boolean idiom;
-        Edit(int start,String source,String replacement,String explanation){this(start,source,replacement,explanation,false);}
-        Edit(int start,String source,String replacement,String explanation,boolean idiom){this.start=start;this.end=start+source.length();this.source=source;this.replacement=replacement;this.explanation=explanation;this.idiom=idiom;}
+        Edit(int start,String source,String replacement,String explanation){this.start=start;this.end=start+source.length();this.source=source;this.replacement=replacement;this.explanation=explanation;}
     }
-    private final Set<String> words=new HashSet<>();
-    private final Map<String,String> substitutions=new HashMap<>(),missing=new HashMap<>();
-    private final Set<Integer> fuzzyLengths=new HashSet<>();
-    /** Lookup-only probe: never inserted into a map; compares directly with stored pattern strings. */
-    private static final class SubstitutionProbe {
-        String source;int wildcard;
-        @Override public int hashCode(){int h=0;for(int i=0;i<source.length();i++)h=31*h+(i==wildcard?'*':source.charAt(i));return h;}
-        @Override public boolean equals(Object other){
-            if(other==this)return true;if(!(other instanceof String))return false;String key=(String)other;
-            if(key.length()!=source.length())return false;
-            for(int i=0;i<source.length();i++)if(key.charAt(i)!=(i==wildcard?'*':source.charAt(i)))return false;return true;
-        }
-    }
+    private final int wordCount;
     // Compact trie: integer/character arrays, no substring allocation during exact scanning.
     private final int[] roots,first,edges;
     private final char[] labels;
     private final boolean[] terminals;
-    public Proofreader(Reader input)throws IOException {this(input,true);}
-    public Proofreader(Reader input,boolean buildFuzzy)throws IOException {
-
+    public Proofreader(Reader input)throws IOException {
+        Set<String> words=new HashSet<>();
         if(input!=null)try(BufferedReader reader=new BufferedReader(input)){
             for(String raw;(raw=reader.readLine())!=null;){
                 String word=raw.replace("\ufeff","").trim();
-                if(word.length()<2||word.length()>64||!allHan(word)||!words.add(word))continue;
-
-                if(!buildFuzzy||word.length()<4||word.length()>8||word.codePointCount(0,word.length())!=word.length())continue;
-                fuzzyLengths.add(word.length());
-                for(int i=0;i<word.length();i++)unique(substitutions,word.substring(0,i)+"*"+word.substring(i+1),word);
-                for(int i=1;i+1<word.length();i++)unique(missing,word.substring(0,i)+word.substring(i+1),word);
+                if(word.length()>=2&&word.length()<=64&&allHan(word))words.add(word);
             }
         }
+        wordCount=words.size();
         String[] sorted=words.toArray(new String[0]);Arrays.sort(sorted);int capacity=1,max=0;
         for(String word:sorted){capacity+=word.length();max=Math.max(max,word.length());}
         int[] parents=new int[capacity],counts=new int[capacity],path=new int[max+1];char[] chars=new char[capacity];boolean[] ends=new boolean[capacity];
@@ -391,8 +366,7 @@ public final class Proofreader {
         for(int node=1;node<size;node++){edges[next[parents[node]]++]=node;if(parents[node]==0)roots[chars[node]]=node;}
     }
     private int child(int node,char c){int low=first[node],high=first[node+1]-1;while(low<=high){int mid=(low+high)>>>1,n=edges[mid];if(labels[n]==c)return n;if(labels[n]<c)low=mid+1;else high=mid-1;}return 0;}
-    private static void unique(Map<String,String> index,String key,String word){String old=index.get(key);index.put(key,old==null||old.equals(word)?word:"");}
-    public int size(){return words.size();}
+    public int size(){return wordCount;}
     private static boolean han(char c){return c>='\u3400'&&c<='\u9fff'||c>='\uf900'&&c<='\ufaff';}
     private static boolean hanCodePoint(int cp){return cp>=0x3400&&cp<=0x9fff||cp>=0xf900&&cp<=0xfaff||cp>=0x20000&&cp<=0x2fa1f||cp>=0x30000&&cp<=0x323af;}
     private static boolean allHan(String s){for(int i=0;i<s.length();){int cp=s.codePointAt(i);if(!hanCodePoint(cp))return false;i+=Character.charCount(cp);}return true;}
@@ -431,70 +405,9 @@ public final class Proofreader {
     private static boolean suffix(String text,int end,String[] choices){for(String s:choices)if(end>=s.length()&&text.regionMatches(end-s.length(),s,0,s.length()))return true;return false;}
     private static boolean prefix(String text,int start,String[] choices){for(String s:choices)if(text.startsWith(s,start))return true;return false;}
     private static boolean left(String text,int start,String[] choices){return start==0||(!Character.isLetterOrDigit(text.codePointBefore(start))&&text.charAt(start-1)!='_')||suffix(text,start,choices);}
-    private static boolean right(String text,int end){return end==text.length()||(!Character.isLetterOrDigit(text.codePointAt(end))&&text.charAt(end)!='_')||prefix(text,end,RIGHT_WORDS);}
-    private static boolean cue(String text,int start){if(start==0||"：: 　是为叫作语词".indexOf(text.charAt(start-1))<0)return false;int begin=start;while(begin>0&&start-begin<18&&"。！？!?；;\n".indexOf(text.charAt(begin-1))<0)begin--;return CUE.matcher(text.substring(begin,start)).matches();}
     private static boolean namedUse(String text,int end){
         if(!text.startsWith("是",end)&&!text.startsWith("为",end)&&!text.startsWith("作为",end)&&!text.startsWith("用作",end))return false;
         int stop=Math.min(text.length(),end+18);for(int i=end;i<stop;i++){if("。！？!?；;，,\n".indexOf(text.charAt(i))>=0)break;if(prefix(text,i,NAMES))return true;}return false;
-    }
-    private static int contentCount(String source){int count=0;for(int i=0;i<source.length();i++)if(FUNCTION.indexOf(source.charAt(i))<0)count++;return count;}
-    private static int removedAt(String longer,String shorter){int i=0;while(i<shorter.length()&&longer.charAt(i)==shorter.charAt(i))i++;return i;}
-    private static boolean changesQuantity(String text,int start,String source,String target){
-        int diff=0;while(diff<source.length()&&source.charAt(diff)==target.charAt(diff))diff++;
-        int at=start+diff;
-        return diff<source.length()&&at>0&&at+1<text.length()&&QUANTITY_UNITS.indexOf(source.charAt(diff))>=0&&NUMERALS.indexOf(text.charAt(at-1))>=0&&han(text.charAt(at+1));
-    }
-    // A function-word expansion may be intentional, e.g. 名不副其实. Do not repair its partial window.
-    private static boolean functionExpansion(String text,int start,String source,String target){
-        int size=source.length()+1;
-        for(int begin=Math.max(0,start-1);begin<=start;begin++){
-            if(begin+size>text.length())continue;
-            for(int skip=1;skip+1<size;skip++){
-                if(FUNCTION.indexOf(text.charAt(begin+skip))<0)continue;
-                boolean same=true;for(int i=0;i<target.length();i++)if(target.charAt(i)!=text.charAt(begin+i+(i>=skip?1:0))){same=false;break;}
-                if(same)return true;
-            }
-        }
-        return false;
-    }
-    private void candidates(String text,int start,String source,boolean[] exact,Map<String,String> targets,boolean explicit,boolean structural,SubstitutionProbe probe){
-        int size=source.length(),end=start+size;
-        boolean protectedSpan=any(exact,start,end);
-        if(!protectedSpan&&fuzzyLengths.contains(size)&&!namedUse(text,end)){
-            String candidate=null;boolean ambiguous=false;
-            probe.source=source;
-            for(int i=0;i<size;i++){
-                probe.wildcard=i;String word=substitutions.get(probe);
-                if(word==null)continue;
-                if(word.isEmpty()||candidate!=null&&!candidate.equals(word)){ambiguous=true;break;}
-                candidate=word;
-            }
-            if(!ambiguous&&candidate!=null&&!functionExpansion(text,start,source,candidate)&&!changesQuantity(text,start,source,candidate))targets.put(candidate,"");
-        }
-        // Keep insertion/deletion and transposition checks under their existing context limits.
-        if(!structural)return;
-        if(!protectedSpan&&explicit&&fuzzyLengths.contains(size)){
-            Set<String> swaps=new HashSet<>();
-            for(int i=0;i+1<size;i++){if(source.charAt(i)==source.charAt(i+1))continue;String swapped=source.substring(0,i)+source.charAt(i+1)+source.charAt(i)+source.substring(i+2);if(words.contains(swapped))swaps.add(swapped);}
-            if(swaps.size()==1)targets.put(swaps.iterator().next(),"");
-        }
-        if(size>=5){Set<String> extra=new HashSet<>();
-            for(int i=0;i<size;i++){
-                int runEnd=i+1;while(runEnd<size&&source.charAt(runEnd)==source.charAt(i))runEnd++;
-                for(int count=1;count<=Math.max(1,runEnd-i-(i>0&&source.charAt(i)==source.charAt(i-1)?0:1));count++){
-                    if(!fuzzyLengths.contains(size-count)||any(exact,start+i,start+i+count))continue;
-                    String word=source.substring(0,i)+source.substring(i+count);if(!words.contains(word))continue;
-                    boolean repeated=i>0&&source.charAt(i)==source.charAt(i-1)||i+count<size&&source.charAt(i)==source.charAt(i+count);
-                    if(protectedSpan){if(!repeated||!(source.startsWith(word)||source.endsWith(word)))continue;}
-                    else if(!repeated&&(i==0||i==size-1||FUNCTION.indexOf(source.charAt(i))>=0))continue;
-                    extra.add(word);
-                }
-            }
-            if(extra.size()==1)targets.put(extra.iterator().next(),"");
-        }
-        if(!protectedSpan&&explicit&&fuzzyLengths.contains(size+1)&&contentCount(source)>=2){
-            String word=missing.get(source);if(word!=null&&!word.isEmpty()){int insertion=removedAt(word,source);if(FUNCTION.indexOf(word.charAt(insertion))<0)targets.put(word,"");}
-        }
     }
     /** Keep mixed identifiers intact; explicit custom mappings still take precedence. */
     public static boolean touchesIdentifier(String text,int start,int end){
@@ -519,23 +432,13 @@ public final class Proofreader {
         int begin=start+prefix,end=start+source.length()-suffix;
         return any(mask,begin,end)||begin==end&&prefix<replacement.length()-suffix&&begin>0&&begin<mask.length&&mask[begin-1]&&mask[begin];
     }
-    public Edit[] collect(String text,boolean[] custom,boolean[] exact,boolean[] literals,boolean idioms,boolean repetition){return collect(text,custom,exact,literals,idioms,repetition,()->false);}
-    public Edit[] collect(String text,boolean[] custom,boolean[] exact,boolean[] literals,boolean idioms,boolean repetition,BooleanSupplier cancelled){
-        ArrayList<Edit> pending=new ArrayList<>();Map<String,String> targets=new HashMap<>();SubstitutionProbe probe=new SubstitutionProbe();
+    public Edit[] collect(String text,boolean[] custom,boolean[] exact,boolean[] literals,boolean repetition){return collect(text,custom,exact,literals,repetition,()->false);}
+    public Edit[] collect(String text,boolean[] custom,boolean[] exact,boolean[] literals,boolean repetition,BooleanSupplier cancelled){
+        if(!repetition)return new Edit[text.length()];
+        ArrayList<Edit> pending=new ArrayList<>();
         for(int p=0;p<text.length();p++){
             if((p&255)==0&&cancelled.getAsBoolean())return null;
             if(!han(text.charAt(p))||custom[p]||literals[p])continue;
-            boolean checkIdioms=idioms&&!fuzzyLengths.isEmpty(),explicit=checkIdioms&&cue(text,p);
-            if(checkIdioms){boolean structuralLeft=explicit||left(text,p,LEFT_WORDS);int stop=p;while(stop<text.length()&&stop<p+9&&han(text.charAt(stop)))stop++;
-            for(int size=3;p+size<=stop;size++){
-                boolean structural=structuralLeft&&right(text,p+size);
-                if((!fuzzyLengths.contains(size)||any(exact,p,p+size))&&!structural||touchesIdentifier(text,p,p+size))continue;
-                if(any(custom,p,p+size)||any(literals,p,p+size))continue;
-                String source=text.substring(p,p+size);if(words.contains(source))continue;
-                targets.clear();candidates(text,p,source,exact,targets,explicit,structural,probe);
-                if(targets.size()==1){String replacement=targets.keySet().iterator().next();pending.add(new Edit(p,source,replacement,targets.get(replacement),true));}
-            }}
-            if(!repetition)continue;
             char c=text.charAt(p);int end=p+1;
             if(PRONOUNS.indexOf(c)>=0&&(p==0||text.charAt(p-1)!=c))while(end<text.length()&&text.charAt(end)==c)end++;
             if(PRONOUNS.indexOf(c)>=0&&end-p>=2&&(p==0||text.charAt(p-1)!=c)&&left(text,p,DUP_LEFT_WORDS)&&prefix(text,end,DUP_RIGHT_WORDS)&&!namedUse(text,end)&&!any(custom,p,end)&&!any(exact,p,end)&&!any(literals,p,end))pending.add(new Edit(p,text.substring(p,end),String.valueOf(c),""));
@@ -552,9 +455,7 @@ public final class Proofreader {
             for(int j=i+1;j<pending.size()&&pending.get(j).start<a.end;j++){Edit b=pending.get(j);int end=Math.max(a.end,b.end);
                 String one=a.replacement+text.substring(a.end,end),two=text.substring(a.start,b.start)+b.replacement+text.substring(b.end,end);
                 if(!one.equals(two)){
-                    boolean structuralA=a.source.length()!=a.replacement.length(),structuralB=b.source.length()!=b.replacement.length();
-                    if(structuralA!=structuralB)conflicts[structuralA?j:i]=true;
-                    else{conflicts[i]=true;conflicts[j]=true;}
+                    conflicts[i]=true;conflicts[j]=true;
                 }
             }
         }
@@ -578,7 +479,7 @@ final class ProofreaderAssets {
         boolean present = false;
         for (String name : DededeApp.context().getAssets().list("")) if ("sys_idioms.dat".equals(name)) present = true;
         // Missing is optional. Authentication/corruption failures must still report their real error.
-        instance = new Proofreader(present ? new StringReader(SecureAsset.readUtf8(DededeApp.context(), "sys_idioms.dat")) : null, false);
+        instance = new Proofreader(present ? new StringReader(SecureAsset.readUtf8(DededeApp.context(), "sys_idioms.dat")) : null);
         return instance;
     }
 }
@@ -688,7 +589,7 @@ public final class CorrectionCore {
         final boolean[] exactAll = proofreader.exactPositions(text, () -> listener != null && listener.isCancelled());
         if (exactAll == null) return null;
         final boolean[] customAll = dictionary.protectedPositions(text);
-        final Proofreader.Edit[] proofEdits = proofreader.collect(text, customAll, exactAll, Proofreader.literalPositions(text), false, true, () -> listener != null && listener.isCancelled());
+        final Proofreader.Edit[] proofEdits = proofreader.collect(text, customAll, exactAll, Proofreader.literalPositions(text), true, () -> listener != null && listener.isCancelled());
         if (proofEdits == null) return null;
         final boolean[] blockedAll = customAll.clone();
         for (Proofreader.Edit edit : proofEdits) if (edit != null) Arrays.fill(blockedAll, edit.start, edit.end, true);
@@ -725,7 +626,7 @@ public final class CorrectionCore {
                 Proofreader.Edit proof = proofEdits[sentenceStart + cursor];
                 if (proof != null && (typoMatch == null || !typoMatch.custom)) {
                     appendPlainSpan(intermediate, sentence, plainStart, cursor);
-                    appendProofChange(intermediate, proof.source, proof.replacement, proof.idiom);
+                    appendProofChange(intermediate, proof.source, proof.replacement);
                     skipUntil = proof.end;
                     cursor += proof.source.length();
                     plainStart = cursor;
@@ -1018,11 +919,11 @@ public final class CorrectionCore {
         }
     }
 
-    private static void appendProofChange(List<MainActivity.TextBlock> blocks, String source, String replacement, boolean idiom) {
+    private static void appendProofChange(List<MainActivity.TextBlock> blocks, String source, String replacement) {
         // Keep only the changed characters in the review mark. A duplicate is a deletion, without a parenthetical note.
         int prefix=0,suffix=0;
-        if(source.length()>replacement.length()&&!idiom){
-            // Ordinary repetition keeps the suffix; idioms keep the prefix and delete later duplicates.
+        if(source.length()>replacement.length()){
+            // Keep the suffix so the review mark deletes the earlier duplicate.
             while(suffix<replacement.length()&&source.charAt(source.length()-1-suffix)==replacement.charAt(replacement.length()-1-suffix))suffix++;
             while(prefix<replacement.length()-suffix&&source.charAt(prefix)==replacement.charAt(prefix))prefix++;
         }else{
@@ -2063,6 +1964,132 @@ public final class HistoryStore {
 DEDEDE_SOURCE_EOF
 
 mkdir -p "app/src/main/java/com/app/dedede"
+cat > "app/src/main/java/com/app/dedede/CustomRuleFile.java" <<'DEDEDE_SOURCE_EOF'
+package com.app.dedede;
+
+import java.io.BufferedReader;
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.StringReader;
+import java.nio.ByteBuffer;
+import java.nio.CharBuffer;
+import java.nio.charset.StandardCharsets;
+import java.util.LinkedHashMap;
+import java.util.Map;
+
+final class CustomRuleFile {
+    private static final String HEADER = "# 纠错 Pro 自定义错词库 v1";
+    private static final int MAX_BYTES = 4 * 1024 * 1024;
+    static final String FILE_NAME = "纠错自定义错词库.txt";
+    static final String UNRECOGNIZED = "导入内容无法识别";
+
+    static Map<String, String> read(InputStream stream) throws IOException {
+        ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+        byte[] buffer = new byte[8192];
+        for (int length; (length = stream.read(buffer)) != -1;) {
+            if (bytes.size() + length > MAX_BYTES) throw new IOException(UNRECOGNIZED);
+            bytes.write(buffer, 0, length);
+        }
+        String text = StandardCharsets.UTF_8.newDecoder().decode(ByteBuffer.wrap(bytes.toByteArray())).toString();
+        if (text.startsWith("\uFEFF")) text = text.substring(1);
+
+        Map<String, String> rules = new LinkedHashMap<>();
+        try (BufferedReader reader = new BufferedReader(new StringReader(text))) {
+            String header;
+            do { header = reader.readLine(); } while (header != null && isBlank(header));
+            if (header == null) throw new IOException(UNRECOGNIZED);
+            String heading = trim(header);
+            boolean marked = HEADER.equals(heading), hasSeparator = false;
+            if (!marked && (heading.startsWith("# 纠错 Pro 自定义错词库") || heading.startsWith("{"))) throw new IOException(UNRECOGNIZED);
+            for (String line = marked ? reader.readLine() : header; line != null; line = reader.readLine()) {
+                if (isBlank(line)) continue;
+                String source, target;
+                if (marked) {
+                    String[] fields = line.split("\t", -1);
+                    boolean whitelist = fields.length == 2 && fields[0].equals("白名单");
+                    if (!whitelist && !(fields.length == 3 && fields[0].equals("替换"))) throw new IOException(UNRECOGNIZED);
+                    source = unescape(fields[1]);
+                    target = whitelist ? source : unescape(fields[2]);
+                } else {
+                    if (trim(line).startsWith("#")) continue;
+                    String[] fields = line.split("\t", 2);
+                    if (fields.length == 1) fields = line.split("=>", 2);
+                    if (fields.length == 1) fields = line.split("→", 2);
+                    source = trim(fields[0]);
+                    target = fields.length == 1 ? source : trim(fields[1]);
+                    hasSeparator |= fields.length == 2;
+                    if (source.equals("白名单") || source.equals("替换")) throw new IOException(UNRECOGNIZED);
+                }
+                if (!valid(source, target)) throw new IOException(UNRECOGNIZED);
+                rules.put(source, target);
+            }
+            if (!marked && !hasSeparator) throw new IOException(UNRECOGNIZED);
+        }
+        return rules;
+    }
+
+    static byte[] format(Map<String, String> rules) throws IOException {
+        StringBuilder text = new StringBuilder(HEADER).append('\n');
+        for (Map.Entry<String, String> rule : rules.entrySet()) {
+            String source = rule.getKey(), target = rule.getValue();
+            if (!valid(source, target)) throw new IOException("词库中有无法导出的规则。");
+            if (source.equals(target)) text.append("白名单\t").append(escape(source));
+            else text.append("替换\t").append(escape(source)).append('\t').append(escape(target));
+            text.append('\n');
+        }
+        ByteBuffer encoded = StandardCharsets.UTF_8.newEncoder().encode(CharBuffer.wrap(text));
+        if (encoded.remaining() > MAX_BYTES) throw new IOException("词库文件超过 4 MiB。");
+        byte[] bytes = new byte[encoded.remaining()];
+        encoded.get(bytes);
+        return bytes;
+    }
+
+    private static boolean valid(String source, String target) {
+        return !isBlank(source) && source.length() <= 300 && target.length() <= 300 && source.indexOf('\0') < 0 && target.indexOf('\0') < 0;
+    }
+
+    private static boolean isSpace(char ch) {
+        return Character.isSpaceChar(ch) || (ch >= '\t' && ch <= '\r') || ch == '\u0085';
+    }
+
+    private static String trim(String text) {
+        int start = 0, end = text.length();
+        while (start < end && isSpace(text.charAt(start))) start++;
+        while (end > start && isSpace(text.charAt(end - 1))) end--;
+        return text.substring(start, end);
+    }
+
+    private static boolean isBlank(String text) {
+        return trim(text).isEmpty();
+    }
+
+    private static String escape(String text) {
+        return text.replace("\\", "\\\\").replace("\t", "\\t").replace("\r", "\\r").replace("\n", "\\n");
+    }
+
+    private static String unescape(String text) throws IOException {
+        StringBuilder result = new StringBuilder(text.length());
+        for (int i = 0; i < text.length(); i++) {
+            char ch = text.charAt(i);
+            if (ch == '\\') {
+                if (++i == text.length()) throw new IOException(UNRECOGNIZED);
+                switch (text.charAt(i)) {
+                    case '\\': ch = '\\'; break;
+                    case 't': ch = '\t'; break;
+                    case 'r': ch = '\r'; break;
+                    case 'n': ch = '\n'; break;
+                    default: throw new IOException(UNRECOGNIZED);
+                }
+            }
+            result.append(ch);
+        }
+        return result.toString();
+    }
+}
+DEDEDE_SOURCE_EOF
+
+mkdir -p "app/src/main/java/com/app/dedede"
 cat > "app/src/main/java/com/app/dedede/MainActivity.java" <<'DEDEDE_SOURCE_EOF'
 package com.app.dedede;
 import android.animation.Animator;
@@ -2211,6 +2238,7 @@ public class MainActivity extends AppCompatActivity {
     public static final float MAX_TEMPERATURE = 2.0f;
     private static volatile TypoIndex typoIndex = TypoIndex.build(new HashMap<>(), new HashSet<>(), new HashMap<>());
     private static final Pattern TYPO_FIELDS = Pattern.compile("\\s+");
+    private static final int REQUEST_IMPORT_CUSTOM_RULES = 104, REQUEST_EXPORT_CUSTOM_RULES = 105;
     public static TypoIndex currentTypoIndex() { return typoIndex; }
     public static volatile boolean typoMapLoaded, isCleanDialogOpen, isEditorOpen, hasNewFloatResult;
     private static volatile boolean processSessionInitialized;
@@ -4108,6 +4136,9 @@ public class MainActivity extends AppCompatActivity {
         for (int id : new int[]{R.id.tvCustomTyposTitle, R.id.tvRecentHistoryTitle}) {
             TextView label = findViewById(id); if (label != null) label.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 16f + ui);
         }
+        for (int id : new int[]{R.id.btnImportCustomRules, R.id.btnExportCustomRules}) {
+            TextView label = findViewById(id); if (label != null) label.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 14f + ui);
+        }
         for (int id : new int[]{R.id.etOriginal, R.id.etCorrected}) {
             EditText field = findViewById(id); if (field != null) field.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 13f + ui);
         }
@@ -5453,7 +5484,7 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void showHelp() {
-        String text = "【模式介绍】\n极速：不调用神经网络检查“的/地/得/做/作”；仅运行系统内置的错词库和规则。速度最快（毫秒级），适合只想快速检查错别字与语病的场景。\n\n专业：比极速模式额外纠错“的地得做作”使用，速度较快（秒级）。\nHCAM模型是本作者自己设计，并从零训练＋微调的中文掩码模型。该模型会额外纠错“的地得”和“做作”。\n通常建议始终使用专业模式，除非你对“的地得做作”运用得如火纯青。\n\n注：不同手机的速度会有差异；模型也可能出现极少量误判，这是神经网络的通病，在所难免。\n\n单次纠错不建议超过30万字，可能会出现卡顿或闪退。\n\n【温度参数（仅专业模式）】\n控制AI判断的自信（果断）程度。\n• 允许范围：0.5～2.0；推荐默认值1.0。\n• 值越低（如0.5）：概率分布越尖锐，模型更激进，给出的置信度更高，修改量可能上升。\n• 值越高（如2.0）：概率分布越平缓，模型更保守，修改量可能下降。\n举例：0.8会给出更高的置信度，更不容易被阈值拦截。1.2会更保守，更容易被阈值拦截。\n• 温度不得低于0.5或高于2.0。\n\n【置信度拦截阈值（仅专业模式）】\n只有AI的置信度 ≥ 阈值时才修改，否则保留原字，防止过度纠错。\n• 推荐默认值：的0.72、地0.72、得0.75、做0.75、作0.78。阈值按模型预测的目标字应用，范围0～1。\n举例：设置为0.9时，模型修改的置信度超过0.9才会被保留并显示，否则忽略。\n\n【交互与拓展功能】\n• 手动修改：检查后，点击带下划线的字词即可手动修改或还原。\n• 纠错过程中修改原文会中断检查。\n• 输入框展开：点击输入框右上角的展开按钮，可进入全屏输入编辑，支持可拖动滚动条、撤销、还原和首行缩进；完成后内容会自动同步回主输入框。\n• 便签模式：长按底部纠错结果区域，即可展开便签编辑器进行全局修改，完成后支持直接导出。绿色的波浪线为系统或你修改过的文本（原在输出框中呈现红色）。\n• 字体大小与皮肤：点击标题栏“A”进入字体设置，可调节字体大小。底部彩色衣服可切换不同的界面皮肤。\n• 快速跳转：点击纠错清单中的序号 [1]，可以自动滚动定位至全文对应段落。\n• 一键粘贴：点击按钮快速读取剪贴板内容。（不建议一次性粘贴超过20万字，可能导致闪退）\n• 导入文件：支持txt、md、docx、pptx、pdf及图片格式(支持OCR识图)。\n  不建议一次导入多个过大的文件，可能导致使用卡顿。也不建议导入带有特定格式和排版（如表格类）的文件，会破坏原有排版。\n\n• 系统分享：在其他App中选中文本，点击分享并选择本App，即可跳转至系统进行纠错。\n• 历史记录：最多保存近50条。\n\n 【错词库】\n  手动定义规则，这些规则会在纠错中自动应用。\n  使用方法：\n1.白名单：\n在“原始文本”框输入例如“慢慢的”或“张三”，直接提交。等效于白名单，系统在遇到该词后不会再修改。\n  2.改错：在“修改后”里再添加文本（如：慢慢地），纠错时原始文本就会被自动修改。\n• 自定义规则优先级高于本系统。\n\n【悬浮窗】\n开启后支持后台随时随地纠错。长按悬浮球或点击面板右上角可同步至应用内继续操作。点击面板外可自动收起。\n\n【标点清理：】\n  当检测到包含复制残留的垃圾标点时会触发弹窗，允许自由清理提纯文本。\n\n• 其他：本App和内置模型均由 奇 制作与训练，非其他开源模型，无版权风险。本著作权归奇（qi）所有。想与作者私聊？公众号搜索：Li的信箱";
+        String text = "【模式介绍】\n极速：不调用神经网络检查“的/地/得/做/作”；仅运行系统内置的错词库和规则。速度最快（毫秒级），适合只想快速检查错别字与语病的场景。\n\n专业：比极速模式额外纠错“的地得做作”使用，速度较快（秒级）。\nHCAM模型是本作者自己设计，并从零训练＋微调的中文掩码模型。该模型会额外纠错“的地得”和“做作”。\n通常建议始终使用专业模式，除非你对“的地得做作”运用得如火纯青。\n\n注：不同手机的速度会有差异；模型也可能出现极少量误判，这是神经网络的通病，在所难免。\n\n单次纠错不建议超过30万字，可能会出现卡顿或闪退。\n\n【温度参数（仅专业模式）】\n控制AI判断的自信（果断）程度。\n• 允许范围：0.5～2.0；推荐默认值1.0。\n• 值越低（如0.5）：概率分布越尖锐，模型更激进，给出的置信度更高，修改量可能上升。\n• 值越高（如2.0）：概率分布越平缓，模型更保守，修改量可能下降。\n举例：0.8会给出更高的置信度，更不容易被阈值拦截。1.2会更保守，更容易被阈值拦截。\n• 温度不得低于0.5或高于2.0。\n\n【置信度拦截阈值（仅专业模式）】\n只有AI的置信度 ≥ 阈值时才修改，否则保留原字，防止过度纠错。\n• 推荐默认值：的0.72、地0.72、得0.75、做0.75、作0.78。阈值按模型预测的目标字应用，范围0～1。\n举例：设置为0.9时，模型修改的置信度超过0.9才会被保留并显示，否则忽略。\n\n【交互与拓展功能】\n• 手动修改：检查后，点击带下划线的字词即可手动修改或还原。\n• 纠错过程中修改原文会中断检查。\n• 输入框展开：点击输入框右上角的展开按钮，可进入全屏输入编辑，支持可拖动滚动条、撤销、还原和首行缩进；完成后内容会自动同步回主输入框。\n• 便签模式：长按底部纠错结果区域，即可展开便签编辑器进行全局修改，完成后支持直接导出。绿色的波浪线为系统或你修改过的文本（原在输出框中呈现红色）。\n• 字体大小与皮肤：点击标题栏“A”进入字体设置，可调节字体大小。底部彩色衣服可切换不同的界面皮肤。\n• 快速跳转：点击纠错清单中的序号 [1]，可以自动滚动定位至全文对应段落。\n• 一键粘贴：点击按钮快速读取剪贴板内容。（不建议一次性粘贴超过20万字，可能导致闪退）\n• 导入文件：支持txt、md、docx、pptx、pdf及图片格式(支持OCR识图)。\n  不建议一次导入多个过大的文件，可能导致使用卡顿。也不建议导入带有特定格式和排版（如表格类）的文件，会破坏原有排版。\n\n• 系统分享：在其他App中选中文本，点击分享并选择本App，即可跳转至系统进行纠错。\n• 历史记录：最多保存近50条。\n\n 【错词库】\n  手动定义规则，这些规则会在纠错中自动应用。\n  使用方法：\n1.白名单：\n在“原始文本”框输入例如“慢慢的”或“张三”，直接提交。等效于白名单，系统在遇到该词后不会再修改。\n  2.改错：在“修改后”里再添加文本（如：慢慢地），纠错时原始文本就会被自动修改。\n• 自定义规则优先级高于本系统。\n• 点“自定义错词库”右边的“导出”，即可将白名单和替换规则一起保存为TXT。换手机或换到电脑后，点“导入”选择这个文件，词条就会出现在列表里。原始文本相同的，以导入的规则为准。\n\n【悬浮窗】\n开启后支持后台随时随地纠错。长按悬浮球或点击面板右上角可同步至应用内继续操作。点击面板外可自动收起。\n\n【标点清理：】\n  当检测到包含复制残留的垃圾标点时会触发弹窗，允许自由清理提纯文本。\n\n• 其他：本App和内置模型均由 奇 制作与训练，非其他开源模型，无版权风险。本著作权归奇（qi）所有。想与作者私聊？公众号搜索：Li的信箱";
         int ui = Math.max(-3, Math.min(3, sp.getInt("font_offset_sys", 0))); TextView view = new TextView(this); view.setText(text); view.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 14 + ui); view.setTextColor(0xFF333333); view.setLineSpacing(0, 1.2f); int padding = (int) (20 * getResources().getDisplayMetrics().density); view.setPadding(padding, padding / 2, padding, 0); ScrollView scroll = new ScrollView(this); scroll.addView(view); new AlertDialog.Builder(this).setTitle("使用说明").setView(scroll).setPositiveButton("知道了", null).show();
     }
 
@@ -5559,6 +5590,8 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void setupDrawerButtons() {
+        findViewById(R.id.btnImportCustomRules).setOnClickListener(v -> pickCustomRuleFile(false));
+        findViewById(R.id.btnExportCustomRules).setOnClickListener(v -> pickCustomRuleFile(true));
         Button add = findViewById(R.id.btnAddTypo); EditText original = findViewById(R.id.etOriginal), corrected = findViewById(R.id.etCorrected);
         add.setOnClickListener(v -> {
             String source = original.getText().toString().trim(), target = corrected.getText().toString().trim(); if (source.isEmpty()) { Toast.makeText(this, "原始文本不能为空", Toast.LENGTH_SHORT).show(); return; } if (target.isEmpty()) target = source;
@@ -5571,6 +5604,100 @@ public class MainActivity extends AppCompatActivity {
         }).setNegativeButton("否", null).show());
     }
 
+    private void pickCustomRuleFile(boolean export) {
+        Intent intent = new Intent(export ? Intent.ACTION_CREATE_DOCUMENT : Intent.ACTION_OPEN_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.setType(export ? "text/plain" : "*/*");
+        if (export) intent.putExtra(Intent.EXTRA_TITLE, CustomRuleFile.FILE_NAME);
+        try {
+            startActivityForResult(intent, export ? REQUEST_EXPORT_CUSTOM_RULES : REQUEST_IMPORT_CUSTOM_RULES);
+        } catch (android.content.ActivityNotFoundException e) {
+            Toast.makeText(this, "无法打开文件选择器", Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    private void importCustomRules(android.net.Uri uri) {
+        Context app = getApplicationContext();
+        AppExecutors.IO.execute(() -> {
+            Map<String, String> imported;
+            try (InputStream file = app.getContentResolver().openInputStream(uri)) {
+                if (file == null) throw new IOException(CustomRuleFile.UNRECOGNIZED);
+                imported = CustomRuleFile.read(file);
+            } catch (IOException | RuntimeException e) {
+                AppExecutors.MAIN.post(() -> {
+                    MainActivity activity = instance;
+                    if (activity != null && !activity.isFinishing()) {
+                        new AlertDialog.Builder(activity).setMessage(CustomRuleFile.UNRECOGNIZED)
+                            .setPositiveButton("确定", null).show();
+                    }
+                });
+                return;
+            }
+            AppExecutors.MAIN.post(() -> {
+                try {
+                    if (!imported.isEmpty()) {
+                        SharedPreferences preferences = app.getSharedPreferences("DededeConfig", MODE_PRIVATE);
+                        JSONObject old = new JSONObject(preferences.getString("custom_typos", "{}"));
+                        // 新导入的项目排在前面，折叠状态下也能马上看到。
+                        JSONObject merged = new JSONObject(imported);
+                        for (Iterator<String> keys = old.keys(); keys.hasNext();) {
+                            String key = keys.next();
+                            if (!merged.has(key)) merged.put(key, old.getString(key));
+                        }
+                        preferences.edit().putString("custom_typos", merged.toString()).apply();
+                        reloadTypoMapAsync(app);
+                    }
+                    MainActivity activity = instance;
+                    if (activity != null && !activity.isFinishing()) {
+                        activity.drawerLayout.openDrawer(GravityCompat.END);
+                        activity.renderCustomTyposUI();
+                    }
+                    Toast.makeText(app, "已导入 " + imported.size() + " 条规则", Toast.LENGTH_SHORT).show();
+                } catch (org.json.JSONException e) {
+                    Toast.makeText(app, "错词库保存失败", Toast.LENGTH_SHORT).show();
+                }
+            });
+        });
+    }
+
+    private void exportCustomRules(android.net.Uri uri) {
+        Context app = getApplicationContext();
+        String snapshot = sp.getString("custom_typos", "{}");
+        AppExecutors.IO.execute(() -> {
+            String message;
+            try {
+                JSONObject stored = new JSONObject(snapshot);
+                Map<String, String> rules = new java.util.LinkedHashMap<>();
+                for (Iterator<String> keys = stored.keys(); keys.hasNext();) {
+                    String key = keys.next();
+                    rules.put(key, stored.getString(key));
+                }
+                byte[] content = CustomRuleFile.format(rules);
+                try (OutputStream file = app.getContentResolver().openOutputStream(uri, "wt")) {
+                    if (file == null) throw new IOException("无法打开保存位置");
+                    file.write(content);
+                }
+                message = "已导出自定义错词库";
+            } catch (IOException | org.json.JSONException | RuntimeException e) {
+                message = "错词库导出失败";
+            }
+            String result = message;
+            AppExecutors.MAIN.post(() -> Toast.makeText(app, result, Toast.LENGTH_SHORT).show());
+        });
+    }
+
+    private void deleteCustomRule(String source) {
+        try {
+            JSONObject current = new JSONObject(sp.getString("custom_typos", "{}"));
+            current.remove(source);
+            sp.edit().putString("custom_typos", current.toString()).apply();
+            reloadTypoMapAsync(this);
+            renderCustomTyposUI();
+        } catch (org.json.JSONException e) {
+            Toast.makeText(this, "错词库保存失败", Toast.LENGTH_SHORT).show();
+        }
+    }
+
     private void renderCustomTyposUI() {
         FlowLayout container = findViewById(R.id.llCustomTypos); Button expand = findViewById(R.id.btnExpandTypos), add = findViewById(R.id.btnAddTypo); EditText original = findViewById(R.id.etOriginal), corrected = findViewById(R.id.etCorrected); container.removeAllViews();
         try {
@@ -5578,7 +5705,7 @@ public class MainActivity extends AppCompatActivity {
             int count = isTyposExpanded ? items.size() : Math.min(items.size(), 15);
             for (int i = 0; i < count; i++) {
                 String[] item = items.get(i); TextView view = new TextView(this); view.setText(item[0].equals(item[1]) ? item[0] : item[0] + " → " + item[1]); view.setPadding(16, 16, 16, 16); view.setTextSize(14f + Math.max(-3, Math.min(3, sp.getInt("font_offset_sys", 0)))); view.setTextColor(0xFF4CAF50); view.setBackgroundResource(R.drawable.item_bg_selector); view.setClickable(true);
-                view.setOnClickListener(v -> new AlertDialog.Builder(this).setTitle("操作错词").setMessage(item[0].equals(item[1]) ? "白名单：" + item[0] : "原始：" + item[0] + "\n修改后：" + item[1]).setPositiveButton("删除", (d, w) -> { object.remove(item[0]); sp.edit().putString("custom_typos", object.toString()).apply(); reloadTypoMapAsync(this); renderCustomTyposUI(); }).setNeutralButton("编辑", (d, w) -> { editingTypoKey = item[0]; original.setText(item[0]); corrected.setText(item[0].equals(item[1]) ? "" : item[1]); add.setText("完成"); }).setNegativeButton("取消", null).show());
+                view.setOnClickListener(v -> new AlertDialog.Builder(this).setTitle("操作错词").setMessage(item[0].equals(item[1]) ? "白名单：" + item[0] : "原始：" + item[0] + "\n修改后：" + item[1]).setPositiveButton("删除", (d, w) -> { deleteCustomRule(item[0]); }).setNeutralButton("编辑", (d, w) -> { editingTypoKey = item[0]; original.setText(item[0]); corrected.setText(item[0].equals(item[1]) ? "" : item[1]); add.setText("完成"); }).setNegativeButton("取消", null).show());
                 container.addView(view);
             }
             if (items.size() > 15) { expand.setVisibility(View.VISIBLE); expand.setText(isTyposExpanded ? "折叠" : "展开全部"); expand.setOnClickListener(v -> { isTyposExpanded = !isTyposExpanded; renderCustomTyposUI(); }); } else expand.setVisibility(View.GONE);
@@ -5784,6 +5911,13 @@ public class MainActivity extends AppCompatActivity {
 
     @Override protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode == REQUEST_IMPORT_CUSTOM_RULES || requestCode == REQUEST_EXPORT_CUSTOM_RULES) {
+            if (resultCode == RESULT_OK && data != null && data.getData() != null) {
+                if (requestCode == REQUEST_IMPORT_CUSTOM_RULES) importCustomRules(data.getData());
+                else exportCustomRules(data.getData());
+            }
+            return;
+        }
         if (requestCode == 201) {
             if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M && android.provider.Settings.canDrawOverlays(this)) startFloatingService(); else Toast.makeText(this, "悬浮窗权限未被授予，无法开启", Toast.LENGTH_SHORT).show();
             return;
@@ -6972,13 +7106,17 @@ cat > "app/src/main/res/layout/activity_main.xml" <<'DEDEDE_SOURCE_EOF'
     <LinearLayout android:id="@+id/drawerContent" android:layout_width="315dp" android:layout_height="match_parent" android:layout_gravity="end" android:background="@color/bg_color" android:orientation="vertical" android:clickable="true" android:focusable="true">
         <ScrollView android:layout_width="match_parent" android:layout_height="match_parent" android:padding="16dp">
             <LinearLayout android:orientation="vertical" android:layout_width="match_parent" android:layout_height="wrap_content">
-                <TextView android:id="@+id/tvCustomTyposTitle" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="自定义错词库" android:textSize="16sp" android:textStyle="bold" android:textColor="@color/text_primary" android:layout_marginBottom="8dp"/>
+                <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:gravity="center_vertical" android:layout_marginBottom="8dp">
+                    <TextView android:id="@+id/tvCustomTyposTitle" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:text="自定义错词库" android:textSize="16sp" android:textStyle="bold" android:textColor="@color/text_primary"/>
+                    <TextView android:id="@+id/btnImportCustomRules" android:layout_width="wrap_content" android:layout_height="wrap_content" android:minWidth="48dp" android:minHeight="48dp" android:gravity="center" android:text="导入" android:textSize="14sp" android:textColor="@color/custom_rule_action" android:clickable="true" android:focusable="true" android:background="?android:attr/selectableItemBackground"/>
+                    <TextView android:id="@+id/btnExportCustomRules" android:layout_width="wrap_content" android:layout_height="wrap_content" android:minWidth="48dp" android:minHeight="48dp" android:gravity="center" android:text="导出" android:textSize="14sp" android:textColor="@color/custom_rule_action" android:clickable="true" android:focusable="true" android:background="?android:attr/selectableItemBackground"/>
+                </LinearLayout>
                 <com.app.dedede.FlowLayout android:id="@+id/llCustomTypos" android:layout_width="match_parent" android:layout_height="wrap_content"/>
                 <Button android:id="@+id/btnExpandTypos" android:layout_width="match_parent" android:layout_height="36dp" android:text="展开更多" android:textSize="12sp" android:backgroundTint="#E0E0E0" android:textColor="@color/text_primary" android:visibility="gone" android:layout_marginTop="8dp" android:layout_marginBottom="8dp" android:insetTop="0dp" android:insetBottom="0dp"/>
                 <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:gravity="center_vertical" android:layout_marginTop="8dp">
-                    <EditText android:id="@+id/etOriginal" android:layout_width="0dp" android:layout_weight="1" android:layout_height="40dp" android:maxLength="20" android:singleLine="true" android:hint="原始文本" android:textColorHint="#BDBDBD" android:background="@color/card_bg" android:padding="8dp" android:textSize="13sp" android:textColor="@color/text_primary"/>
+                    <EditText android:id="@+id/etOriginal" android:layout_width="0dp" android:layout_weight="1" android:layout_height="40dp" android:maxLength="300" android:singleLine="true" android:hint="原始文本" android:textColorHint="#BDBDBD" android:background="@color/card_bg" android:padding="8dp" android:textSize="13sp" android:textColor="@color/text_primary"/>
                     <TextView android:id="@+id/tvCustomTyposArrow" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text=" → " android:textColor="@color/text_primary"/>
-                    <EditText android:id="@+id/etCorrected" android:layout_width="0dp" android:layout_weight="1" android:layout_height="40dp" android:maxLength="20" android:singleLine="true" android:hint="修改后" android:textColorHint="#BDBDBD" android:background="@color/card_bg" android:padding="8dp" android:textSize="13sp" android:textColor="@color/text_primary"/>
+                    <EditText android:id="@+id/etCorrected" android:layout_width="0dp" android:layout_weight="1" android:layout_height="40dp" android:maxLength="300" android:singleLine="true" android:hint="修改后" android:textColorHint="#BDBDBD" android:background="@color/card_bg" android:padding="8dp" android:textSize="13sp" android:textColor="@color/text_primary"/>
                     <Button android:id="@+id/btnAddTypo" android:layout_width="60dp" android:layout_height="40dp" android:text="添加" android:textSize="12sp" android:backgroundTint="#81C784" android:layout_marginStart="4dp" android:padding="0dp" android:insetTop="0dp" android:insetBottom="0dp"/>
                 </LinearLayout>
                 <TextView android:id="@+id/tvWhitelistJumpHint" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="↑仅在此卡片内输入需保护的词，再点击添加即可。" android:textSize="11sp" android:textColor="#9E9E9E" android:paddingTop="3dp" android:paddingLeft="2dp" android:layout_marginBottom="16dp" android:visibility="gone"/>
@@ -7030,6 +7168,7 @@ cat > "app/src/main/res/values-night/colors.xml" <<'DEDEDE_SOURCE_EOF'
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <color name="bg_color">#121212</color>
+    <color name="custom_rule_action">#9AC4A3</color>
     <color name="card_bg">#1E1E1E</color>
     <color name="text_primary">#E0E0E0</color>
     <color name="text_secondary">#9E9E9E</color>
@@ -7058,6 +7197,7 @@ cat > "app/src/main/res/values/colors.xml" <<'DEDEDE_SOURCE_EOF'
 <resources>
     <color name="icon_bg">#2196F3</color>
     <color name="bg_color">#F8F9FA</color>
+    <color name="custom_rule_action">#568060</color>
     <color name="card_bg">#FFFFFF</color>
     <color name="text_primary">#1A1A1A</color>
     <color name="text_secondary">#666666</color>
