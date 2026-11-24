@@ -644,7 +644,7 @@ public final class CorrectionCore {
     }
 
     private static GrammarHit[] collectGrammarHits(String sentence, boolean fastMode, boolean[] protectedPositions,
-            boolean[] exactPositions, java.util.function.BiPredicate<MainActivity.GramRule, Matcher> eligible) {
+            boolean[] exactPositions) {
         GrammarHit[] hits = new GrammarHit[sentence.length()];
         for (MainActivity.GramRule rule : MainActivity.gramRules) {
             if (fastMode && rule.professionalOnly) continue;
@@ -654,19 +654,23 @@ public final class CorrectionCore {
             while (searchStart < sentence.length()) {
                 matcher.region(searchStart, sentence.length());
                 if (!matcher.find()) break;
-                int matchStart = matcher.start();
-                boolean protectedHit = false;
-                for (int i = matchStart; i < matcher.end(); i++) if (protectedPositions[i]) { protectedHit = true; break; }
-                int optionIndex = rule.options.length > 1 ? java.util.concurrent.ThreadLocalRandom.current().nextInt(rule.options.length) : 0;
-                String[] option = rule.options[optionIndex];
-                String replacement = (option[0] != null ? option[0] : matcher.group(1)) + matcher.group(2)
-                        + (option.length > 1 && option[1] != null ? option[1] : matcher.group(3));
-                if (Proofreader.altersExact(exactPositions, matchStart, matcher.group(), replacement)) protectedHit = true;
-                if (hits[matchStart] == null && !protectedHit && matcher.end() > matchStart
-                        && (eligible == null || eligible.test(rule, matcher))) {
-                    hits[matchStart] = new GrammarHit(rule, optionIndex, matcher, sentence);
-                }
+                int matchStart = matcher.start(), matchEnd = matcher.end();
                 searchStart = matchStart + 1;
+                if (matchStart == matchEnd || hits[matchStart] != null) continue;
+                boolean protectedHit = false, touchesExact = false;
+                for (int i = matchStart; i < matchEnd; i++) {
+                    if (protectedPositions[i]) { protectedHit = true; break; }
+                    touchesExact |= exactPositions[i];
+                }
+                if (protectedHit) continue;
+                int optionIndex = rule.options.length > 1 ? java.util.concurrent.ThreadLocalRandom.current().nextInt(rule.options.length) : 0;
+                if (touchesExact) {
+                    String[] option = rule.options[optionIndex];
+                    String replacement = (option[0] != null ? option[0] : matcher.group(1)) + matcher.group(2)
+                            + (option.length > 1 && option[1] != null ? option[1] : matcher.group(3));
+                    if (Proofreader.altersExact(exactPositions, matchStart, matcher.group(), replacement)) continue;
+                }
+                hits[matchStart] = new GrammarHit(rule, optionIndex, matcher, sentence);
             }
         }
         return hits;
@@ -709,11 +713,9 @@ public final class CorrectionCore {
             boolean[] blockedPositions = Arrays.copyOfRange(blockedAll, sentenceStart, sentenceOffset);
             boolean[] protectedPositions = blockedPositions.clone();
             for (int i = 0; i < protectedPositions.length; i++) protectedPositions[i] |= exactPositions[i];
-            GrammarHit[] grammarHits = collectGrammarHits(sentence, fastMode, blockedPositions, exactPositions, null);
-            List<MainActivity.TextBlock> intermediate = new ArrayList<>(Math.max(16, sentence.length() / 4));
-            StringBuilder plain = new StringBuilder();
+            List<MainActivity.TextBlock> intermediate = new ArrayList<>(4);
             int cursor = Math.max(0, skipUntil - sentenceStart);
-            int originalStart = sentenceStart + cursor;
+            int originalStart = sentenceStart + cursor, plainStart = cursor;
             boolean hasDictionaryCorrection = false;
             while (cursor < sentence.length()) {
                 if (listener != null && listener.isCancelled()) return null;
@@ -722,52 +724,32 @@ public final class CorrectionCore {
                 if (typoMatch == null) typoMatch = dictionary.find(sentence, cursor, protectedPositions);
                 Proofreader.Edit proof = proofEdits[sentenceStart + cursor];
                 if (proof != null && (typoMatch == null || !typoMatch.custom)) {
-                    flushPlain(intermediate, plain);
+                    appendPlainSpan(intermediate, sentence, plainStart, cursor);
                     appendProofChange(intermediate, proof.source, proof.replacement, proof.idiom);
                     skipUntil = proof.end;
-                    cursor += proof.source.length(); continue;
+                    cursor += proof.source.length();
+                    plainStart = cursor;
+                    continue;
                 }
                 if (typoMatch != null) {
-                    flushPlain(intermediate, plain);
+                    appendPlainSpan(intermediate, sentence, plainStart, cursor);
                     boolean real = !typoMatch.source.equals(typoMatch.correction);
                     int type = typoMatch.custom ? 4 : 2;
                     intermediate.add(new MainActivity.TextBlock(typoMatch.source, typoMatch.correction, real, 1.0f, type));
                     hasDictionaryCorrection |= real && !typoMatch.custom;
                     cursor += typoMatch.source.length();
+                    plainStart = cursor;
                     skipUntil = Math.max(skipUntil, sentenceStart + cursor);
                     continue;
                 }
 
-                GrammarHit grammarHit = grammarHits[cursor];
-                if (grammarHit != null
-                        && !coversDictionaryCorrection(sentence, cursor + 1, grammarHit.end, dictionary, protectedPositions)) {
-                    flushPlain(intermediate, plain);
-                    appendGrammarHit(intermediate, grammarHit, grammarHits);
-                    cursor = grammarHit.end;
-                    continue;
-                }
-
-                String quantifier = protectedPositions[cursor] ? null : quantifierReplacement(sentence, cursor);
-                if (quantifier != null) {
-                    flushPlain(intermediate, plain);
-                    intermediate.add(new MainActivity.TextBlock(sentence.substring(cursor, cursor + 1), quantifier, true, 1.0f, 3));
-                    cursor++;
-                    continue;
-                }
-
-                char current = sentence.charAt(cursor++);
-                if (isTarget(current)) {
-                    flushPlain(intermediate, plain);
-                    String value = String.valueOf(current);
-                    intermediate.add(new MainActivity.TextBlock(value, value, false, 0f, 0));
-                } else plain.append(current);
+                cursor++;
             }
-            flushPlain(intermediate, plain);
+            appendPlainSpan(intermediate, sentence, plainStart, sentence.length());
 
-            if (hasDictionaryCorrection) {
-                intermediate = cascadeDictionaryRules(intermediate, fastMode, proofreader, exactAll, originalStart, listener);
-                if (intermediate == null) return null;
-            }
+            intermediate = applyGrammar(intermediate, fastMode, proofreader, exactAll, originalStart,
+                    hasDictionaryCorrection, blockedPositions, exactPositions, originalStart == sentenceStart, listener);
+            if (intermediate == null) return null;
             int originalPosition = originalStart;
             for (MainActivity.TextBlock block : intermediate) {
                 if (block.isMutable) {
@@ -775,11 +757,6 @@ public final class CorrectionCore {
                     if (listener != null) {
                         String message = block.current.isEmpty() && block.type == 6 ? "删除：" + block.original
                                 : "发现错误：" + block.original + " → " + block.current;
-                        if (block.type == 3) {
-                            String left = text.substring(originalPosition - 1, originalPosition);
-                            String right = text.substring(originalPosition + 1, originalPosition + 2);
-                            message = "发现错误：" + left + block.original + right + " → " + left + block.current + right;
-                        }
                         listener.onError(message + " | 共 " + errorCount + " 处", true);
                     }
                 }
@@ -851,16 +828,6 @@ public final class CorrectionCore {
 
     private static int progressInterval(int length) { return length > 100000 ? 1200 : (length > 30000 ? 700 : 350); }
 
-    private static boolean coversDictionaryCorrection(String sentence, int from, int end,
-            MainActivity.TypoIndex dictionary, boolean[] protectedPositions) {
-        for (int at = from; at < end; at++) {
-            if (protectedPositions[at]) continue;
-            MainActivity.TypoMatch match = dictionary.find(sentence, at, protectedPositions);
-            if (match != null && !match.custom && !match.source.equals(match.correction)) return true;
-        }
-        return false;
-    }
-
     private static String quantifierReplacement(String sentence, int at) {
         if (at <= 0 || at + 1 >= sentence.length()) return null;
         char number = sentence.charAt(at - 1), quantifier = sentence.charAt(at), noun = sentence.charAt(at + 1);
@@ -930,51 +897,53 @@ public final class CorrectionCore {
         return block.type == 2 && block.isMutable && !block.current.isEmpty();
     }
 
-    private static List<MainActivity.TextBlock> cascadeDictionaryRules(List<MainActivity.TextBlock> blocks,
-            boolean fastMode, Proofreader proofreader, boolean[] exactAll, int originalStart, Listener listener) {
-        StringBuilder corrected = new StringBuilder(), beforeTypos = new StringBuilder();
-        int[] starts = new int[blocks.size() + 1];
-        for (int i = 0; i < blocks.size(); i++) {
-            MainActivity.TextBlock block = blocks.get(i);
-            starts[i] = corrected.length();
-            corrected.append(block.current);
-            beforeTypos.append(isDictionaryCorrection(block) ? block.original : block.current);
+    // Stage dictionary and repetition changes first. Grammar matches the resulting text once.
+    private static List<MainActivity.TextBlock> applyGrammar(List<MainActivity.TextBlock> blocks,
+            boolean fastMode, Proofreader proofreader, boolean[] exactAll, int originalStart,
+            boolean hasDictionaryCorrection, boolean[] originalBlocked, boolean[] originalExact,
+            boolean atSegmentStart, Listener listener) {
+        String projected;
+        int[] starts = null, owners = null;
+        boolean[] blocked, exact;
+        if (atSegmentStart && blocks.size() == 1 && blocks.get(0).type == 0) {
+            projected = blocks.get(0).current;
+            blocked = originalBlocked;
+            exact = originalExact;
+        } else {
+            StringBuilder corrected = new StringBuilder();
+            starts = new int[blocks.size() + 1];
+            for (int i = 0; i < blocks.size(); i++) {
+                starts[i] = corrected.length();
+                corrected.append(blocks.get(i).current);
+            }
+            projected = corrected.toString();
+            int length = projected.length();
+            starts[blocks.size()] = length;
+            exact = hasDictionaryCorrection
+                    ? proofreader.exactPositions(projected, () -> listener != null && listener.isCancelled())
+                    : new boolean[length];
+            if (exact == null) return null;
+            blocked = new boolean[length];
+            if (hasDictionaryCorrection) owners = new int[length];
+            int original = originalStart;
+            for (int i = 0; i < blocks.size(); i++) {
+                MainActivity.TextBlock block = blocks.get(i);
+                int start = starts[i], end = starts[i + 1];
+                if (isDictionaryCorrection(block)) Arrays.fill(owners, start, end, i + 1);
+                else if (block.type == 2) {
+                    // A protected word can provide context for a rule that leaves it intact.
+                    Arrays.fill(exact, start, end, true);
+                } else if (block.type != 0) {
+                    Arrays.fill(blocked, start, end, true);
+                    if (start == end) Arrays.fill(blocked, Math.max(0, start - 1), Math.min(length, end + 1), true);
+                } else {
+                    for (int at = start; at < end; at++) exact[at] |= exactAll[original + at - start];
+                }
+                original += block.original.length();
+            }
         }
-        String projected = corrected.toString(), before = beforeTypos.toString();
-        if (projected.equals(before)) return blocks;
         int length = projected.length();
-        starts[blocks.size()] = length;
-        boolean[] exact = proofreader.exactPositions(projected, () -> listener != null && listener.isCancelled());
-        if (exact == null) return null;
-        boolean[] blocked = new boolean[length];
-        int[] owners = new int[length], beforePositions = new int[length + 1];
-        int original = originalStart, beforeOffset = 0;
-        for (int i = 0; i < blocks.size(); i++) {
-            MainActivity.TextBlock block = blocks.get(i);
-            int start = starts[i], end = starts[i + 1];
-            boolean typo = isDictionaryCorrection(block);
-            if (typo) Arrays.fill(owners, start, end, i + 1);
-            else if (block.type != 0) {
-                // Keep custom mappings, whitelist entries and edits from the first pass intact.
-                Arrays.fill(blocked, start, end, true);
-                if (start == end) Arrays.fill(blocked, Math.max(0, start - 1), Math.min(length, end + 1), true);
-            }
-            for (int at = start; at < end; at++) {
-                int offset = at - start;
-                beforePositions[at] = beforeOffset + (typo ? 0 : offset);
-                if (block.type == 0) exact[at] |= exactAll[original + offset];
-            }
-            beforeOffset += typo ? block.original.length() : block.current.length();
-            original += block.original.length();
-        }
-        beforePositions[length] = before.length();
-        GrammarHit[] hits = collectGrammarHits(projected, fastMode, blocked, exact, (rule, match) -> {
-            // Also detect rules whose lookaround was enabled by a correction outside the match.
-            int start = match.start(), end = match.end(), beforeStart = beforePositions[start];
-            for (int i = start; i < end; i++) if (owners[i] != 0) return true;
-            Matcher prior = rule.pattern.matcher(before).useTransparentBounds(true).useAnchoringBounds(false);
-            return !prior.region(beforeStart, before.length()).lookingAt() || !prior.group().equals(match.group());
-        });
+        GrammarHit[] hits = collectGrammarHits(projected, fastMode, blocked, exact);
 
         List<MainActivity.TextBlock> result = new ArrayList<>(blocks.size());
         BlockCursor source = new BlockCursor(blocks);
@@ -985,21 +954,18 @@ public final class CorrectionCore {
         for (int at = 0; at < length;) {
             if (listener != null && listener.isCancelled()) return null;
             GrammarHit hit = hits[at];
+            String quantifier = hit == null && !blocked[at] && !exact[at] ? quantifierReplacement(projected, at) : null;
+            if (hit == null && quantifier == null) { at++; continue; }
             rendered.clear();
-            if (hit != null) {
-                appendGrammarHit(rendered, hit, hits);
-            } else if (!blocked[at] && !exact[at]) {
-                String quantifier = quantifierReplacement(projected, at);
-                if (quantifier != null && (owners[at] != 0 || !quantifier.equals(quantifierReplacement(before, beforePositions[at]))))
-                    appendGrammarChange(rendered, projected.substring(at, at + 1), quantifier, "量词搭配");
-            }
+            if (hit != null) appendGrammarHit(rendered, hit, hits);
+            else appendGrammarChange(rendered, projected.substring(at, at + 1), quantifier, "量词搭配");
             int next = at;
             for (MainActivity.TextBlock change : rendered) {
                 int start = next;
                 next += change.original.length();
                 if (!change.isMutable) continue;
-                int left = start < length ? owners[start] : 0;
-                int right = next > start ? owners[next - 1] : 0;
+                int left = owners != null && start < length ? owners[start] : 0;
+                int right = owners != null && next > start ? owners[next - 1] : 0;
                 // A replacement inside a dictionary correction must still restore the whole source word.
                 int spanStart = left == 0 ? start : starts[left - 1];
                 int spanEnd = right == 0 ? next : starts[right];
@@ -1021,9 +987,10 @@ public final class CorrectionCore {
             }
             at = hit == null ? at + 1 : hit.end;
         }
-        if (changeEnd < 0) return blocks;
-        replacement.append(projected, copiedTo, changeEnd);
-        appendGrammarChange(result, source.take(changeEnd, null), replacement.toString(), explanation);
+        if (changeEnd >= 0) {
+            replacement.append(projected, copiedTo, changeEnd);
+            appendGrammarChange(result, source.take(changeEnd, null), replacement.toString(), explanation);
+        }
         source.take(length, result);
         return result;
     }
@@ -1041,7 +1008,7 @@ public final class CorrectionCore {
                 int stop = Math.min(block.current.length(), offset + end - position);
                 boolean whole = offset == 0 && stop == block.current.length();
                 if (kept == null) original.append(whole ? block.original : block.original.substring(offset, stop));
-                else if (whole) kept.add(block);
+                else if (whole && block.type != 0) kept.add(block);
                 else appendNormalText(kept, block.current.substring(offset, stop));
                 position += stop - offset;
                 if (stop == block.current.length()) { index++; offset = 0; }
@@ -1082,9 +1049,10 @@ public final class CorrectionCore {
         return true;
     }
     private static boolean isMajorPunct(String s) { return s.length() == 1 && "。；：".indexOf(s.charAt(0)) >= 0; }
-    private static void flushPlain(List<MainActivity.TextBlock> blocks, StringBuilder plain) {
-        if (plain.length() == 0) return;
-        String value = plain.toString(); blocks.add(new MainActivity.TextBlock(value, value, false, 0f, 0)); plain.setLength(0);
+    private static void appendPlainSpan(List<MainActivity.TextBlock> blocks, String text, int start, int end) {
+        if (start >= end) return;
+        String value = text.substring(start, end);
+        blocks.add(new MainActivity.TextBlock(value, value, false, 0f, 0));
     }
     private static void appendNormalText(List<MainActivity.TextBlock> blocks, String text) {
         int runStart = 0;
@@ -2557,7 +2525,7 @@ public class MainActivity extends AppCompatActivity {
             String emotionDegreeActions = "(?:跳|站|蹦|哭|笑|喊|跑|摔|跌|晕|叫)";
             String pairQuantifiers = "个|位|名|组|批|队|班|户|家|对|双|只|条|件|本|辆|台|间|座|所|头|匹|口|份|张|次|场|套|种|类|项|门|部";
             String locations = "家|家里|家中|家外|卧室|卧房|厨房|客厅|卫生间|洗手间|厕所|茅房|阳台|书房|餐厅|饭厅|浴室|走廊|走道|院子|庭院|地|车|超市|商场|商店|菜市场|农贸市场|便利店|小卖部|饭店|酒店|旅馆|宾馆|招待所|餐馆|食堂|咖啡厅|咖啡馆|酒吧|网吧|电影院|戏院|剧院|银行|邮局|理发店|药店|诊所|门|商铺|店|医院|学校|幼儿园|小学|中学|初中|高中|大学|教室|图书馆|操场|宿舍|办公楼|公司|办公室|工厂|厂里|车间|会议室|派出所|警察局|公安局|消防队|法院|政府|监狱|看守所|基地|营地|阵地|车站|火车站|高铁站|地铁站|公交站|客运站|飞机场|机场|码头|港口|停车场|加油站|收费站|高速上|马路上|街上|路上|十字路口|桥上|桥下|隧道里|铁轨上|公园|动物园|植物园|游乐场|游乐园|广场|体育馆|体育场|游泳池|健身房|博物馆|展览馆|美术馆|海|沙滩|海岸|山上|山下|山顶|树林|森林|湖边|河边|江边|水里|田里|农田|地里|村|乡|农村|城里|城市|市区|郊区|景区|野外|这里|那里|哪里|这儿|那儿|哪儿|上面|下面|里面|外面|上边|下边|里边|外边|左边|右边|前面|后面|旁边|附近|远处|高处|低处|深处|内部|外部|中心|中间|顶上|底下|背后|面前";
-            String decreaseArabic = "(?:[2-9][0-9]*(?:\\.[0-9]+)?|1(?:[0-9]+|\\.(?:0*[1-9][0-9]*)))";
+            String decreaseArabic = "(?:[1-9][0-9]+(?:\\.[0-9]+)?|[2-9](?:\\.[0-9]+)?|1\\.0*[1-9][0-9]*)";
             String decreaseScaled = "(?:[1-9][0-9]*(?:\\.[0-9]+)?(?:[十百千]?(?:万|亿)|十|百|千))";
             String decreaseChinese = "(?:[二两三四五六七八九十百千万亿][零〇一二两三四五六七八九十百千万亿]*|一[十百千万亿][零〇一二两三四五六七八九十百千万亿]*)";
             String decreaseEnd = "(?=$|[，,。；;！？!?：:、\\n]|而|但|却)";
@@ -2669,7 +2637,7 @@ public class MainActivity extends AppCompatActivity {
             addRule("(截至|截止到)([^，,。；;！？!?：:、\\n]{1,15}?)(为止)", new String[][]{{null, ""}, {"", null}});
             addRule("(互相|相互)( *)(厮打|角逐|探讨|商榷)", new String[][]{{"", null}});
             addRule("(第一|最佳|首要)( *)(首选)", new String[][]{{"", null}});
-            addRule("(无时无刻)( *)(都)", new String[][]{{null, "不"}});
+            addRule("(无时无刻)([ 　]*)(都)(?![ 　]*(?:不|没|未|无|别))", new String[][]{{null, "不"}});
             addRule("(几(?:十|百|千|万|亿)?|十几|几十|百余|千余|万余|亿余|数十|数百|数千|数万|数十万|数百万|数千万|数亿|上百|上千|上万|上亿|上百万|上千万|成百上千|成千上万|二三十|三四十|四五十|五六十|六七十|七八十|八九十)([ 　]*(?:亿元|万元|公里|千米|厘米|平方米|千克|公斤|小时|分钟|个人|元|人|名|位|个|岁|年|月|日|天|米|斤|克|吨|次|台|辆|本|件)?[ 　]*)(左右|上下)(?!划|移动|摇|摆|晃|浮|跳|走|看|张望|转|翻|起伏|震动|颠簸|滑|游|飞|跑|滚|上下班|班|文|铺|楼|车|床|台|手|脚|眼|打量|扫视|观察|攀爬|穿梭|升降|下沉|下降|上升|落|沉|坠)(?=$|[的，,。；;！？!?：:\\n])", new String[][]{{null, "", "重复啰嗦"}});
             addRule("([0-9一二两三四五六七八九十百千万亿]+(?:多|余|来)|[0-9]+几|[一二两三四五六七八九]十几)([ 　]*(?:亿元|万元|公里|千米|厘米|平方米|千克|公斤|小时|分钟|个人|元|人|名|位|个|岁|年|月|日|天|米|斤|克|吨|次|台|辆|本|件)?[ 　]*)(左右|上下)(?!划|移动|摇|摆|晃|浮|跳|走|看|张望|转|翻|起伏|震动|颠簸|滑|游|飞|跑|滚|上下班|班|文|铺|楼|车|床|台|手|脚|眼|打量|扫视|观察|攀爬|穿梭|升降|下沉|下降|上升|落|沉|坠)(?=$|[的，,。；;！？!?：:\\n])", new String[][]{{null, "", "重复啰嗦"}});
             addRule("(约|大约|大概|将近|接近)([ 　]*[0-9一二两三四五六七八九十百千万亿两零〇]+[ 　]*)(多|余|来)(?=[个人名位只条头匹辆部台口尾座把本次场局件张岁年月日天小时分钟秒米公里斤公斤千克克吨亩公顷元万元亿元%％度])", new String[][]{{"", null, "重复啰嗦"}});
@@ -2701,7 +2669,8 @@ public class MainActivity extends AppCompatActivity {
             addRule("(最少|至少|最低)([ 　]*)(不少于|不低于|不能少于|不能低于)(?=[ 　]*[0-9零〇一二两三四五六七八九十百千万亿])", new String[][]{{null, "", "语义重复"}, {"", null, "语义重复"}});
             addRule("(一直|始终|长期)([ 　]*)(悬而未决)(?=[，,。；;！？!?：:\\n]|$)", new String[][]{{"", null, "语义重复"}});
             addRule("(各种|各类|各种各样)(的?[ 　]*)(形形色色)(?=[ 　]*(?:的人|的物品|的事物|的商品))", new String[][]{{"", null, "语义重复"}});
-            addRule("(许多|众多|很多|广大|无数|一大批|大量|所有|各位|万千)([ \\u3000]*(?:[^，,。；;！？!?：:\\n]{1,15}的[ \\u3000]*)?)(莘莘学子)", new String[][]{{"", null, "语义重复：“莘莘”本身已表示众多"}});
+            // “许多学校的”修饰学校，且“所有”表示范围，均不能当成重复数量词删除。
+            addRule("((?:许多|众多|很多|广大|无数|一大批|大量|万千)(?:[ 　]*的)?)([ 　]*(?:(?:来自[^，,。；;！？!?：:\\n]{1,13}|优秀|勤奋|年轻|杰出)的[ 　]*)?)(莘莘学子)", new String[][]{{"", null, "语义重复：“莘莘”本身已表示众多"}});
             addRule("(漫山遍野|铺天盖地|满山遍野)([ 　]*)(到处|随处|处处)(?=[ 　]*(?:都是|可见|是))", new String[][]{{null, "", "语义重复"}});
             addRule("(人为(?:地|的)?)([ 　]*)(蓄意破坏|蓄意)(?=[，,。；;！？!?：:\\n]|$|的)", new String[][]{{"", null, "语义重复"}});
             addRule("(更加|越发|日益|变得更加)([ 　]*)(变本加厉)(?=[，,。；;！？!?：:\\n]|$|地)", new String[][]{{"", null, "语义重复"}});
@@ -2968,7 +2937,7 @@ public class MainActivity extends AppCompatActivity {
             addRule("(启用)([ \\u3000]*(?:了|过)?[ \\u3000]*(?:(?:一位|两位|几位|一批|多名|年轻的|新来的|优秀的|有经验的)[ \\u3000]*){1,2})(演员|导演|教练|干部|新人)(?=$|[，,。；;！？!?：:、\\n了后时])", new String[][]{{"起用", null, "任用人用“起用”，设施或设备用“启用”"}});
             addRule("(起用)([ \\u3000]*(?:了|过)?[ \\u3000]*(?:(?:这台|那台|一台|两台|新的|新建的|备用的|全新的)[ \\u3000]*){0,2})(设备|机器|系统|机场|印章|账号|账户)(?=$|[，,。；;！？!?：:、\\n了后时])", new String[][]{{"启用", null, "开始使用设施、设备或账号用“启用”"}});
             addRule("(登陆)([ \\u3000]*(?:(?:个人的|自己的|官方网站的|指定的|学校的|公司的|新的|该)[ \\u3000]*){1,2})(账号|账户|网站|网页)(?=$|[，,。；;！？!?：:、\\n了后时])", new String[][]{{"登录", null, "进入网站或账号用“登录”"}});
-            addRule("(召开)([  ]*(?:了|过)?[  ]*(?:(?:一次|一场|两场|大型的|隆重的|盛大的|年度的|简短的)[  ]*){0,2})(开幕式|闭幕式|颁奖典礼|婚礼|毕业典礼)(?=$|[，,。；;！？!?：:、\n了后时])", new String[][]{{"举行", null, "典礼、仪式用“举行”，“召开”用于会议"}});
+            addRule("(召开)([ 　]*(?:了|过)?[ 　]*(?:(?:一次|一场|两场|大型的|隆重的|盛大的|年度的|简短的)[ 　]*){0,2})(开幕式|闭幕式|颁奖典礼|婚礼|毕业典礼)(?=$|[，,。；;！？!?：:、\\n了后时])", new String[][]{{"举行", null, "典礼、仪式用“举行”，“召开”用于会议"}});
             addRule("(召开)([ \\u3000]*(?:了|过)?[ \\u3000]*(?:(?:一期|两期|多期|一次|一场|大型的|面向青年的)[ \\u3000]*){1,2})(培训班|训练班|展览)(?=$|[，,。；;！？!?：:、\\n了后时])", new String[][]{{"举办", null, "培训班、展览用“举办”"}});
             addRule("(之所以)([^，,。；;！？!?：:\\n]{2,24}[，,][ \\u3000]*)(为的是)(?=让|使|保证|确保|提高|降低|减少|增加|帮助|保护|便于|方便|避免|防止)", new String[][]{{"", null, "目的关系不叠加“之所以”"}});
             // 规则1：纠正“幅”误用（针对成对、成套物品）。形容词已改为可选且支持任意修饰语
@@ -2977,7 +2946,7 @@ public class MainActivity extends AppCompatActivity {
             // 规则2：纠正“副”误用（针对图画、字画类物品）。形容词已改为可选且支持任意修饰语
             addRule("(?<=[一二两三四五六七八九十几这那0-9])(副)([ \\u3000]*(?:[^，,。；;！？!?：:\\n]{1,15}的[ \\u3000]*)?)(油画|图画|画卷|地图|山水画|字画|水墨画|照片)(?=$|[，,。；;！？!?：:、\\n了后时])", new String[][]{{"幅", null, "图画、字画等用“幅”"}});
 
-            // 规则3：纠正“眼睛”拼音误拼。正确传入第1组和第3组的替换词
+            // 修正“一幅/一副……眼睛”中的量词及“眼镜”错写。
             addRule("(?<=[一二两三四五六七八九十几这那0-9])(幅|副)([ \\u3000]*(?:[^，,。；;！？!?：:\\n]{1,15}的[ \\u3000]*)?)(眼睛)(?=$|[，,。；;！？!?：:、\\n了后时])", new String[][]{{"副", "眼镜", "量词与名词搭配不当：通常为“一副眼镜”"}});
             addRule("(几个)([ \\u3000]*(?:(?:年轻的|新来的|退休的|优秀的|年长的)[ \\u3000]*)?)(校长|老师|领导|教授|医生|警察|党员|干部)(?=$|[，,。；;！？!?：:、\\n都在来去说问讲])", new String[][]{{"几位", null, "人物量词"}});
             // 概数连用不加顿号（仅匹配常见相邻概数对，排除“第/初”及易作序数的名/层/项/条/篇）。
