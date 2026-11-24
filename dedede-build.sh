@@ -753,7 +753,7 @@ public final class CorrectionCore {
             
             List<MainActivity.TextBlock> intermediate = new ArrayList<>(Math.max(16, sentence.length() / 4));
             StringBuilder plain = new StringBuilder();
-            int cursor = Math.max(0, skipUntil - sentenceStart);
+            cursor = Math.max(0, skipUntil - sentenceStart);
             int originalStart = sentenceStart + cursor;
             while (cursor < sentence.length()) {
                 if (listener != null && listener.isCancelled()) return null;
