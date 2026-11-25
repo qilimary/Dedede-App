@@ -46,8 +46,8 @@ android {
         applicationId "com.app.dededi.pte"
         minSdk 24
         targetSdk 36
-        versionCode 47
-        versionName "4.7"
+        versionCode 48
+        versionName "4.8"
         ndk { abiFilters "arm64-v8a" }
         externalNativeBuild { cmake { cppFlags ""; arguments "-DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON" } }
     }
@@ -116,15 +116,16 @@ cat > "app/src/main/AndroidManifest.xml" <<'DEDEDE_SOURCE_EOF'
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE"/>
     <application android:name=".DededeApp" android:allowBackup="false" android:icon="@mipmap/ic_launcher" android:roundIcon="@mipmap/ic_launcher" android:label="纠错 Pro" android:theme="@style/Theme.Dedede" android:enableOnBackInvokedCallback="false">
         <activity android:name=".MainActivity" android:exported="true" android:launchMode="singleTask" android:windowSoftInputMode="adjustResize">
+            <intent-filter><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.LAUNCHER"/></intent-filter>
             <intent-filter><action android:name="android.intent.action.SEND"/><category android:name="android.intent.category.DEFAULT"/><data android:mimeType="text/plain"/></intent-filter>
             <intent-filter><action android:name="android.intent.action.SEND"/><category android:name="android.intent.category.DEFAULT"/><data android:mimeType="image/*"/></intent-filter>
         </activity>
-        <activity-alias android:name=".NormalLauncher" android:targetActivity=".MainActivity" android:exported="true" android:enabled="true" android:icon="@mipmap/ic_launcher" android:label="纠错 Pro">
-            <intent-filter><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.LAUNCHER"/></intent-filter>
-        </activity-alias>
-        <activity-alias android:name=".LanLauncher" android:targetActivity=".MainActivity" android:exported="true" android:enabled="false" android:icon="@mipmap/ic_launcher_lan" android:label="纠错 Pro">
-            <intent-filter><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.LAUNCHER"/></intent-filter>
-        </activity-alias>
+        <!-- Existing explicit home shortcuts can still open the new entry. -->
+        <activity-alias android:name=".NormalLauncher" android:targetActivity=".MainActivity" android:exported="true"/>
+        <activity-alias android:name=".LanLauncher" android:targetActivity=".MainActivity" android:exported="true"/>
+        <receiver android:name=".LauncherUpgradeReceiver" android:exported="false">
+            <intent-filter><action android:name="android.intent.action.MY_PACKAGE_REPLACED"/></intent-filter>
+        </receiver>
         <activity android:name=".FilePickerActivity" android:theme="@android:style/Theme.Translucent.NoTitleBar" android:taskAffinity="${applicationId}.filepicker" android:excludeFromRecents="true"/>
         <activity android:name=".SymbolCleanActivity" android:theme="@android:style/Theme.Translucent.NoTitleBar" android:taskAffinity="${applicationId}.symbolclean" android:excludeFromRecents="true"/>
         <service android:name=".FloatingService" android:exported="false" android:foregroundServiceType="specialUse">
@@ -132,6 +133,37 @@ cat > "app/src/main/AndroidManifest.xml" <<'DEDEDE_SOURCE_EOF'
         </service>
     </application>
 </manifest>
+DEDEDE_SOURCE_EOF
+
+mkdir -p "app/src/main/java/com/app/dedede"
+cat > "app/src/main/java/com/app/dedede/LauncherUpgradeReceiver.java" <<'DEDEDE_SOURCE_EOF'
+package com.app.dedede;
+
+import android.content.BroadcastReceiver;
+import android.content.ComponentName;
+import android.content.Context;
+import android.content.Intent;
+import android.content.pm.PackageManager;
+import android.util.Log;
+
+public final class LauncherUpgradeReceiver extends BroadcastReceiver {
+    @Override public void onReceive(Context context, Intent intent) {
+        if (!Intent.ACTION_MY_PACKAGE_REPLACED.equals(intent.getAction())) return;
+        PackageManager manager = context.getPackageManager();
+        // Android keeps the old per-user component state when the APK is replaced.
+        for (String name : new String[]{"com.app.dedede.NormalLauncher", "com.app.dedede.LanLauncher"}) {
+            ComponentName alias = new ComponentName(context, name);
+            try {
+                if (manager.getComponentEnabledSetting(alias) != PackageManager.COMPONENT_ENABLED_STATE_DEFAULT) {
+                    manager.setComponentEnabledSetting(alias, PackageManager.COMPONENT_ENABLED_STATE_DEFAULT,
+                            PackageManager.DONT_KILL_APP);
+                }
+            } catch (RuntimeException e) {
+                Log.w("Dedede", "旧桌面快捷方式状态恢复失败", e);
+            }
+        }
+    }
+}
 DEDEDE_SOURCE_EOF
 
 mkdir -p "app/src/main/cpp"
@@ -6507,41 +6539,6 @@ public class MainActivity extends AppCompatActivity {
 
     @Override protected void onPause() { flushInputSync(); saveSettings(currentIsFast); super.onPause(); }
 
-    @Override protected void onStop() {
-        super.onStop();
-        // Changing launcher components can refresh the launcher task. Wait until our window is hidden.
-        if (!isChangingConfigurations()) syncLauncherIcon(sp.getBoolean("lanEdition", false));
-    }
-
-    private void syncLauncherIcon(boolean lan) {
-        android.content.pm.PackageManager pm = getPackageManager();
-        android.content.ComponentName normal = new android.content.ComponentName(this, "com.app.dedede.NormalLauncher");
-        android.content.ComponentName special = new android.content.ComponentName(this, "com.app.dedede.LanLauncher");
-        android.content.ComponentName enable = lan ? special : normal;
-        android.content.ComponentName disable = lan ? normal : special;
-        int on = android.content.pm.PackageManager.COMPONENT_ENABLED_STATE_ENABLED;
-        int off = android.content.pm.PackageManager.COMPONENT_ENABLED_STATE_DISABLED;
-        int manifestDefault = android.content.pm.PackageManager.COMPONENT_ENABLED_STATE_DEFAULT;
-        int keep = android.content.pm.PackageManager.DONT_KILL_APP;
-        try {
-            int enableState = pm.getComponentEnabledSetting(enable);
-            int disableState = pm.getComponentEnabledSetting(disable);
-            boolean needsEnable = enableState != on && (lan || enableState != manifestDefault);
-            boolean needsDisable = disableState != off && (lan || disableState != manifestDefault);
-            if (!needsEnable && !needsDisable) return;
-            if (android.os.Build.VERSION.SDK_INT >= 33 && needsEnable && needsDisable) {
-                pm.setComponentEnabledSettings(java.util.Arrays.asList(
-                    new android.content.pm.PackageManager.ComponentEnabledSetting(enable, on, keep),
-                    new android.content.pm.PackageManager.ComponentEnabledSetting(disable, off, keep)));
-            } else {
-                if (needsEnable) pm.setComponentEnabledSetting(enable, on, keep);
-                if (needsDisable) pm.setComponentEnabledSetting(disable, off, keep);
-            }
-        } catch (RuntimeException e) {
-            android.util.Log.w("Dedede", "系统未更新桌面图标，应用内配色已保存", e);
-        }
-    }
-
     @Override protected void onDestroy() {
         inputSyncHandler.removeCallbacksAndMessages(null);
         isCheckingMain = false; inferenceGeneration++; importGeneration++; importing = false;
@@ -7694,7 +7691,7 @@ DEDEDE_SOURCE_EOF
 
 mkdir -p "app/src/main/res/layout"
 cat > "app/src/main/res/drawable/bg_history_menu.xml" <<'DEDEDE_SOURCE_EOF'
-<inset xmlns:android="http://schemas.android.com/apk/res/android" android:insetLeft="3dp" android:insetRight="3dp" android:insetTop="3dp" android:insetBottom="3dp">
+<inset xmlns:android="http://schemas.android.com/apk/res/android" android:insetLeft="2.85dp" android:insetRight="2.85dp" android:insetTop="2.85dp" android:insetBottom="2.85dp">
     <ripple android:color="?attr/colorControlHighlight">
         <item><shape><corners android:radius="4dp"/><solid android:color="@color/history_menu_bg"/></shape></item>
     </ripple>
@@ -7702,7 +7699,7 @@ cat > "app/src/main/res/drawable/bg_history_menu.xml" <<'DEDEDE_SOURCE_EOF'
 DEDEDE_SOURCE_EOF
 
 cat > "app/src/main/res/drawable/ic_history_menu.xml" <<'DEDEDE_SOURCE_EOF'
-<vector xmlns:android="http://schemas.android.com/apk/res/android" android:width="20dp" android:height="20dp" android:viewportWidth="24" android:viewportHeight="24">
+<vector xmlns:android="http://schemas.android.com/apk/res/android" android:width="19dp" android:height="19dp" android:viewportWidth="24" android:viewportHeight="24">
     <path android:fillColor="@android:color/transparent" android:strokeColor="@color/history_menu_ink" android:strokeWidth="1.65" android:strokeLineCap="round" android:strokeLineJoin="round" android:pathData="M3,6h18 M3,12h18 M3,18h18"/>
 </vector>
 DEDEDE_SOURCE_EOF
@@ -7745,7 +7742,7 @@ cat > "app/src/main/res/layout/activity_main.xml" <<'DEDEDE_SOURCE_EOF'
                 <LinearLayout android:layout_width="wrap_content" android:layout_height="wrap_content" android:orientation="horizontal" android:layout_alignParentEnd="true" android:layout_centerVertical="true" android:gravity="center_vertical">
                     <androidx.appcompat.widget.AppCompatButton android:id="@+id/btnFloat" android:layout_width="24dp" android:layout_height="24dp" android:layout_marginEnd="8dp" android:text="✓" android:textSize="12sp" android:background="@drawable/circle_btn_bg" android:textColor="#FFFFFF" android:stateListAnimator="@null" android:padding="0dp"/>
                     <Button android:id="@+id/btnFont" android:layout_width="34dp" android:layout_height="34dp" android:text="A" android:textStyle="bold" android:textSize="19sp" android:background="@null" android:textColor="#2196F3" android:padding="0dp" android:insetTop="0dp" android:insetBottom="0dp"/>
-                    <ImageButton android:id="@+id/btnMenu" android:layout_width="32dp" android:layout_height="32dp" android:layout_marginStart="8dp" android:src="@drawable/ic_history_menu" android:background="@drawable/bg_history_menu" android:contentDescription="历史记录" android:padding="6dp"/>
+                    <ImageButton android:id="@+id/btnMenu" android:layout_width="30.4dp" android:layout_height="30.4dp" android:layout_marginStart="8dp" android:src="@drawable/ic_history_menu" android:background="@drawable/bg_history_menu" android:contentDescription="历史记录" android:padding="5.5dp"/>
                 </LinearLayout>
             </RelativeLayout>
 
@@ -7860,7 +7857,7 @@ cat > "app/src/main/res/layout/activity_main.xml" <<'DEDEDE_SOURCE_EOF'
     </FrameLayout>
 
     <LinearLayout android:id="@+id/drawerContent" android:layout_width="315dp" android:layout_height="match_parent" android:layout_gravity="end" android:background="@color/bg_color" android:orientation="vertical" android:clickable="true" android:focusable="true">
-        <ScrollView android:layout_width="match_parent" android:layout_height="match_parent" android:padding="16dp">
+        <ScrollView android:layout_width="match_parent" android:layout_height="match_parent" android:paddingStart="16dp" android:paddingEnd="16dp" android:paddingTop="8dp" android:paddingBottom="16dp">
             <LinearLayout android:orientation="vertical" android:layout_width="match_parent" android:layout_height="wrap_content">
                 <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:gravity="center_vertical" android:layout_marginBottom="8dp">
                     <TextView android:id="@+id/tvCustomTyposTitle" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:text="自定义错词库" android:textSize="16sp" android:textStyle="bold" android:textColor="@color/text_primary"/>
@@ -7923,7 +7920,7 @@ mkdir -p "app/src/main/res/values-night"
 cat > "app/src/main/res/values-night/colors.xml" <<'DEDEDE_SOURCE_EOF'
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <color name="history_menu_bg">#565B62</color><color name="history_menu_ink">#D7DBDF</color>
+    <color name="history_menu_bg">#5C6168</color><color name="history_menu_ink">#D7DBDF</color>
     <color name="bg_color">#121212</color>
     <color name="custom_rule_action">#9AC4A3</color>
     <color name="card_bg">#1E1E1E</color>
@@ -7952,7 +7949,7 @@ mkdir -p "app/src/main/res/values"
 cat > "app/src/main/res/values/colors.xml" <<'DEDEDE_SOURCE_EOF'
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <color name="history_menu_bg">#C7C7C7</color><color name="history_menu_ink">#626870</color>
+    <color name="history_menu_bg">#CDCDCD</color><color name="history_menu_ink">#626870</color>
     <color name="icon_bg">#2196F3</color>
     <color name="bg_color">#F8F9FA</color>
     <color name="custom_rule_action">#568060</color>
@@ -8207,7 +8204,6 @@ cp generated_security/key-part-a.cpp generated_security/key-part-b.cpp app/src/m
 cp pinyin.txt terms.txt sys_core_p.dat sys_vocab_p.dat sys_typo.dat app/src/main/assets/
 rm -f app/src/main/assets/sys_idioms.dat
 cp app_icon.png app/src/main/res/mipmap-xxxhdpi/ic_launcher.png
-cp lan.png app/src/main/res/mipmap-xxxhdpi/ic_launcher_lan.png
 python3 protect_rules.py
 
 
