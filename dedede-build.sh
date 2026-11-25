@@ -58,8 +58,8 @@ android {
         applicationId "com.app.dededi.pte"
         minSdk 24
         targetSdk 36
-        versionCode 43
-        versionName "4.3"
+        versionCode 45
+        versionName "4.5"
         ndk { abiFilters "arm64-v8a" }
         externalNativeBuild { cmake { cppFlags ""; arguments "-DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON" } }
     }
@@ -559,11 +559,11 @@ final class TermMatcher {
     private static final String[] RIGHT = words("的 是 与 和 或 等 及 为 已 后 前 时 中 可 具有 有助于 即将 明显 异常 增高 降低 升高 正常 检查 检测 结果 分析 水平 患者 治疗 技术 方法 过程");
     private static final String[] INTRO = words("全称是 全称为 正式名称是 正式名称为 代号是 代号为 代号叫 代号 名字叫 名字是 招牌上写着 地图上标着 名叫 名为 叫作 叫做 他叫 她叫");
     private static final String[] MOVE = words("来到了 走过 来到过 到了 去了 住在 守在 经过 赶到 来到 抵达 前往 走进 走出 走到 回到 路过 离开 位于 途经 就在 约在 站在 在 到 去 从 向");
-    private static final String[] SUBJECT = words("只见 看见 看向 转向 望向 望着 看着 喊住 叫住 见到 遇见 告诉 问道 随后 这时 只听 那位");
+    private static final String[] SUBJECT = words("只见 看见 看向 转向 望向 望着 看着 喊住 叫住 见到 遇见 告诉 问道 随后 后来 接着 然后 突然 忽然 此时 这时 只听 那位");
     private static final String[] OBJECT = words("看见 望向 喊住 叫住 遇见 见到 采访 找到了");
     private static final String[] JOINT = words("以及 分别 另一个 另一位 另一座 另有 又名 别名 原名 曾用名 又称 化名 笔名 昵称 绰号 和 与 跟 及 、");
     private static final String SITE = "广场|大厦|公园|车站|剧院|书店|书院|山庄|大桥|码头|酒店|宾馆|小区|商场|商厦|机场|客栈|茶馆|酒楼|古镇|新村|中学|小学|医院|大街|大道|胡同";
-    private static final String ACTION = "问道|说道|笑道|答道|喊道|低声说|轻声说|回答|点头|摇头|抬头|皱眉|推门|转身|走进|走来|起身|开口|挥手|叹气|望着|看向|说|问";
+    private static final String ACTION = "问道|说道|笑道|答道|喊道|低声说|轻声说|回答|点点头|点头|摇头|抬头|哼着|拿着|拿开|走后|皱眉|推门|转身|走进|走来|起身|开口|挥手|叹气|望着|看向|说|问";
     private static final int PLACE_MARK=0, ACTION_MARK=1, INTRO_MARK=2, OBJECT_MARK=3;
     private static final class Marker {
         final String text; final int kind;
@@ -585,6 +585,7 @@ final class TermMatcher {
     private static final String BAD_STEM = "的了着过去从在到向把被与和及跟就去是为有又也都还正在称叫名走来抵离赶进出入这那他她我你您它很将让往对说问";
     private static final String SHAPE = "未末晴睛己已戊戌祎袆汨汩晏宴钧钓玮玫";
     private static final String TERM = "术语同音纠错", ENTITY = "正文实体一致性";
+    static final String SUSPECTED_TYPO = "疑似错别字";
     private final char[][] sounds = new char[65536][];
     private final char[][] syllables = new char[65536][];
     private static final String EXTRA="术语重复字", MISSING="术语漏字", NEAR_TONE="术语声调纠错";
@@ -794,8 +795,10 @@ final class TermMatcher {
             }
         }
         doc.hits.removeIf(h->(doc.occupied.get(h.change)&&(!h.reason.equals(EXTRA)||h.change==h.end-1||doc.occupied.get(h.change+1)))||!hasTermEvidence(s,h,doc));
-        for(Map.Entry<String,List<Mention>> g:doc.groups.entrySet())resolve(g.getValue(),doc.hits,g.getKey().charAt(0)=='V');
+        for(Map.Entry<String,List<Mention>> g:doc.groups.entrySet())resolve(s,g.getValue(),doc.hits,g.getKey().charAt(0));
         vetoPaired(s,doc.hits);
+        List<Hit> reviews=new ArrayList<>();
+        doc.hits.removeIf(h->{if(!h.reason.equals(SUSPECTED_TYPO))return false;reviews.add(h);return true;});
         if(!doc.toneHits.isEmpty()){
             BitSet claimed=new BitSet();
             for(Hit hit:doc.hits)claimed.set(hit.start,hit.end);
@@ -805,6 +808,8 @@ final class TermMatcher {
                 doc.hits.add(tone);
             }
         }
+        for(Hit review:reviews)
+            if(doc.hits.stream().noneMatch(h->h.start<review.end&&review.start<h.end))doc.hits.add(review);
         if(doc.hits.size()<2)return doc.hits;
         doc.hits.sort(Comparator.comparingInt((Hit h)->h.start).thenComparingInt(h->-h.end));
         List<Hit> result=new ArrayList<>();
@@ -848,10 +853,11 @@ final class TermMatcher {
             boolean valid=true;for(int j=start;j<stop;j++)if(!(person?nameChar(s.charAt(j)):han(s.charAt(j)))||!person&&BAD_STEM.indexOf(s.charAt(j))>=0){valid=false;break;}
             if(!valid)continue;
             boolean intro=before(s,start,INTRO);
-            if(!intro&&!edge(s,start-1)&&!before(s,start,person?SUBJECT:MOVE)&&!before(s,start,JOINT))continue;
+            boolean anchored=intro||edge(s,start-1)||before(s,start,person?SUBJECT:MOVE)||before(s,start,JOINT);
+            if(!anchored&&(person||length!=2||!(start>0&&s.charAt(start-1)=='的'||start>=2&&s.startsWith("点半",start-2))))continue;
             int end=person?stop:offset+marker.text.length();
             if(!person&&end<s.length()&&s.charAt(end)=='舞')break;
-            mention(doc,s,start,end,person,intro,marker.text,custom,exact,literal);break;
+            mention(doc,s,start,end,person,intro,anchored?marker.text:"",custom,exact,literal);break;
         }
     }
     private void mention(Scan doc,String s,int start,int end,boolean person,boolean intro,String role,boolean[] custom,boolean[] exact,boolean[] literal){
@@ -869,13 +875,17 @@ final class TermMatcher {
             if (readings == null) continue;
             for (char reading : readings)
                 doc.groups.computeIfAbsent(entityKey(name,pos,reading,person),k->new ArrayList<>()).add(mention);
+            char[] bases=syllables[name.charAt(pos)];
+            if(person&&name.length()>=3&&pos>0&&bases!=null)
+                for(char syllable:bases)
+                    doc.groups.computeIfAbsent("N"+entityKey(name,pos,syllable,true),k->new ArrayList<>()).add(mention);
         }
         if(person){String shape=shapeKey(name);if(shape!=null)doc.groups.computeIfAbsent("V"+shape,k->new ArrayList<>()).add(mention);}
     }
     // Check explicit comparisons even when neither name is adjacent to a speech verb.
     private void vetoPaired(String s,List<Hit> hits){
         boolean hasEntity=false;
-        for(Hit h:hits)if(h.reason.equals(ENTITY)){hasEntity=true;break;}
+        for(Hit h:hits)if(h.reason.equals(ENTITY)||h.reason.equals(SUSPECTED_TYPO)){hasEntity=true;break;}
         if(!hasEntity)return;
         Set<String> paired=new HashSet<>();
         Set<String> pairedShapes=new HashSet<>();
@@ -893,7 +903,7 @@ final class TermMatcher {
                 if(!valid||mismatch<0)continue;
                 char a=s.charAt(left-n+mismatch),b=s.charAt(i+1+mismatch);
                 int shape=SHAPE.indexOf(a);
-                if(share(sounds[a],sounds[b])){
+                if(share(sounds[a],sounds[b])||n>=3&&mismatch>0&&share(syllables[a],syllables[b])){
                     paired.add(s.substring(left-n,left));
                     paired.add(s.substring(i+1,i+1+n));
                 }
@@ -902,10 +912,20 @@ final class TermMatcher {
             }
         }
         if(!paired.isEmpty()||!pairedShapes.isEmpty())
-            hits.removeIf(h->h.reason.equals(ENTITY)&&(paired.contains(h.value)||
+            hits.removeIf(h->(h.reason.equals(ENTITY)||h.reason.equals(SUSPECTED_TYPO))&&(paired.contains(h.value)||
                 paired.contains(s.substring(h.start,h.end))||pairedShapes.contains(shapeKey(h.value))));
     }
-    private static void resolve(List<Mention> group,List<Hit> hits,boolean shape){
+    private static boolean occursAtLeastFourTimes(String text,String name){
+        int at=0;
+        for(int count=0;count<4;count++){
+            at=text.indexOf(name,at);
+            if(at<0)return false;
+            at+=name.length();
+        }
+        return true;
+    }
+    private void resolve(String text,List<Mention> group,List<Hit> hits,char groupKind){
+        boolean shape=groupKind=='V',near=groupKind=='N';
         if(group.size()<2)return;
         Map<String,List<Mention>> variants=new HashMap<>();
         for(Mention m:group){if(m.joint)return;variants.computeIfAbsent(m.name,k->new ArrayList<>()).add(m);if(variants.size()>2)return;}
@@ -918,13 +938,27 @@ final class TermMatcher {
                 if(few.size()==2&&(!named||many.size()<6))continue;
                 boolean admissible=true;
                 String canon=many.get(0).name;int d=diff(canon,0,few.get(0).name);
-                if(d<0)continue;
+                if(d<0||near&&share(sounds[canon.charAt(d)],sounds[few.get(0).name.charAt(d)]))continue;
+                boolean crossRole=!shape&&few.size()==1&&few.get(0).person&&canon.length()>=3&&d>0&&
+                    BAD_STEM.indexOf(canon.charAt(0))<0&&!few.get(0).role.isEmpty()&&
+                    many.stream().map(m->m.role).filter(r->!r.isEmpty()).distinct().limit(2).count()==2;
+                if(crossRole&&!near&&many.size()<4)
+                    crossRole=occursAtLeastFourTimes(text,canon);
+                if(near&&!crossRole)continue;
+                if(!few.get(0).person&&!named&&few.size()==1&&many.size()==2&&
+                    (few.get(0).role.isEmpty()||many.stream().anyMatch(m->m.role.isEmpty()))){
+                    if(!few.get(0).intro){
+                        hits.add(new Hit(few.get(0).start,canon,d,SUSPECTED_TYPO));
+                        hits.add(new Hit(many.get(0).start,few.get(0).name,d,SUSPECTED_TYPO));
+                    }
+                    continue;
+                }
                 for(Mention rare:few){
                     if(rare.intro){admissible=false;break;}
                     boolean role=false;
                     for(Mention m:many)if(!m.role.isEmpty()&&m.role.equals(rare.role)){role=true;break;}
                     if(shape&&(!named||many.size()<4||!role)
-                        ||!named&&(many.size()<2||canon.length()==2&&many.size()<3||rare.person&&!role)){admissible=false;break;}
+                        ||!named&&(many.size()<2||canon.length()==2&&many.size()<3||rare.person&&!role&&!crossRole)){admissible=false;break;}
                 }
                 if(admissible)for(Mention rare:few)hits.add(new Hit(rare.start,canon,d,ENTITY));
             }
@@ -1109,7 +1143,8 @@ public final class CorrectionCore {
                 if (block.isMutable) {
                     errorCount++;
                     if (listener != null) {
-                        String message = block.current.isEmpty() && block.type == 6 ? "删除：" + block.original
+                        String message = TermMatcher.SUSPECTED_TYPO.equals(block.exp) ? block.original + "（疑似错别字）"
+                                : block.current.isEmpty() && block.type == 6 ? "删除：" + block.original
                                 : "发现错误：" + block.original + " → " + block.current;
                         listener.onError(message + " | 共 " + errorCount + " 处", true);
                     }
@@ -1196,8 +1231,11 @@ public final class CorrectionCore {
                 TermMatcher.Hit hit=hits.get(index++);
                 if(hit.start<copy||hit.end>end)continue;
                 appendNormalText(output,text.substring(copy,hit.start));
-                MainActivity.TextBlock edited=new MainActivity.TextBlock(text.substring(hit.start,hit.end),hit.value,true,1f,6);
-                edited.exp=hit.reason;output.add(edited);copy=hit.end;
+                String original=text.substring(hit.start,hit.end);
+                boolean review=TermMatcher.SUSPECTED_TYPO.equals(hit.reason);
+                MainActivity.TextBlock edited=new MainActivity.TextBlock(original,review?original:hit.value,true,1f,review?6:2);
+                if(review){edited.modelCorrected=hit.value;edited.exp=hit.reason;}
+                output.add(edited);copy=hit.end;
             }
             if(copy==start)output.addAll(blocks.subList(begin,i));
             else appendNormalText(output,text.substring(copy,end));
@@ -6599,7 +6637,7 @@ public class MainActivity extends AppCompatActivity {
             for (TextBlock block : group) {
                 String original = escapeHtmlQuick(block.original), current = escapeHtmlQuick(block.current);
                 if (isActiveCorrection(block)) {
-                    errorCount[0]++; String note = block.type == 1 ? " (置信度:" + String.format(Locale.getDefault(), "%.2f", block.conf) + ")" : (block.type == 4 ? " (自定义)" : (block.type == 6 && block.exp != null && !block.exp.isEmpty() ? " (" + escapeHtmlQuick(block.exp) + ")" : "")); String oldColor = block.type == 6 ? "#E53935" : "#9E9E9E";
+                    errorCount[0]++; String note = block.type == 1 ? " (置信度:" + String.format(Locale.getDefault(), "%.2f", block.conf) + ")" : (block.type == 4 ? " (自定义)" : (showCorrectionNote(block) ? " (" + escapeHtmlQuick(block.exp) + ")" : "")); String oldColor = block.type == 6 ? "#E53935" : "#9E9E9E";
                     if (block.current.equals(block.original)) html.append("<font color='#E53935'><b>").append(original).append("</b></font><font color='#9E9E9E'><small>").append(note).append("</small></font>");
                     else { html.append("<font color='").append(oldColor).append("'><s>").append(original).append("</s></font>");
                         if (!block.current.isEmpty()) html.append(" <font color='#E53935'><b>").append(current).append("</b></font><font color='#9E9E9E'><small>").append(note).append("</small></font>"); }
@@ -6712,7 +6750,11 @@ public class MainActivity extends AppCompatActivity {
 
     private void renderFinalBlocks() {
         currentClauseLinks.clear();
-        int currentErrors = 0; for (List<TextBlock> sentence : allSentencesBlocks) for (TextBlock block : sentence) if (isActiveCorrection(block)) currentErrors++;
+        int currentErrors = 0, pendingTypos = 0;
+        for (List<TextBlock> sentence : allSentencesBlocks) for (TextBlock block : sentence) if (isActiveCorrection(block)) {
+            currentErrors++;
+            if (TermMatcher.SUSPECTED_TYPO.equals(block.exp) && block.current.equals(block.original)) pendingTypos++;
+        }
         resolveJumpHintForFreshResult(currentErrors);
         Map<TextBlock, Integer> relativeOffsets = new HashMap<>(); Map<TextBlock, TargetSpan> editorTargets = new HashMap<>();
         SpannableStringBuilder fullMain = new SpannableStringBuilder(), fullEditor = new SpannableStringBuilder();
@@ -6740,7 +6782,7 @@ public class MainActivity extends AppCompatActivity {
         if (currentErrors == 0) {
             String header = "未发现错误。" + (elapsedText.isEmpty() ? "" : " " + elapsedText) + "\n\n"; int start = main.length(); main.append(header); main.setSpan(new ForegroundColorSpan(0xFF4CAF50), start, main.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
         } else {
-            String header = "共更正 " + currentErrors + " 处错误。" + (elapsedText.isEmpty() ? "" : " " + elapsedText) + (showJumpHintForCurrentResult ? "\n（点击序号可快速跳转）" : "") + "\n\n"; int start = main.length(); main.append(header); main.setSpan(new ForegroundColorSpan(0xFF757575), start, main.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+            String header = "共更正 " + (currentErrors - pendingTypos) + " 处错误。" + (pendingTypos > 0 ? " 另有 " + pendingTypos + " 处疑似错别字。" : "") + (elapsedText.isEmpty() ? "" : " " + elapsedText) + (showJumpHintForCurrentResult ? "\n（点击序号可快速跳转）" : "") + "\n\n"; int start = main.length(); main.append(header); main.setSpan(new ForegroundColorSpan(0xFF757575), start, main.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
             appendSectionHeader(main, "【纠错清单：】\n"); appendSectionHeader(editor, "【纠错清单：】\n");
             int errorIndex = 0;
             for (List<TextBlock> sentence : allSentencesBlocks) {
@@ -6826,6 +6868,12 @@ public class MainActivity extends AppCompatActivity {
         builder.append('['); for (int i = 0; i < count; i++) { builder.append(String.valueOf(startIndex + i + 1)); if (i < count - 1) builder.append(','); } builder.append("] ");
     }
 
+    private static boolean showCorrectionNote(TextBlock block) {
+        if (block.type != 6 || block.exp == null || block.exp.isEmpty()) return false;
+        if (TermMatcher.SUSPECTED_TYPO.equals(block.exp)) return block.current.equals(block.original);
+        return !block.exp.startsWith("术语") && !block.exp.equals("正文实体一致性");
+    }
+
     private void appendCorrection(SpannableStringBuilder builder, TextBlock block, boolean clickable) {
         int newStart;
         if (block.current.equals(block.original)) { newStart = builder.length(); builder.append(block.original); }
@@ -6840,7 +6888,7 @@ public class MainActivity extends AppCompatActivity {
         if (clickable) builder.setSpan(createEditSpan(block), range[0], range[1], range[2]);
         else { builder.setSpan(new ForegroundColorSpan(block.userModified && !block.current.equals(block.original) ? 0xFF4CAF50 : 0xFFE53935), range[0], range[1], range[2]); builder.setSpan(new android.text.style.TypefaceSpan("sans-serif-medium"), range[0], range[1], range[2]); }
         if (!block.current.isEmpty() && !block.userModified && block.type == 1) appendSmallNote(builder, "置信度: " + String.format(Locale.getDefault(), "%.2f", block.conf)); else if (!block.current.isEmpty() && !block.userModified && block.type == 4) appendSmallNote(builder, "自定义");
-        else if (!block.current.isEmpty() && !block.userModified && block.type == 6 && block.exp != null && !block.exp.isEmpty()) appendSmallNote(builder, block.exp);
+        else if (!block.current.isEmpty() && !block.userModified && showCorrectionNote(block)) appendSmallNote(builder, block.exp);
     }
 
     private void appendSmallNote(SpannableStringBuilder builder, String note) {
