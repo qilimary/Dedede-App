@@ -46,8 +46,8 @@ android {
         applicationId "com.app.dededi.pte"
         minSdk 24
         targetSdk 36
-        versionCode 46
-        versionName "4.6"
+        versionCode 47
+        versionName "4.7"
         ndk { abiFilters "arm64-v8a" }
         externalNativeBuild { cmake { cppFlags ""; arguments "-DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON" } }
     }
@@ -5202,7 +5202,6 @@ public class MainActivity extends AppCompatActivity {
         applyEdition(edition, sp.getBoolean("lanEdition", false));
         edition.setOnClickListener(v -> {
             boolean lan = !sp.getBoolean("lanEdition", false);
-            setLauncherEdition(lan);
             sp.edit().putBoolean("lanEdition", lan).apply();
             applyEdition(edition, lan);
         });
@@ -5215,26 +5214,8 @@ public class MainActivity extends AppCompatActivity {
         for (TextView editor : new TextView[]{inputText, outputText, expandedInputEditText, expandedEditText, editTemp, editThreshDe1, editThreshDe2, editThreshDe3, editThreshZuo, editThreshZuo4}) editor.setSaveEnabled(false);
     }
 
-    private void setLauncherEdition(boolean lan) {
-        android.content.pm.PackageManager pm = getPackageManager();
-        String prefix = MainActivity.class.getPackage().getName() + ".";
-        android.content.ComponentName enable = new android.content.ComponentName(this, prefix + (lan ? "LanLauncher" : "NormalLauncher"));
-        android.content.ComponentName disable = new android.content.ComponentName(this, prefix + (lan ? "NormalLauncher" : "LanLauncher"));
-        int on = android.content.pm.PackageManager.COMPONENT_ENABLED_STATE_ENABLED;
-        int off = android.content.pm.PackageManager.COMPONENT_ENABLED_STATE_DISABLED;
-        int keep = android.content.pm.PackageManager.DONT_KILL_APP;
-        if (android.os.Build.VERSION.SDK_INT >= 33) {
-            pm.setComponentEnabledSettings(java.util.Arrays.asList(
-                new android.content.pm.PackageManager.ComponentEnabledSetting(enable, on, keep),
-                new android.content.pm.PackageManager.ComponentEnabledSetting(disable, off, keep)));
-        } else {
-            pm.setComponentEnabledSetting(enable, on, keep);
-            pm.setComponentEnabledSetting(disable, off, keep);
-        }
-    }
-
     private void applyEdition(android.widget.ImageButton edition, boolean lan) {
-        int accent = lan ? 0xFFDE4E8C : 0xFF1976D2;
+        int accent = lan ? 0xFFDE4E8C : 0xFF3B96DD;
         edition.setColorFilter(accent);
         edition.setContentDescription(lan ? "切换到普通版" : "切换到特供版");
         ((Button)findViewById(R.id.btnFont)).setTextColor(lan ? accent : 0xFF2196F3);
@@ -6526,6 +6507,41 @@ public class MainActivity extends AppCompatActivity {
 
     @Override protected void onPause() { flushInputSync(); saveSettings(currentIsFast); super.onPause(); }
 
+    @Override protected void onStop() {
+        super.onStop();
+        // Changing launcher components can refresh the launcher task. Wait until our window is hidden.
+        if (!isChangingConfigurations()) syncLauncherIcon(sp.getBoolean("lanEdition", false));
+    }
+
+    private void syncLauncherIcon(boolean lan) {
+        android.content.pm.PackageManager pm = getPackageManager();
+        android.content.ComponentName normal = new android.content.ComponentName(this, "com.app.dedede.NormalLauncher");
+        android.content.ComponentName special = new android.content.ComponentName(this, "com.app.dedede.LanLauncher");
+        android.content.ComponentName enable = lan ? special : normal;
+        android.content.ComponentName disable = lan ? normal : special;
+        int on = android.content.pm.PackageManager.COMPONENT_ENABLED_STATE_ENABLED;
+        int off = android.content.pm.PackageManager.COMPONENT_ENABLED_STATE_DISABLED;
+        int manifestDefault = android.content.pm.PackageManager.COMPONENT_ENABLED_STATE_DEFAULT;
+        int keep = android.content.pm.PackageManager.DONT_KILL_APP;
+        try {
+            int enableState = pm.getComponentEnabledSetting(enable);
+            int disableState = pm.getComponentEnabledSetting(disable);
+            boolean needsEnable = enableState != on && (lan || enableState != manifestDefault);
+            boolean needsDisable = disableState != off && (lan || disableState != manifestDefault);
+            if (!needsEnable && !needsDisable) return;
+            if (android.os.Build.VERSION.SDK_INT >= 33 && needsEnable && needsDisable) {
+                pm.setComponentEnabledSettings(java.util.Arrays.asList(
+                    new android.content.pm.PackageManager.ComponentEnabledSetting(enable, on, keep),
+                    new android.content.pm.PackageManager.ComponentEnabledSetting(disable, off, keep)));
+            } else {
+                if (needsEnable) pm.setComponentEnabledSetting(enable, on, keep);
+                if (needsDisable) pm.setComponentEnabledSetting(disable, off, keep);
+            }
+        } catch (RuntimeException e) {
+            android.util.Log.w("Dedede", "系统未更新桌面图标，应用内配色已保存", e);
+        }
+    }
+
     @Override protected void onDestroy() {
         inputSyncHandler.removeCallbacksAndMessages(null);
         isCheckingMain = false; inferenceGeneration++; importGeneration++; importing = false;
@@ -7678,7 +7694,7 @@ DEDEDE_SOURCE_EOF
 
 mkdir -p "app/src/main/res/layout"
 cat > "app/src/main/res/drawable/bg_history_menu.xml" <<'DEDEDE_SOURCE_EOF'
-<inset xmlns:android="http://schemas.android.com/apk/res/android" android:insetLeft="3dp" android:insetRight="3dp" android:insetTop="7dp" android:insetBottom="7dp">
+<inset xmlns:android="http://schemas.android.com/apk/res/android" android:insetLeft="3dp" android:insetRight="3dp" android:insetTop="3dp" android:insetBottom="3dp">
     <ripple android:color="?attr/colorControlHighlight">
         <item><shape><corners android:radius="4dp"/><solid android:color="@color/history_menu_bg"/></shape></item>
     </ripple>
@@ -7686,14 +7702,14 @@ cat > "app/src/main/res/drawable/bg_history_menu.xml" <<'DEDEDE_SOURCE_EOF'
 DEDEDE_SOURCE_EOF
 
 cat > "app/src/main/res/drawable/ic_history_menu.xml" <<'DEDEDE_SOURCE_EOF'
-<vector xmlns:android="http://schemas.android.com/apk/res/android" android:width="24dp" android:height="24dp" android:viewportWidth="24" android:viewportHeight="24">
+<vector xmlns:android="http://schemas.android.com/apk/res/android" android:width="20dp" android:height="20dp" android:viewportWidth="24" android:viewportHeight="24">
     <path android:fillColor="@android:color/transparent" android:strokeColor="@color/history_menu_ink" android:strokeWidth="1.65" android:strokeLineCap="round" android:strokeLineJoin="round" android:pathData="M3,6h18 M3,12h18 M3,18h18"/>
 </vector>
 DEDEDE_SOURCE_EOF
 
 cat > "app/src/main/res/drawable/ic_edition.xml" <<'DEDEDE_SOURCE_EOF'
-<vector xmlns:android="http://schemas.android.com/apk/res/android" android:width="24dp" android:height="24dp" android:viewportWidth="24" android:viewportHeight="24">
-    <path android:fillColor="@android:color/transparent" android:strokeColor="#1976D2" android:strokeWidth="1.65" android:strokeLineCap="round" android:strokeLineJoin="round" android:pathData="M4,11v-1a4,4 0,0 1,4 -4h12 M17,3l3,3 -3,3 M20,13v1a4,4 0,0 1,-4 4H4 M7,15l-3,3 3,3"/>
+<vector xmlns:android="http://schemas.android.com/apk/res/android" android:width="19dp" android:height="19dp" android:viewportWidth="24" android:viewportHeight="24">
+    <path android:fillColor="@android:color/transparent" android:strokeColor="#3B96DD" android:strokeWidth="1.65" android:strokeLineCap="round" android:strokeLineJoin="round" android:pathData="M4,11v-1a4,4 0,0 1,4 -4h12 M17,3l3,3 -3,3 M20,13v1a4,4 0,0 1,-4 4H4 M7,15l-3,3 3,3"/>
 </vector>
 DEDEDE_SOURCE_EOF
 
@@ -7724,12 +7740,12 @@ cat > "app/src/main/res/layout/activity_main.xml" <<'DEDEDE_SOURCE_EOF'
     <FrameLayout android:id="@+id/mainContentFrame" android:layout_width="match_parent" android:layout_height="match_parent" android:background="@color/bg_color">
         <LinearLayout android:id="@+id/mainBody" android:layout_width="match_parent" android:layout_height="match_parent" android:orientation="vertical" android:paddingStart="14dp" android:paddingEnd="14dp" android:paddingTop="7dp" android:paddingBottom="14dp" android:background="@color/bg_color">
             <RelativeLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginBottom="3dp">
-                <ImageButton android:id="@+id/btnMenu" android:layout_width="42dp" android:layout_height="44dp" android:layout_alignParentStart="true" android:layout_centerVertical="true" android:src="@drawable/ic_history_menu" android:background="@drawable/bg_history_menu" android:contentDescription="历史记录" android:padding="8dp"/>
-                <TextView android:id="@+id/tvTitle" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="纠错 Pro" android:textSize="20sp" android:textStyle="bold" android:textColor="@color/text_primary" android:layout_toEndOf="@id/btnMenu" android:layout_centerVertical="true" android:clickable="true" android:focusable="true"/>
-                <ImageButton android:id="@+id/btnEdition" android:layout_width="42dp" android:layout_height="44dp" android:layout_toEndOf="@id/tvTitle" android:layout_centerVertical="true" android:src="@drawable/ic_edition" android:background="?attr/selectableItemBackgroundBorderless" android:contentDescription="切换到特供版" android:padding="8dp"/>
+                <TextView android:id="@+id/tvTitle" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="纠错 Pro" android:textSize="20sp" android:textStyle="bold" android:textColor="@color/text_primary" android:layout_alignParentStart="true" android:layout_centerVertical="true" android:clickable="true" android:focusable="true"/>
+                <ImageButton android:id="@+id/btnEdition" android:layout_width="34dp" android:layout_height="36dp" android:layout_toEndOf="@id/tvTitle" android:layout_centerVertical="true" android:src="@drawable/ic_edition" android:background="?attr/selectableItemBackgroundBorderless" android:contentDescription="切换到特供版" android:padding="7dp"/>
                 <LinearLayout android:layout_width="wrap_content" android:layout_height="wrap_content" android:orientation="horizontal" android:layout_alignParentEnd="true" android:layout_centerVertical="true" android:gravity="center_vertical">
                     <androidx.appcompat.widget.AppCompatButton android:id="@+id/btnFloat" android:layout_width="24dp" android:layout_height="24dp" android:layout_marginEnd="8dp" android:text="✓" android:textSize="12sp" android:background="@drawable/circle_btn_bg" android:textColor="#FFFFFF" android:stateListAnimator="@null" android:padding="0dp"/>
                     <Button android:id="@+id/btnFont" android:layout_width="34dp" android:layout_height="34dp" android:text="A" android:textStyle="bold" android:textSize="19sp" android:background="@null" android:textColor="#2196F3" android:padding="0dp" android:insetTop="0dp" android:insetBottom="0dp"/>
+                    <ImageButton android:id="@+id/btnMenu" android:layout_width="32dp" android:layout_height="32dp" android:layout_marginStart="8dp" android:src="@drawable/ic_history_menu" android:background="@drawable/bg_history_menu" android:contentDescription="历史记录" android:padding="6dp"/>
                 </LinearLayout>
             </RelativeLayout>
 
@@ -8191,9 +8207,9 @@ cp generated_security/key-part-a.cpp generated_security/key-part-b.cpp app/src/m
 cp pinyin.txt terms.txt sys_core_p.dat sys_vocab_p.dat sys_typo.dat app/src/main/assets/
 rm -f app/src/main/assets/sys_idioms.dat
 cp app_icon.png app/src/main/res/mipmap-xxxhdpi/ic_launcher.png
+cp lan.png app/src/main/res/mipmap-xxxhdpi/ic_launcher_lan.png
 python3 protect_rules.py
 
-cp lan.png app/src/main/res/mipmap-xxxhdpi/ic_launcher_lan.png
 
 if [[ "${1:-}" == "--prepare-only" ]]; then exit 0; fi
 
