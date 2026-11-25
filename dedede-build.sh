@@ -419,21 +419,47 @@ public final class Proofreader {
     }
     public void markExact(String text,boolean[] mask){boolean[] found=exactPositions(text);for(int i=0;i<found.length;i++)mask[i]|=found[i];}
     /** Protect quotations, titles and inline code before sentence splitting. */
-    public static boolean[] literalPositions(String text){
-        boolean[] mask=new boolean[text.length()];ArrayList<Character> closes=new ArrayList<>();int begin=-1;
+    public static boolean[] literalPositions(String text){return literalPositions(text,true);}
+    public static boolean[] literalPositions(String text,boolean includeSpeech){
+        boolean[] mask=new boolean[text.length()];
         String opens="《〈“‘「『\"'`",ends="》〉”’」』\"'`";
+        ArrayList<Integer> starts=new ArrayList<>();
+        int[] depth=null;
         for(int i=0;i<text.length();i++){
             char c=text.charAt(i);
-            if(!closes.isEmpty()&&c==closes.get(closes.size()-1)){
-                closes.remove(closes.size()-1);if(closes.isEmpty()){Arrays.fill(mask,begin,i+1,true);begin=-1;}continue;
+            if(!starts.isEmpty()){
+                int start=starts.get(starts.size()-1);
+                if(c==ends.charAt(opens.indexOf(text.charAt(start)))){
+                    starts.remove(starts.size()-1);depth[start]++;depth[i+1]--;continue;
+                }
             }
             int key=opens.indexOf(c);
-            if(c=='\''&&i>0&&i+1<text.length()&&asciiLetter(text.charAt(i-1))&&asciiLetter(text.charAt(i+1)))key=-1;
-            if(key>=0){if(closes.isEmpty())begin=i;closes.add(ends.charAt(key));}
-
+            if(key<0||c=='\''&&i>0&&i+1<text.length()&&asciiLetter(text.charAt(i-1))&&asciiLetter(text.charAt(i+1)))continue;
+            if(!includeSpeech&&key>1&&c!='`'&&!quotedLabel(text,i,ends.charAt(key)))continue;
+            if(depth==null)depth=new int[text.length()+1];
+            starts.add(i);
         }
-        if(begin>=0){int end=text.indexOf('\n',begin);Arrays.fill(mask,begin,end<0?text.length():end,true);}return mask;
+        if(depth==null)return mask;
+        int lineEnd=-1;
+        for(int start:starts){
+            if(lineEnd<start){lineEnd=text.indexOf('\n',start);if(lineEnd<0)lineEnd=text.length();}
+            depth[start]++;depth[lineEnd]--;
+        }
+        int active=0;
+        for(int i=0;i<mask.length;i++){active+=depth[i];mask[i]=active>0;}
+        return mask;
     }
+    private static boolean quotedLabel(String s,int at,char closer){
+        if(suffix(s,at,LABEL_INTROS))return true;
+        int limit=Math.min(s.length(),at+34);
+        for(int i=at+1;i<limit;i++){
+            char c=s.charAt(i);if(c==closer)return prefix(s,i+1,LABEL_ENDS);
+            if("。！？!?\n".indexOf(c)>=0)break;
+        }
+        return false;
+    }
+    private static final String[] LABEL_INTROS={"代号是","代号为","名叫","名为","叫作","叫做","原文为","写作","变量名"};
+    private static final String[] LABEL_ENDS={"是缩写","只是临时缩写","是代号","这个字","这个词","的写法"};
     private static boolean asciiLetter(char c){return c>='a'&&c<='z'||c>='A'&&c<='Z';}
     private static boolean any(boolean[] mask,int start,int end){for(int i=start;i<end;i++)if(mask[i])return true;return false;}
     private static boolean suffix(String text,int end,String[] choices){for(String s:choices)if(end>=s.length()&&text.regionMatches(end-s.length(),s,0,s.length()))return true;return false;}
@@ -478,9 +504,9 @@ public final class Proofreader {
             if(PRONOUNS.indexOf(c)>=0&&end-p>=2&&(p==0||text.charAt(p-1)!=c)&&left(text,p,DUP_LEFT_WORDS)&&prefix(text,end,DUP_RIGHT_WORDS)&&!namedUse(text,end)&&!any(custom,p,end)&&!any(exact,p,end)&&!any(literals,p,end))pending.add(new Edit(p,text.substring(p,end),String.valueOf(c),""));
             for(String word:REPEATS){
                 if(c!=word.charAt(0)||p>=word.length()&&text.regionMatches(p-word.length(),word,0,word.length()))continue;int stop=p+word.length()*2;
-                if(stop>text.length()||!text.startsWith(word+word,p)||!(left(text,p,DUP_LEFT_WORDS)||suffix(text,p,LEFT_WORDS))||stop==text.length()||!han(text.charAt(stop)))continue;
+                if(stop>text.length()||!text.startsWith(word+word,p)||!left(text,p,DUP_LEFT_WORDS)&&!suffix(text,p,LEFT_WORDS))continue;
                 while(text.startsWith(word,stop))stop+=word.length();
-                if(stop<text.length()&&han(text.charAt(stop))&&!namedUse(text,stop)&&!any(custom,p,stop)&&!any(exact,p,stop)&&!any(literals,p,stop))pending.add(new Edit(p,text.substring(p,stop),word,""));
+                if(!namedUse(text,stop)&&!any(custom,p,stop)&&!any(exact,p,stop)&&!any(literals,p,stop))pending.add(new Edit(p,text.substring(p,stop),word,""));
             }
         }
         pending.sort((a,b)->a.start!=b.start?Integer.compare(a.start,b.start):Integer.compare(b.end,a.end));
@@ -520,6 +546,393 @@ final class ProofreaderAssets {
 DEDEDE_SOURCE_EOF
 
 mkdir -p "app/src/main/java/com/app/dedede"
+cat > "app/src/main/java/com/app/dedede/TermMatcher.java" <<'DEDEDE_SOURCE_EOF'
+package com.app.dedede;
+
+import java.io.*;
+import java.util.*;
+import java.util.function.BooleanSupplier;
+
+/** Document-scoped evidence. Only the two read-only indices survive between articles. */
+final class TermMatcher {
+    private static final String[] LEFT = words("这项 这种 研究 检查 发现 提示 诊断为 患有 出现 进行 使用 采用 了解 学习 讨论 包含 属于 关于 利用 通过 所谓 称为 称作 名为 观察到 检测到 一台 一张 这张 那张 这副 那副 这台 那台 这个 那个 分析 测定 测量 记录 计算 是 为 的 与 和 对 将 把 及 有");
+    private static final String[] RIGHT = words("的 是 与 和 或 等 及 为 已 后 前 时 中 可 具有 有助于 即将 明显 异常 增高 降低 升高 正常 检查 检测 结果 分析 水平 患者 治疗 技术 方法 过程");
+    private static final String[] INTRO = words("全称是 全称为 正式名称是 正式名称为 代号是 代号为 代号叫 代号 名字叫 名字是 招牌上写着 地图上标着 名叫 名为 叫作 叫做 他叫 她叫");
+    private static final String[] MOVE = words("来到了 走过 来到过 到了 去了 住在 守在 经过 赶到 来到 抵达 前往 走进 走出 走到 回到 路过 离开 位于 途经 就在 约在 站在 在 到 去 从 向");
+    private static final String[] SUBJECT = words("只见 看见 看向 转向 望向 望着 看着 喊住 叫住 见到 遇见 告诉 问道 随后 这时 只听 那位");
+    private static final String[] OBJECT = words("看见 望向 喊住 叫住 遇见 见到 采访 找到了");
+    private static final String[] JOINT = words("以及 分别 另一个 另一位 另一座 另有 又名 别名 原名 曾用名 又称 化名 笔名 昵称 绰号 和 与 跟 及 、");
+    private static final String SITE = "广场|大厦|公园|车站|剧院|书店|书院|山庄|大桥|码头|酒店|宾馆|小区|商场|商厦|机场|客栈|茶馆|酒楼|古镇|新村|中学|小学|医院|大街|大道|胡同";
+    private static final String ACTION = "问道|说道|笑道|答道|喊道|低声说|轻声说|回答|点头|摇头|抬头|皱眉|推门|转身|走进|走来|起身|开口|挥手|叹气|望着|看向|说|问";
+    private static final int PLACE_MARK=0, ACTION_MARK=1, INTRO_MARK=2, OBJECT_MARK=3;
+    private static final class Marker {
+        final String text; final int kind;
+        Marker(String text,int kind){this.text=text;this.kind=kind;}
+    }
+    private static final Marker[][] MARKERS=markers();
+    private static Marker[][] markers(){
+        Map<Character,List<Marker>> groups=new HashMap<>();
+        String[][] kinds={SITE.split("\\|"),ACTION.split("\\|"),INTRO,OBJECT};
+        for(int kind=0;kind<kinds.length;kind++)for(String w:kinds[kind])
+            groups.computeIfAbsent(w.charAt(0),c->new ArrayList<>()).add(new Marker(w,kind));
+        Marker[][] table=new Marker[65536][];
+        for(Map.Entry<Character,List<Marker>> row:groups.entrySet()){
+            row.getValue().sort((a,b)->Integer.compare(b.text.length(),a.text.length()));
+            table[row.getKey()]=row.getValue().toArray(new Marker[0]);
+        }
+        return table;
+    }
+    private static final String BAD_STEM = "的了着过去从在到向把被与和及跟就去是为有又也都还正在称叫名走来抵离赶进出入这那他她我你您它很将让往对说问";
+    private static final String SHAPE = "未末晴睛己已戊戌祎袆汨汩晏宴钧钓玮玫";
+    private static final String TERM = "术语同音纠错", ENTITY = "正文实体一致性";
+    private final char[][] sounds = new char[65536][];
+    private final char[][] syllables = new char[65536][];
+    private static final String EXTRA="术语重复字", MISSING="术语漏字", NEAR_TONE="术语声调纠错";
+    private static final String FIXED_CHARACTERS = "的得吗";
+    private static final String MEANINGFUL="不无非未有可仅单双多寡少高低超微大中小轻重急慢亚次副原假伪正反左右上下前后内外长短男女公母冷热阴阳抗防耐逆再新旧病性型期类属科目级率量法学术症炎癌毒";
+    private static final String[] EMPTY=new String[0];
+    private static final class Entry {
+        final String text; final String[] exclusions; final boolean protect;
+        Entry(String text,String[] exclusions,boolean protect){this.text=text;this.exclusions=exclusions;this.protect=protect;}
+    }
+    static final class Hit {
+        final int start,end,change; final String value,reason;
+        Hit(int start,String value,int diff,String reason){this(start,value,diff,value.length(),reason);}
+        Hit(int start,String value,int diff,int length,String reason){this.start=start;end=start+length;change=start+diff;this.value=value;this.reason=reason;}
+    }
+
+    // A bucket identifies two unchanged neighbours. All candidates are verified against the full word.
+    private static final int LEADING=0, INTERNAL=1, TRAILING=2;
+    private final int[][] heads=new int[3][1<<17];
+    private final Set<Integer> protectedPairs=new HashSet<>();
+    private Entry[] entries=new Entry[16384];
+    private int[] next=new int[entries.length];
+    private byte[] positions=new byte[entries.length];
+    private static final int CAN_OMIT=32;
+    private int count;
+
+    private static int pair(char a,char b){return (a<<16)|b;}
+    private static int bucket(char a,char b){int key=pair(a,b)*0x9e3779b9;return key>>>15;}
+    private void anchor(int kind,char a,char b,Entry entry,int pos){
+        if(++count==entries.length){
+            entries=Arrays.copyOf(entries,count*2);next=Arrays.copyOf(next,count*2);positions=Arrays.copyOf(positions,count*2);
+        }
+        int h=bucket(a,b);entries[count]=entry;positions[count]=(byte)pos;next[count]=heads[kind][h];heads[kind][h]=count;
+    }
+    private void index(Entry entry){
+        String w=entry.text;int last=w.length()-1;
+        if(last==1){protectedPairs.add(pair(w.charAt(0),w.charAt(1)));return;}
+        anchor(LEADING,w.charAt(1),w.charAt(2),entry,0);
+        if(entry.protect)return;
+        for(int i=1;i<last;i++){
+            char ch=w.charAt(i);
+            boolean omit=last>=3&&ch!=w.charAt(i-1)&&ch!=w.charAt(i+1)
+                &&(MEANINGFUL.indexOf(ch)<0||ch=='学'&&i==last-1&&w.endsWith("学习"));
+            anchor(INTERNAL,w.charAt(i-1),w.charAt(i+1),entry,omit?i|CAN_OMIT:i);
+        }
+        anchor(TRAILING,w.charAt(last-2),w.charAt(last-1),entry,last);
+    }
+    private void scanAt(Scan doc,String s,int at,boolean[] custom,boolean[] exact,boolean[] literal){
+        char c=s.charAt(at);
+        if(!han(c))return;
+        if(at+1<s.length()&&protectedPairs.contains(pair(c,s.charAt(at+1))))doc.occupied.set(at,at+2);
+        if(at+2<s.length())probe(LEADING,s.charAt(at+1),s.charAt(at+2),0,doc,s,at,custom,exact,literal);
+        if(at>=2)probe(TRAILING,s.charAt(at-2),s.charAt(at-1),0,doc,s,at,custom,exact,literal);
+        if(at==0)return;
+        char pre=s.charAt(at-1);
+        probe(INTERNAL,pre,c,-1,doc,s,at,custom,exact,literal);
+        if(at+1<s.length())probe(INTERNAL,pre,s.charAt(at+1),0,doc,s,at,custom,exact,literal);
+        if(at+2<s.length()&&c==s.charAt(at+1))probe(INTERNAL,pre,s.charAt(at+2),1,doc,s,at,custom,exact,literal);
+    }
+    private void probe(int kind,char a,char b,int delta,Scan doc,String s,int at,boolean[] custom,boolean[] exact,boolean[] literal){
+        if(!han(a)||!han(b))return;
+        for(int id=heads[kind][bucket(a,b)];id!=0;id=next[id]){
+            int flags=positions[id];if(delta<0&&(flags&CAN_OMIT)==0)continue;
+            Entry entry=entries[id];String w=entry.text;int n=w.length(),pos=flags&(CAN_OMIT-1),start=at-pos,end=start+n+delta;
+            if(start<0||end>s.length())continue;
+            char source=s.charAt(at),target=w.charAt(pos);
+            if(delta==0&&source==target&&kind!=LEADING||delta==1&&source!=target)continue;
+            if(!s.regionMatches(start,w,0,pos)||!s.regionMatches(at+1+delta,w,pos+1,n-pos-1))continue;
+            if(delta==0&&source==target){
+                doc.occupied.set(start,end);
+                if(!entry.protect&&!guarded(custom,exact,literal,start,end)){
+                    doc.exact.add(w);
+                    if(start>0&&s.charAt(start-1)==target&&edge(s,start-2))
+                        addEndRepeat(doc,s,start-1,end,0,entry,custom,exact,literal);
+                    if(end<s.length()&&s.charAt(end)==w.charAt(n-1)&&edge(s,end+1))
+                        addEndRepeat(doc,s,start,end+1,n,entry,custom,exact,literal);
+                }
+                continue;
+            }
+            if ((delta >= 0 && FIXED_CHARACTERS.indexOf(source) >= 0)
+                    || (delta <= 0 && FIXED_CHARACTERS.indexOf(target) >= 0)) continue;
+            if(entry.protect||guarded(custom,exact,literal,start,end)||Proofreader.touchesIdentifier(s,start,end)||excluded(s,at,entry.exclusions))continue;
+            if(delta!=0){
+                if(target!=w.charAt(pos-1)&&target!=w.charAt(pos+1))doc.hits.add(new Hit(start,w,pos,n+delta,delta>0?EXTRA:MISSING));
+            }else if(!isProtectedPair(source,target,"癌炎")&&!isProtectedPair(source,target,"黏粘")){
+                if(share(sounds[source],sounds[target]))doc.hits.add(new Hit(start,w,pos,TERM));
+                else if(n>=4&&kind==INTERNAL&&!isProtectedPair(source,target,"型性")&&share(syllables[source],syllables[target]))
+                    doc.toneHits.add(new Hit(start,w,pos,NEAR_TONE));
+            }
+        }
+    }
+    private static void addEndRepeat(Scan doc,String s,int start,int end,int pos,Entry entry,boolean[] custom,boolean[] exact,boolean[] literal){
+        if (FIXED_CHARACTERS.indexOf(s.charAt(start+pos)) >= 0) return;
+        if(!guarded(custom,exact,literal,start,end)&&!Proofreader.touchesIdentifier(s,start,end)&&!excluded(s,start+pos,entry.exclusions))
+            doc.hits.add(new Hit(start,entry.text,pos,end-start,EXTRA));
+    }
+
+    private static char[] addReading(char[] readings,char id) {
+        if (readings == null) return new char[]{id};
+        for (char existing : readings) if (existing == id) return readings;
+        char[] expanded = Arrays.copyOf(readings,readings.length+1);
+        expanded[readings.length] = id;
+        return expanded;
+    }
+
+    private static boolean isProtectedPair(char first,char second,String pair) {
+        return pair.indexOf(first) >= 0 && pair.indexOf(second) >= 0;
+    }
+
+    private static boolean share(char[] first,char[] second) {
+        if (first == null || second == null) return false;
+        for (char a : first) for (char b : second) if (a == b) return true;
+        return false;
+    }
+
+    private static final class Mention {
+        final int start; final String name,role; final boolean person,intro,joint;
+        Mention(int start,String name,String role,boolean person,boolean intro,boolean joint){
+            this.start=start;this.name=name;this.role=role;this.person=person;this.intro=intro;this.joint=joint;}
+    }
+    TermMatcher(BufferedReader pinyin,BufferedReader terms) throws IOException {
+        Map<String,Character> readings=new HashMap<>(),syllableIds=new HashMap<>();
+        for(String line;(line=pinyin.readLine())!=null;){
+            if(line.startsWith("\ufeff"))line=line.substring(1);
+            if(line.trim().isEmpty()||line.startsWith("#"))continue;
+            int separator=line.indexOf('\t');
+            if(separator<1||separator==line.length()-1)throw new IOException("拼音表缺少音节或汉字："+line);
+            int tab=separator;String group=line.substring(tab+1);
+            char reading=readings.computeIfAbsent(line.substring(0,tab),key->(char)(readings.size()+1));
+            char syllableId=syllableIds.computeIfAbsent(line.substring(0,tab-1),stem->(char)(syllableIds.size()+1));
+            for(int i=0;i<group.length();i++){
+                char c=group.charAt(i);
+                sounds[c]=addReading(sounds[c],reading);
+                syllables[c]=addReading(syllables[c],syllableId);
+            }
+        }
+        for(String raw;(raw=terms.readLine())!=null;){
+            String line=raw.replace('\t',' ').replace('　',' ').trim();
+            if(line.startsWith("\ufeff"))line=line.substring(1).trim();
+            if(line.isEmpty()||line.startsWith("#"))continue;
+            int cut=line.indexOf(" n=");boolean protect=line.startsWith("!");
+            String term=line.substring(protect?1:0,cut<0?line.length():cut);
+            if(term.length()<(protect?2:3)||term.length()>32||!term.chars().allMatch(ch->han((char)ch)))
+                throw new IOException("术语格式错误："+line);
+            index(new Entry(term,cut<0?EMPTY:words(line.substring(cut+3).trim()),protect));
+        }
+    }
+    private static volatile TermMatcher cached;
+    static TermMatcher get() throws IOException {
+        TermMatcher result=cached;if(result!=null)return result;
+        synchronized(TermMatcher.class){
+            if(cached==null)try(BufferedReader p=asset("pinyin.txt");BufferedReader t=asset("terms.txt")){cached=new TermMatcher(p,t);}
+            return cached;
+        }
+    }
+    private static BufferedReader asset(String name)throws IOException{return new BufferedReader(new InputStreamReader(DededeApp.context().getAssets().open(name),java.nio.charset.StandardCharsets.UTF_8));}
+    private static String[] words(String text){return text.split("\\s+");}
+    private static String entityKey(String name,int position,char reading,boolean person) {
+        char[] key = new char[name.length()+2];
+        key[0] = person ? 'P' : 'S';
+        key[1] = (char)position;
+        name.getChars(0,name.length(),key,2);
+        key[position+2] = reading;
+        return new String(key);
+    }
+
+    private static String shapeKey(String name){
+        char[] value=null;
+        for(int i=1;i<name.length();i++){
+            int p=SHAPE.indexOf(name.charAt(i));if(p<0)continue;
+            if(value==null)value=name.toCharArray();value[i]=SHAPE.charAt(p&~1);
+        }
+        return value==null?null:new String(value);
+    }
+    private static boolean han(char c){return c>='\u3400'&&c<='\u9fff';}
+    private static boolean before(String s,int at,String[] choices){for(String w:choices)if(at>=w.length()&&s.startsWith(w,at-w.length()))return true;return false;}
+    private static boolean after(String s,int at,String[] choices){for(String w:choices)if(s.startsWith(w,at))return true;return false;}
+    private static boolean nameChar(char c){return han(c)||c=='·';}
+    private static boolean nameCharAt(String s,int i){return i<s.length()&&nameChar(s.charAt(i));}
+    private static boolean edge(String s,int at){return at<0||at>=s.length()||(!han(s.charAt(at))&&!Character.isLetterOrDigit(s.charAt(at))&&s.charAt(at)!='_');}
+    private static int diff(String s,int at,String word){
+        int found=-1;for(int i=0;i<word.length();i++)if(s.charAt(at+i)!=word.charAt(i)){if(found>=0)return -2;found=i;}return found;
+    }
+    private static boolean excluded(String s,int changed,String[] choices){
+        for(String w:choices)for(int at=Math.max(0,changed+1-w.length());at<=changed;at++)if(s.startsWith(w,at))return true;
+        return false;
+    }
+    private static boolean guarded(boolean[] a,boolean[] b,boolean[] literals,int start,int end){
+        for(int p=start;p<end;p++)if(a[p]||b[p]||literals[p])return true;return false;
+    }
+    private static final class Scan {
+        final List<Hit> hits=new ArrayList<>(),toneHits=new ArrayList<>();
+        final Set<String> exact=new HashSet<>();
+        final BitSet occupied=new BitSet();
+        final Map<String,List<Mention>> groups=new HashMap<>();
+    }
+    List<Hit> collect(String s,boolean[] custom,boolean[] exact,boolean[] literal,BooleanSupplier cancelled){
+        if(s.length()<3)return Collections.emptyList();
+        Scan doc=new Scan();
+        for(int i=0;i<s.length();i++){
+            if((i&255)==0&&cancelled.getAsBoolean())return Collections.emptyList();
+            scanAt(doc,s,i,custom,exact,literal);
+            char first=s.charAt(i);
+            Marker[] choices=MARKERS[first];
+            if(choices!=null)for(Marker marker:choices)if(s.startsWith(marker.text,i)){
+                inspectMarker(doc,s,i,marker,custom,exact,literal);break;
+            }
+        }
+        doc.hits.removeIf(h->(doc.occupied.get(h.change)&&(!h.reason.equals(EXTRA)||h.change==h.end-1||doc.occupied.get(h.change+1)))||!hasTermEvidence(s,h,doc));
+        for(Map.Entry<String,List<Mention>> g:doc.groups.entrySet())resolve(g.getValue(),doc.hits,g.getKey().charAt(0)=='V');
+        vetoPaired(s,doc.hits);
+        if(!doc.toneHits.isEmpty()){
+            BitSet claimed=new BitSet();
+            for(Hit hit:doc.hits)claimed.set(hit.start,hit.end);
+            for(Hit tone:doc.toneHits){
+                int overlap=claimed.nextSetBit(tone.start);
+                if(doc.occupied.get(tone.change)||overlap>=0&&overlap<tone.end)continue;
+                doc.hits.add(tone);
+            }
+        }
+        if(doc.hits.size()<2)return doc.hits;
+        doc.hits.sort(Comparator.comparingInt((Hit h)->h.start).thenComparingInt(h->-h.end));
+        List<Hit> result=new ArrayList<>();
+        for(int i=0;i<doc.hits.size();){
+            Hit first=doc.hits.get(i++);int end=first.end;boolean conflict=false;
+            while(i<doc.hits.size()&&doc.hits.get(i).start<end){
+                Hit next=doc.hits.get(i++);end=Math.max(end,next.end);
+                int nextDelta=next.value.length()-(next.end-next.start),firstDelta=first.value.length()-(first.end-first.start);
+                if(next.change!=first.change||nextDelta!=firstDelta
+                    ||nextDelta>=0&&next.value.charAt(next.change-next.start)!=first.value.charAt(first.change-first.start))conflict=true;
+            }
+            if(!conflict)result.add(first);
+        }
+        return result;
+    }
+    private static boolean hasTermEvidence(String s,Hit h,Scan doc){
+        int length=h.value.length();
+        boolean missing=h.reason.equals(MISSING);
+        if (h.reason.equals(EXTRA) || (!missing && (length>=4))) return true;
+        boolean leftEdge = edge(s,h.start-1), rightEdge = edge(s,h.end);
+        if (missing ? length >= 5 && (leftEdge || rightEdge) : (h.change-h.start == 0 ? leftEdge : rightEdge)) return true;
+        boolean leftEvidence = leftEdge || before(s,h.start,LEFT);
+        boolean rightEvidence = rightEdge || after(s,h.end,RIGHT);
+        if (!missing && h.change-h.start==1) return leftEvidence || rightEvidence || doc.exact.contains(h.value);
+        return (leftEvidence && rightEvidence) || doc.exact.contains(h.value);
+    }
+
+    private void inspectMarker(Scan doc,String s,int offset,Marker marker,boolean[] custom,boolean[] exact,boolean[] literal){
+        if(marker.kind==INTRO_MARK||marker.kind==OBJECT_MARK){
+            boolean intro=marker.kind==INTRO_MARK;int start=offset+marker.text.length();
+            if(intro&&start<s.length()&&"“「『".indexOf(s.charAt(start))>=0)start++;
+            if(start>=s.length()||!han(s.charAt(start)))return;
+            int end=start+1;while(end<s.length()&&end<start+24&&nameChar(s.charAt(end)))end++;
+            if(end-start>=2&&!nameCharAt(s,end)&&edge(s,end))mention(doc,s,start,end,true,intro,intro?"":marker.text,custom,exact,literal);
+            return;
+        }
+        boolean person=marker.kind==ACTION_MARK;int stop=offset;
+        for(int length=2;length<=(person?24:4);length++){
+            int start=stop-length;if(start<0)break;
+            if(!han(s.charAt(start))||start>0&&s.charAt(start-1)=='·')continue;
+            boolean valid=true;for(int j=start;j<stop;j++)if(!(person?nameChar(s.charAt(j)):han(s.charAt(j)))||!person&&BAD_STEM.indexOf(s.charAt(j))>=0){valid=false;break;}
+            if(!valid)continue;
+            boolean intro=before(s,start,INTRO);
+            if(!intro&&!edge(s,start-1)&&!before(s,start,person?SUBJECT:MOVE)&&!before(s,start,JOINT))continue;
+            int end=person?stop:offset+marker.text.length();
+            if(!person&&end<s.length()&&s.charAt(end)=='舞')break;
+            mention(doc,s,start,end,person,intro,marker.text,custom,exact,literal);break;
+        }
+    }
+    private void mention(Scan doc,String s,int start,int end,boolean person,boolean intro,String role,boolean[] custom,boolean[] exact,boolean[] literal){
+        if(intro)doc.occupied.set(start,end);
+        boolean label=start>0&&end<s.length()&&"“「『".indexOf(s.charAt(start-1))>=0
+            &&"“「『".indexOf(s.charAt(start-1))=="”」』".indexOf(s.charAt(end))&&before(s,start-1,INTRO);
+        if(label){for(int i=start;i<end;i++)if(custom[i]||exact[i])return;intro=true;}
+        else if(guarded(custom,exact,literal,start,end))return;
+        if(Proofreader.touchesIdentifier(s,start,end))return;
+        String name=s.substring(start,end);
+        boolean joint=before(s,start,JOINT)||after(s,end,JOINT);
+        Mention mention=new Mention(start,name,role,person,intro,joint);
+        for (int pos=0; pos<name.length(); pos++) {
+            char[] readings = sounds[name.charAt(pos)];
+            if (readings == null) continue;
+            for (char reading : readings)
+                doc.groups.computeIfAbsent(entityKey(name,pos,reading,person),k->new ArrayList<>()).add(mention);
+        }
+        if(person){String shape=shapeKey(name);if(shape!=null)doc.groups.computeIfAbsent("V"+shape,k->new ArrayList<>()).add(mention);}
+    }
+    // Check explicit comparisons even when neither name is adjacent to a speech verb.
+    private void vetoPaired(String s,List<Hit> hits){
+        boolean hasEntity=false;
+        for(Hit h:hits)if(h.reason.equals(ENTITY)){hasEntity=true;break;}
+        if(!hasEntity)return;
+        Set<String> paired=new HashSet<>();
+        Set<String> pairedShapes=new HashSet<>();
+        for(int i=2;i+2<s.length();i++){
+            if("和与跟及、同或".indexOf(s.charAt(i))<0)continue;
+            int left=i>0&&s.charAt(i)=='及'&&s.charAt(i-1)=='以'?i-1:i;
+            for(int n=2;n<=24&&n<=left&&i+1+n<=s.length();n++){
+                int mismatch=-1;
+                boolean valid=true;
+                for(int k=0;k<n;k++){
+                    char a=s.charAt(left-n+k),b=s.charAt(i+1+k);
+                    if(!nameChar(a)||!nameChar(b)||a!=b&&mismatch>=0){valid=false;break;}
+                    if(a!=b)mismatch=k;
+                }
+                if(!valid||mismatch<0)continue;
+                char a=s.charAt(left-n+mismatch),b=s.charAt(i+1+mismatch);
+                int shape=SHAPE.indexOf(a);
+                if(share(sounds[a],sounds[b])){
+                    paired.add(s.substring(left-n,left));
+                    paired.add(s.substring(i+1,i+1+n));
+                }
+                if(mismatch>0&&shape>=0&&SHAPE.charAt(shape^1)==b)
+                    pairedShapes.add(shapeKey(s.substring(i+1,i+1+n)));
+            }
+        }
+        if(!paired.isEmpty()||!pairedShapes.isEmpty())
+            hits.removeIf(h->h.reason.equals(ENTITY)&&(paired.contains(h.value)||
+                paired.contains(s.substring(h.start,h.end))||pairedShapes.contains(shapeKey(h.value))));
+    }
+    private static void resolve(List<Mention> group,List<Hit> hits,boolean shape){
+        if(group.size()<2)return;
+        Map<String,List<Mention>> variants=new HashMap<>();
+        for(Mention m:group){if(m.joint)return;variants.computeIfAbsent(m.name,k->new ArrayList<>()).add(m);if(variants.size()>2)return;}
+        if(variants.size()!=2)return;
+        for(List<Mention> few:variants.values()){
+            if(few.size()>2)continue;
+            for(List<Mention> many:variants.values()){
+                if(few==many||many.size()<few.size())continue;
+                boolean named=false;for(Mention m:many)named|=m.intro;
+                if(few.size()==2&&(!named||many.size()<6))continue;
+                boolean admissible=true;
+                String canon=many.get(0).name;int d=diff(canon,0,few.get(0).name);
+                if(d<0)continue;
+                for(Mention rare:few){
+                    if(rare.intro){admissible=false;break;}
+                    boolean role=false;
+                    for(Mention m:many)if(!m.role.isEmpty()&&m.role.equals(rare.role)){role=true;break;}
+                    if(shape&&(!named||many.size()<4||!role)
+                        ||!named&&(many.size()<2||canon.length()==2&&many.size()<3||rare.person&&!role)){admissible=false;break;}
+                }
+                if(admissible)for(Mention rare:few)hits.add(new Hit(rare.start,canon,d,ENTITY));
+            }
+        }
+    }
+}
+DEDEDE_SOURCE_EOF
+
 cat > "app/src/main/java/com/app/dedede/CorrectionCore.java" <<'DEDEDE_SOURCE_EOF'
 package com.app.dedede;
 import java.util.ArrayList;
@@ -623,12 +1036,15 @@ public final class CorrectionCore {
         final boolean[] exactAll = proofreader.exactPositions(text, () -> listener != null && listener.isCancelled());
         if (exactAll == null) return null;
         final boolean[] customAll = dictionary.protectedPositions(text);
+        final boolean[] literals = Proofreader.literalPositions(text,false);
+        final List<TermMatcher.Hit> termHits = TermMatcher.get().collect(text,customAll,exactAll,literals,() -> listener != null && listener.isCancelled());
+        int nextTerm = 0;
         final Proofreader.Edit[] proofEdits = proofreader.collect(text, customAll, exactAll, Proofreader.literalPositions(text), true, () -> listener != null && listener.isCancelled());
         if (proofEdits == null) return null;
         final boolean[] blockedAll = customAll.clone();
         for (Proofreader.Edit edit : proofEdits) if (edit != null) Arrays.fill(blockedAll, edit.start, edit.end, true);
         int sentenceOffset = 0, skipUntil = 0;
-        List<String> sentences = splitText(text);
+        List<String> sentences = splitText(text, text.length());
         List<List<MainActivity.TextBlock>> allBlocks = new ArrayList<>(sentences.size());
         StringBuilder fullCleanText = new StringBuilder(text.length());
         int errorCount = 0;
@@ -685,6 +1101,9 @@ public final class CorrectionCore {
             intermediate = applyGrammar(intermediate, fastMode, proofreader, exactAll, originalStart,
                     hasDictionaryCorrection, blockedPositions, exactPositions, originalStart == sentenceStart, listener);
             if (intermediate == null) return null;
+            int firstTerm=nextTerm;
+            while(nextTerm<termHits.size()&&termHits.get(nextTerm).start<sentenceOffset)nextTerm++;
+            if(firstTerm<nextTerm)intermediate=applyTerms(intermediate,termHits,firstTerm,nextTerm,text,originalStart);
             int originalPosition = originalStart;
             for (MainActivity.TextBlock block : intermediate) {
                 if (block.isMutable) {
@@ -696,7 +1115,7 @@ public final class CorrectionCore {
                     }
                 }
                 if (block.type == 0) for (int i = originalPosition; i < originalPosition + block.original.length(); i++)
-                    if (exactAll[i]) { block.type = 2; break; }
+                    if (exactAll[i] || literals[i]) { block.type = 2; break; }
                 originalPosition += block.original.length();
             }
             boolean candidateTarget = false;
@@ -759,6 +1178,32 @@ public final class CorrectionCore {
         if (listener != null && listener.isCancelled()) return null;
         long elapsed = android.os.SystemClock.elapsedRealtime() - startTime;
         Result result=new Result(allBlocks, fullCleanText.toString(), errorCount, elapsed); result.modelNanos=modelNanos;result.modelCalls=modelCalls;result.reviewCalls=reviewCalls;return result;
+    }
+
+    // Only untouched contiguous source spans can receive a lower-priority suggestion.
+    private static List<MainActivity.TextBlock> applyTerms(List<MainActivity.TextBlock> blocks,
+            List<TermMatcher.Hit> hits,int index,int limit,String text,int start) {
+        List<MainActivity.TextBlock> output=new ArrayList<>(blocks.size());
+        for(int i=0;i<blocks.size();){
+            MainActivity.TextBlock block=blocks.get(i);
+            if(block.type!=0||block.isMutable){
+                output.add(block);start+=block.original.length();i++;continue;
+            }
+            int begin=i,end=start;
+            while(i<blocks.size()&&blocks.get(i).type==0&&!blocks.get(i).isMutable)end+=blocks.get(i++).original.length();
+            int copy=start;
+            while(index<limit&&hits.get(index).start<end){
+                TermMatcher.Hit hit=hits.get(index++);
+                if(hit.start<copy||hit.end>end)continue;
+                appendNormalText(output,text.substring(copy,hit.start));
+                MainActivity.TextBlock edited=new MainActivity.TextBlock(text.substring(hit.start,hit.end),hit.value,true,1f,6);
+                edited.exp=hit.reason;output.add(edited);copy=hit.end;
+            }
+            if(copy==start)output.addAll(blocks.subList(begin,i));
+            else appendNormalText(output,text.substring(copy,end));
+            start=end;
+        }
+        return output;
     }
 
     private static int progressInterval(int length) { return length > 100000 ? 1200 : (length > 30000 ? 700 : 350); }
@@ -1016,10 +1461,11 @@ public final class CorrectionCore {
             }
         }
     }
-    public static List<String> splitText(String text) {
+    public static List<String> splitText(String text) { return splitText(text, MAX_SEQUENCE_LENGTH); }
+    private static List<String> splitText(String text,int maxLength) {
         List<String> result=new ArrayList<>();int start=0;
         while(start<text.length()){
-            int limit=Math.min(start+MAX_SEQUENCE_LENGTH,text.length()),end=limit;
+            int limit=start+Math.min(maxLength,text.length()-start),end=limit;
             boolean foundSentenceEnd=false;
             for(int i=start;i<limit;i++)if("。！？!?\n".indexOf(text.charAt(i))>=0){
                 foundSentenceEnd=true;
@@ -2687,7 +3133,7 @@ public class MainActivity extends AppCompatActivity {
             addRule("(；)()(；+)", new String[][]{{null, "", "分号重复"}});
             addRule("(：)()(：+)", new String[][]{{null, "", "冒号重复"}});
             addRule("(、)()(、+)", new String[][]{{null, "", "顿号重复"}});
-            addRule("([^。！？\\n：]{1,30}" + reportingVerb + ")([ 　]*)(：)(?=[^。！？\\n“”‘’]{1,40}" + reportingVerb + "[ 　]*：)", new String[][]{{null, "，", "一个句子中通常只使用一个冒号"}});
+            addRule("(?<=[^。！？\\n：])(" + reportingVerb + ")([ 　]*)(：)(?=[^。！？\\n“”‘’]{1,40}" + reportingVerb + "[ 　]*：)", new String[][]{{null, "，", "一个句子中通常只使用一个冒号"}});
             addRule("(……|…)([ \\u3000]*)(等等|等)(?=[，,。；;！？!?：:]|$)", new String[][]{{null, "", "省略号与‘等’不能并用"}});
 
             // ==========================================
@@ -3046,12 +3492,15 @@ public class MainActivity extends AppCompatActivity {
         final String[] sources, corrections;
         final boolean[] customs;
         final Map<String, String[]> exclusions;
-        final int maxLength;
+        final int maxLength, conflictPadding;
         final String[] protectedWords;
         private TypoIndex(int[] roots, int[] first, int[] edges, int[] terminal, char[] labels,
                           String[] sources, String[] corrections, boolean[] customs, Map<String, String[]> exclusions, int maxLength) {
             this.roots = roots; this.first = first; this.edges = edges; this.terminal = terminal; this.labels = labels;
             this.sources = sources; this.corrections = corrections; this.customs = customs; this.exclusions = exclusions; this.maxLength = maxLength;
+            int longestExclusion=0;
+            for(String[] list:exclusions.values())for(String word:list)longestExclusion=Math.max(longestExclusion,word.length());
+            this.conflictPadding=maxLength+longestExclusion;
             List<String> protectedList = new ArrayList<>();
             for (int i = 0; i < sources.length; i++) if (customs[i]) protectedList.add(sources[i]);
             protectedWords = protectedList.toArray(new String[0]);
@@ -3091,8 +3540,7 @@ public class MainActivity extends AppCompatActivity {
             if (words == null) return false;
             int end = index + sources[entry].length();
             for (String word : words) {
-                int found = text.indexOf(word, Math.max(0, end - word.length()));
-                if (found >= 0 && found <= index && found + word.length() >= end) return true;
+                for(int at=Math.max(0,end-word.length());at<=index;at++)if(text.startsWith(word,at))return true;
             }
             return false;
         }
@@ -3136,7 +3584,9 @@ public class MainActivity extends AppCompatActivity {
         }
         boolean conflicts(String sentence, int index, String source, String correction) {
             if (source.equals(correction) || sources.length == 0) return false;
-            String simulated = sentence.substring(0, index) + correction + sentence.substring(index + source.length());
+            int first=Math.max(0,index-conflictPadding),after=index+source.length();
+            String simulated=sentence.substring(first,index)+correction+sentence.substring(after,Math.min(sentence.length(),after+conflictPadding));
+            index-=first;
             int end = index + correction.length();
             for (int cursor = Math.max(0, index - maxLength + 1); cursor < end; cursor++) {
                 int node = 0;
@@ -3156,12 +3606,8 @@ public class MainActivity extends AppCompatActivity {
         for (String white : WHITE_LIST) {
             if (white == null || white.isEmpty()) continue;
             int searchStart = Math.max(0, index - white.length()), searchEnd = Math.min(sentence.length(), index + source.length() + white.length());
-            int found = sentence.indexOf(white, searchStart);
-            while (found >= 0 && found + white.length() <= searchEnd) {
-                int start = found, end = start + white.length();
-                if (start < index + source.length() && end > index) return true;
-                found = sentence.indexOf(white, found + 1);
-            }
+            for(int at=searchStart;at<index+source.length()&&at+white.length()<=searchEnd;at++)
+                if(at+white.length()>index&&sentence.startsWith(white,at))return true;
         }
         
         if (source.charAt(0) == '做' || source.charAt(0) == '作') {
@@ -7396,8 +7842,6 @@ def encrypt_asset(file_in: str, file_out: str, level: int, patch_zip_header: boo
 print('正在使用 AES-256-GCM 加固 HCAM、词表和规则文件...')
 encrypt_asset('hcam_model.bin', 'sys_core_p.dat', 1, False)
 encrypt_asset('错别字.txt', 'sys_typo.dat', 9, False)
-Path('sys_idioms.dat').unlink(missing_ok=True)  # Remove an old local dictionary if the root file was removed.
-encrypt_asset('成语.txt', 'sys_idioms.dat', 9, False)
 encrypt_asset('hcam_tokenizer.json', 'sys_vocab_p.dat', 9, False)
 print('AES-256-GCM 加固完成；每次构建均使用全新主密钥、盐和 Nonce。')
 DEDEDE_SOURCE_EOF
@@ -7493,9 +7937,8 @@ python3 encrypt.py
 mkdir -p app/src/main/assets app/src/main/res/mipmap-xxxhdpi
 cp generated_security/GeneratedSecuritySeed.java app/src/main/java/com/app/dedede/
 cp generated_security/key-part-a.cpp generated_security/key-part-b.cpp app/src/main/cpp/
-cp sys_core_p.dat sys_vocab_p.dat sys_typo.dat app/src/main/assets/
+cp LICENSE-dictionaries.txt pinyin.txt terms.txt sys_core_p.dat sys_vocab_p.dat sys_typo.dat app/src/main/assets/
 rm -f app/src/main/assets/sys_idioms.dat
-if [ -f sys_idioms.dat ]; then cp sys_idioms.dat app/src/main/assets/; fi
 cp app_icon.png app/src/main/res/mipmap-xxxhdpi/ic_launcher.png
 python3 protect_rules.py
 
