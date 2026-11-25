@@ -2,18 +2,6 @@
 # HCAM V2 PTE independent build. Run in a checkout of qilimary/Dedede-App.
 # Optional --prepare-only generates the Android project without invoking Gradle.
 set -euo pipefail
-# ====================== Android 版本构建开关 ======================
-# 【只改下一行】normal = 仅普通版（原图标+蓝色）
-#               lan    = 仅兰特供版（lan.png+浅粉色）
-#               both   = 同时构建两版（默认；建议本次使用）
-# 以后新增或修改纠错功能，继续只维护本 dedede-build.sh。
-
-BUILD_MODE=both
-# ===============================================================
-case "$BUILD_MODE" in
-  normal|lan|both) ;;
-  *) echo "错误：BUILD_MODE 只能填 normal、lan 或 both" >&2; exit 2 ;;
-esac
 # All platforms require the same correct-first source; old reversed files must not silently load.
 python3 - <<'DEDEDE_FORMAT_CHECK'
 from pathlib import Path
@@ -58,8 +46,8 @@ android {
         applicationId "com.app.dededi.pte"
         minSdk 24
         targetSdk 36
-        versionCode 45
-        versionName "4.5"
+        versionCode 46
+        versionName "4.6"
         ndk { abiFilters "arm64-v8a" }
         externalNativeBuild { cmake { cppFlags ""; arguments "-DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON" } }
     }
@@ -128,10 +116,15 @@ cat > "app/src/main/AndroidManifest.xml" <<'DEDEDE_SOURCE_EOF'
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE"/>
     <application android:name=".DededeApp" android:allowBackup="false" android:icon="@mipmap/ic_launcher" android:roundIcon="@mipmap/ic_launcher" android:label="纠错 Pro" android:theme="@style/Theme.Dedede" android:enableOnBackInvokedCallback="false">
         <activity android:name=".MainActivity" android:exported="true" android:launchMode="singleTask" android:windowSoftInputMode="adjustResize">
-            <intent-filter><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.LAUNCHER"/></intent-filter>
             <intent-filter><action android:name="android.intent.action.SEND"/><category android:name="android.intent.category.DEFAULT"/><data android:mimeType="text/plain"/></intent-filter>
             <intent-filter><action android:name="android.intent.action.SEND"/><category android:name="android.intent.category.DEFAULT"/><data android:mimeType="image/*"/></intent-filter>
         </activity>
+        <activity-alias android:name=".NormalLauncher" android:targetActivity=".MainActivity" android:exported="true" android:enabled="true" android:icon="@mipmap/ic_launcher" android:label="纠错 Pro">
+            <intent-filter><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.LAUNCHER"/></intent-filter>
+        </activity-alias>
+        <activity-alias android:name=".LanLauncher" android:targetActivity=".MainActivity" android:exported="true" android:enabled="false" android:icon="@mipmap/ic_launcher_lan" android:label="纠错 Pro">
+            <intent-filter><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.LAUNCHER"/></intent-filter>
+        </activity-alias>
         <activity android:name=".FilePickerActivity" android:theme="@android:style/Theme.Translucent.NoTitleBar" android:taskAffinity="${applicationId}.filepicker" android:excludeFromRecents="true"/>
         <activity android:name=".SymbolCleanActivity" android:theme="@android:style/Theme.Translucent.NoTitleBar" android:taskAffinity="${applicationId}.symbolclean" android:excludeFromRecents="true"/>
         <service android:name=".FloatingService" android:exported="false" android:foregroundServiceType="specialUse">
@@ -584,6 +577,7 @@ final class TermMatcher {
     }
     private static final String BAD_STEM = "的了着过去从在到向把被与和及跟就去是为有又也都还正在称叫名走来抵离赶进出入这那他她我你您它很将让往对说问";
     private static final String SHAPE = "未末晴睛己已戊戌祎袆汨汩晏宴钧钓玮玫";
+    private static final String DOCUMENT_TERM="正文术语复现";
     private static final String TERM = "术语同音纠错", ENTITY = "正文实体一致性";
     static final String SUSPECTED_TYPO = "疑似错别字";
     private final char[][] sounds = new char[65536][];
@@ -603,13 +597,22 @@ final class TermMatcher {
     }
 
     // A bucket identifies two unchanged neighbours. All candidates are verified against the full word.
-    private static final int LEADING=0, INTERNAL=1, TRAILING=2;
-    private final int[][] heads=new int[3][1<<17];
+    private static final int LEADING=0, INTERNAL=1, TRAILING=2, LONG=3;
+    private final int[][] heads=new int[4][1<<17];
     private final Set<Integer> protectedPairs=new HashSet<>();
     private Entry[] entries=new Entry[16384];
     private int[] next=new int[entries.length];
     private byte[] positions=new byte[entries.length];
     private static final int CAN_OMIT=32;
+    private int[] observedPairs=new int[16384];
+    private int pairCount;
+    private void indexPairs(String word){
+        for(int i=1;i<word.length();i++){
+            if(pairCount==observedPairs.length)observedPairs=Arrays.copyOf(observedPairs,pairCount*2);
+            observedPairs[pairCount++]=pair(word.charAt(i-1),word.charAt(i));
+        }
+    }
+    private boolean knownPair(char a,char b){return Arrays.binarySearch(observedPairs,pair(a,b))>=0;}
     private int count;
 
     private static int pair(char a,char b){return (a<<16)|b;}
@@ -625,6 +628,14 @@ final class TermMatcher {
         if(last==1){protectedPairs.add(pair(w.charAt(0),w.charAt(1)));return;}
         anchor(LEADING,w.charAt(1),w.charAt(2),entry,0);
         if(entry.protect)return;
+        if(w.length()>=6){
+            // k substitutions leave at least one of k+1 disjoint seeds intact.
+            int seeds=w.length()/3+1;
+            for(int i=0;i<seeds;i++){
+                int p=i*w.length()/seeds;
+                anchor(LONG,w.charAt(p),w.charAt(p+1),entry,p);
+            }
+        }
         for(int i=1;i<last;i++){
             char ch=w.charAt(i);
             boolean omit=last>=3&&ch!=w.charAt(i-1)&&ch!=w.charAt(i+1)
@@ -639,6 +650,7 @@ final class TermMatcher {
         if(at+1<s.length()&&protectedPairs.contains(pair(c,s.charAt(at+1))))doc.occupied.set(at,at+2);
         if(at+2<s.length())probe(LEADING,s.charAt(at+1),s.charAt(at+2),0,doc,s,at,custom,exact,literal);
         if(at>=2)probe(TRAILING,s.charAt(at-2),s.charAt(at-1),0,doc,s,at,custom,exact,literal);
+        if(at+1<s.length()&&han(s.charAt(at+1)))probeLong(doc,s,at,custom,exact,literal);
         if(at==0)return;
         char pre=s.charAt(at-1);
         probe(INTERNAL,pre,c,-1,doc,s,at,custom,exact,literal);
@@ -674,9 +686,42 @@ final class TermMatcher {
                 if(share(sounds[source],sounds[target]))doc.hits.add(new Hit(start,w,pos,TERM));
                 else if(n>=4&&kind==INTERNAL&&!isProtectedPair(source,target,"型性")&&share(syllables[source],syllables[target]))
                     doc.toneHits.add(new Hit(start,w,pos,NEAR_TONE));
+                else if(n>=6&&han(source)&&!share(syllables[source],syllables[target])&&
+                    MEANINGFUL.indexOf(source)<0&&MEANINGFUL.indexOf(target)<0)
+                    doc.longHits.add(new Hit(start,w,pos,DOCUMENT_TERM));
             }
         }
     }
+    private void probeLong(Scan doc,String s,int at,boolean[] custom,boolean[] exact,boolean[] literal){
+        int hash=bucket(s.charAt(at),s.charAt(at+1));
+        for(int id=heads[LONG][hash];id!=0;id=next[id]){
+            Entry entry=entries[id]; String w=entry.text;
+            int pos=positions[id], start=at-pos, n=w.length(), end=start+n;
+            if(start<0||end>s.length()||!s.regionMatches(at,w,pos,2))continue;
+            int seeds=n/3+1;
+            boolean earlier=false;
+            for(int i=0;i<seeds;i++){
+                int p=i*n/seeds;
+                if(p>=pos)break;
+                if(s.regionMatches(start+p,w,p,2)){earlier=true;break;}
+            }
+            if(earlier)continue;
+            int count=0,first=-1; boolean sameTone=false;
+            for(int i=0;i<n;i++){
+                char a=s.charAt(start+i),b=w.charAt(i);
+                if(a==b)continue;
+                if(++count>n/3||!share(syllables[a],syllables[b])||
+                    FIXED_CHARACTERS.indexOf(a)>=0||FIXED_CHARACTERS.indexOf(b)>=0||
+                    isProtectedPair(a,b,"癌炎")||isProtectedPair(a,b,"黏粘")||isProtectedPair(a,b,"型性")||
+                    excluded(s,start+i,entry.exclusions)){count=-1;break;}
+                if(first<0)first=i;
+                sameTone|=share(sounds[a],sounds[b]);
+            }
+            if(count>=2&&sameTone&&!guarded(custom,exact,literal,start,end)&&!Proofreader.touchesIdentifier(s,start,end))
+                doc.longHits.add(new Hit(start,w,first,TERM));
+        }
+    }
+
     private static void addEndRepeat(Scan doc,String s,int start,int end,int pos,Entry entry,boolean[] custom,boolean[] exact,boolean[] literal){
         if (FIXED_CHARACTERS.indexOf(s.charAt(start+pos)) >= 0) return;
         if(!guarded(custom,exact,literal,start,end)&&!Proofreader.touchesIdentifier(s,start,end)&&!excluded(s,start+pos,entry.exclusions))
@@ -730,8 +775,14 @@ final class TermMatcher {
             String term=line.substring(protect?1:0,cut<0?line.length():cut);
             if(term.length()<(protect?2:3)||term.length()>32||!term.chars().allMatch(ch->han((char)ch)))
                 throw new IOException("术语格式错误："+line);
+            indexPairs(term);
             index(new Entry(term,cut<0?EMPTY:words(line.substring(cut+3).trim()),protect));
         }
+        Arrays.sort(observedPairs,0,pairCount);
+        int unique=0;
+        for(int i=0;i<pairCount;i++)
+            if(unique==0||observedPairs[i]!=observedPairs[unique-1])observedPairs[unique++]=observedPairs[i];
+        observedPairs=Arrays.copyOf(observedPairs,unique);
     }
     private static volatile TermMatcher cached;
     static TermMatcher get() throws IOException {
@@ -777,7 +828,7 @@ final class TermMatcher {
         for(int p=start;p<end;p++)if(a[p]||b[p]||literals[p])return true;return false;
     }
     private static final class Scan {
-        final List<Hit> hits=new ArrayList<>(),toneHits=new ArrayList<>();
+        final List<Hit> hits=new ArrayList<>(),toneHits=new ArrayList<>(),longHits=new ArrayList<>();
         final Set<String> exact=new HashSet<>();
         final BitSet occupied=new BitSet();
         final Map<String,List<Mention>> groups=new HashMap<>();
@@ -810,7 +861,7 @@ final class TermMatcher {
         }
         for(Hit review:reviews)
             if(doc.hits.stream().noneMatch(h->h.start<review.end&&review.start<h.end))doc.hits.add(review);
-        if(doc.hits.size()<2)return doc.hits;
+        if(doc.hits.size()<2)return mergeLong(s,doc,doc.hits);
         doc.hits.sort(Comparator.comparingInt((Hit h)->h.start).thenComparingInt(h->-h.end));
         List<Hit> result=new ArrayList<>();
         for(int i=0;i<doc.hits.size();){
@@ -823,7 +874,54 @@ final class TermMatcher {
             }
             if(!conflict)result.add(first);
         }
-        return result;
+        return mergeLong(s,doc,result);
+    }
+
+    // Preserve accepted primary edits. New long terms claim only their changed letters.
+    private List<Hit> mergeLong(String s,Scan doc,List<Hit> primary){
+        if(doc.longHits.isEmpty())return primary;
+        List<Hit> eligible=new ArrayList<>();
+        for(Hit h:doc.longHits){
+            if(h.reason.equals(DOCUMENT_TERM)){
+                if(!doc.exact.contains(h.value))continue;
+                int p=h.change;
+                if(p==h.start&&!edge(s,p-1)||p==h.end-1&&!edge(s,p+1))continue;
+                if(p>h.start&&knownPair(s.charAt(p-1),s.charAt(p))||
+                    p+1<h.end&&knownPair(s.charAt(p),s.charAt(p+1)))continue;
+            }
+            boolean blocked=false;
+            for(int i=h.start;i<h.end;i++)
+                if(s.charAt(i)!=h.value.charAt(i-h.start)&&doc.occupied.get(i)){blocked=true;break;}
+            if(!blocked)eligible.add(h);
+        }
+        if(eligible.isEmpty())return primary;
+        char[] agreed=new char[s.length()];
+        BitSet conflict=new BitSet(),claimed=new BitSet();
+        for(Hit hit:primary){
+            claimed.set(hit.start,hit.end);
+            if(hit.value.length()!=hit.end-hit.start||hit.reason.equals(SUSPECTED_TYPO))
+                conflict.set(hit.start,hit.end);
+            else hit.value.getChars(0,hit.value.length(),agreed,hit.start);
+        }
+        for(Hit hit:eligible){
+            for(int p=hit.start;p<hit.end;p++){
+                char wanted=hit.value.charAt(p-hit.start);
+                if(agreed[p]!=0&&agreed[p]!=wanted)conflict.set(p);
+                else agreed[p]=wanted;
+            }
+        }
+        for(Hit hit:eligible){
+            int disagreement=conflict.nextSetBit(hit.start);
+            if(disagreement>=0&&disagreement<hit.end)continue;
+            for(int p=hit.start;p<hit.end;p++){
+                if(!claimed.get(p)&&s.charAt(p)!=agreed[p]){
+                    primary.add(new Hit(p,String.valueOf(agreed[p]),0,hit.reason));
+                    claimed.set(p);
+                }
+            }
+        }
+        primary.sort(Comparator.comparingInt(hit->hit.start));
+        return primary;
     }
     private static boolean hasTermEvidence(String s,Hit h,Scan doc){
         int length=h.value.length();
@@ -847,6 +945,7 @@ final class TermMatcher {
             return;
         }
         boolean person=marker.kind==ACTION_MARK;int stop=offset;
+        int weakStart=-1;
         for(int length=2;length<=(person?24:4);length++){
             int start=stop-length;if(start<0)break;
             if(!han(s.charAt(start))||start>0&&s.charAt(start-1)=='·')continue;
@@ -854,11 +953,14 @@ final class TermMatcher {
             if(!valid)continue;
             boolean intro=before(s,start,INTRO);
             boolean anchored=intro||edge(s,start-1)||before(s,start,person?SUBJECT:MOVE)||before(s,start,JOINT);
-            if(!anchored&&(person||length!=2||!(start>0&&s.charAt(start-1)=='的'||start>=2&&s.startsWith("点半",start-2))))continue;
+            if(!anchored){if(!person&&length==2)weakStart=start;continue;}
             int end=person?stop:offset+marker.text.length();
             if(!person&&end<s.length()&&s.charAt(end)=='舞')break;
-            mention(doc,s,start,end,person,intro,anchored?marker.text:"",custom,exact,literal);break;
+            mention(doc,s,start,end,person,intro,marker.text,custom,exact,literal);return;
         }
+        int end=offset+marker.text.length();
+        if(weakStart>=0&&(end==s.length()||s.charAt(end)!='舞'))
+            mention(doc,s,weakStart,end,false,false,"",custom,exact,literal);
     }
     private void mention(Scan doc,String s,int start,int end,boolean person,boolean intro,String role,boolean[] custom,boolean[] exact,boolean[] literal){
         if(intro)doc.occupied.set(start,end);
@@ -945,11 +1047,10 @@ final class TermMatcher {
                 if(crossRole&&!near&&many.size()<4)
                     crossRole=occursAtLeastFourTimes(text,canon);
                 if(near&&!crossRole)continue;
-                if(!few.get(0).person&&!named&&few.size()==1&&many.size()==2&&
+                if(!few.get(0).person&&!named&&few.size()==1&&(many.size()==2||many.stream().filter(m->!m.role.isEmpty()).limit(2).count()<2)&&
                     (few.get(0).role.isEmpty()||many.stream().anyMatch(m->m.role.isEmpty()))){
-                    if(!few.get(0).intro){
+                    if(many.size()>few.size()&&!few.get(0).intro&&(!few.get(0).role.isEmpty()||many.stream().anyMatch(m->!m.role.isEmpty()))){
                         hits.add(new Hit(few.get(0).start,canon,d,SUSPECTED_TYPO));
-                        hits.add(new Hit(many.get(0).start,few.get(0).name,d,SUSPECTED_TYPO));
                     }
                     continue;
                 }
@@ -1779,6 +1880,20 @@ public class FloatingService extends Service {
     private final ArrayDeque<String> visibleErrorLines = new ArrayDeque<>(3);
     private boolean errorStatusFlushScheduled;
     private SharedPreferences sp;
+    private android.content.res.ColorStateList normalFloatText;
+    private final SharedPreferences.OnSharedPreferenceChangeListener editionListener = (prefs, key) -> {
+        if ("lanEdition".equals(key)) applyFloatingEdition();
+    };
+
+    private void applyFloatingEdition() {
+        boolean lan = sp.getBoolean("lanEdition", false);
+        Button check = floatView.findViewById(R.id.btnFloatCheck);
+        android.content.res.ColorStateList fill = android.content.res.ColorStateList.valueOf(lan ? 0xFFF69BC2 : 0xFF2196F3);
+        check.setBackgroundTintList(fill);
+        check.setTextColor(lan ? android.content.res.ColorStateList.valueOf(0xFF59364A) : normalFloatText);
+        floatView.findViewById(R.id.btnCircle).setBackgroundTintList(fill);
+    }
+
     private boolean restoringFloatInput, floatSyncDirty;
     private long floatDraftRevision;
     private final Runnable hideStatusRunnable = () -> { if (!destroyed && statusContainer != null) statusContainer.setVisibility(View.GONE); };
@@ -1862,6 +1977,9 @@ public class FloatingService extends Service {
         View btnCircle = floatView.findViewById(R.id.btnCircle), panelTopBar = floatView.findViewById(R.id.panelTopBar);
         Button btnImport = floatView.findViewById(R.id.btnFloatImport), btnPaste = floatView.findViewById(R.id.btnFloatPaste), btnClear = floatView.findViewById(R.id.btnFloatClear), btnCheck = floatView.findViewById(R.id.btnFloatCheck), btnCopy = floatView.findViewById(R.id.btnFloatCopy), btnJump = floatView.findViewById(R.id.btnFloatJump), btnClose = floatView.findViewById(R.id.btnFloatCloseAll);
         btnFloatSwitch = floatView.findViewById(R.id.btnFloatSwitch);
+        normalFloatText = btnCheck.getTextColors();
+        applyFloatingEdition();
+        sp.registerOnSharedPreferenceChangeListener(editionListener);
 
         DraftSync.Snapshot initialDraft = DraftSync.read(sp);
         floatDraftRevision = initialDraft.revision; editFloatInput.setText(initialDraft.text);
@@ -2126,6 +2244,7 @@ public class FloatingService extends Service {
 
     @Override public IBinder onBind(Intent intent) { return null; }
     @Override public void onDestroy() {
+        if (sp != null) sp.unregisterOnSharedPreferenceChangeListener(editionListener);
         flushFloatInputSync();
         destroyed = true; isInterruptRequested = true; inferenceGeneration++; AppExecutors.MAIN.removeCallbacks(syncTextRunnable); AppExecutors.MAIN.removeCallbacks(hideStatusRunnable); AppExecutors.MAIN.removeCallbacks(errorStatusFlushRunnable);
         synchronized (errorStatusLock) { visibleErrorLines.clear(); errorStatusFlushScheduled = false; }
@@ -3277,7 +3396,7 @@ public class MainActivity extends AppCompatActivity {
             addRule("((?:大多|主要|大都|基本|基本上)(?:是)?以)([^，。；！？、\n]{1,20}?)(为主)", new String[][]{{"以", null, "句式杂糅"}});
             addRule("(之所以)([^，,。；;！？!?：:\\n]{2,36}?)(的原因)(?=[ 　]*(?:是|在于|就是))", new String[][]{{"", null, "句式杂糅"}});
             addRule("(由)([ 　]*(?:他|她|他们|她们|大家|我们|你们|负责人|领导|班长|队长|老师|经理|校长|主席|主任|委员|将军|首领|组长|代表|专家|成员|学生|学者)(?:等人)?[ 　]*)(为首)(?=的)", new String[][]{{"以", null, "句式杂糅"}});
-            addRule("(具有)([ 　]*(?:消食|化积|润肠|通便|清热|解毒|活血|化瘀|消肿|止痛|健脾|养胃|安神|补血|益气|滋阴|补肾|祛风|除湿|润肺|化痰|止咳|平喘|抗氧化|抗菌|抑菌|消炎)(?:[、和及与 　]*(?:消食|化积|润肠|通便|清热|解毒|活血|化瘀|消肿|止痛|健脾|养胃|安神|补血|益气|滋阴|补肾|祛风|除湿|润肺|化痰|止咳|平喘|抗氧化|抗菌|抑菌|消炎))*[ 　]*)()(?=[，,。；;！？!?：:\\n]|$)", new String[][]{{null, "的功效", "成分残缺，补充宾语"}});
+            addRule("(具有)([ 　]*(?:消食|化积|润肠|通便|清热|解毒|活血|化瘀|消肿|止痛|健脾|养胃|安神|补血|益气|滋阴|补肾|祛风|除湿|润肺|化痰|止咳|平喘|抗氧化|抗菌|抑菌|消炎)(?:[、和及与 　]*(?:消食|化积|润肠|通便|清热|解毒|活血|化瘀|消肿|止痛|健脾|养胃|安神|补血|益气|滋阴|补肾|祛风|除湿|润肺|化痰|止咳|平喘|抗氧化|抗菌|抑菌|消炎))*[ 　]*)()(?=[，,。；;！？!?：:\\n]|$)", new String[][]{{null, "的功效", "成分残缺"}});
             addRule("(?<=的)(原因)([ \\u3000]*)(是因为|是由于)", new String[][]{{null, "是", "句式杂糅"}});
 
             // ==========================================
@@ -5065,7 +5184,7 @@ public class MainActivity extends AppCompatActivity {
         rbFast = findViewById(R.id.rbFast); rbPro = findViewById(R.id.rbPro); rgMode = findViewById(R.id.rgMode); expandedEditorOverlay = findViewById(R.id.expandedEditorOverlay); expandedEditText = findViewById(R.id.expandedEditText); editorScrollView = findViewById(R.id.editorScrollView);
         inputEditorOverlay = findViewById(R.id.inputEditorOverlay); expandedInputEditText = findViewById(R.id.expandedInputEditText); tvInputEditorWordCount = findViewById(R.id.tvInputEditorWordCount);
         inputBoxContainer = findViewById(R.id.inputBoxContainer); belowInputContainer = findViewById(R.id.belowInputContainer); inputBottomHandleLayer = findViewById(R.id.inputBottomHandleLayer); inputBottomOutsideStrip = findViewById(R.id.inputBottomOutsideStrip); btnInputCollapse = findViewById(R.id.btnInputCollapse); ivInputCollapseArrow = findViewById(R.id.ivInputCollapseArrow);
-        TextView title = findViewById(R.id.tvTitle); Button menu = findViewById(R.id.btnMenu), font = findViewById(R.id.btnFont), inputExpand = findViewById(R.id.btnInputExpand); View floatButton = findViewById(R.id.btnFloat);
+        TextView title = findViewById(R.id.tvTitle); View menu = findViewById(R.id.btnMenu); Button font = findViewById(R.id.btnFont), inputExpand = findViewById(R.id.btnInputExpand); View floatButton = findViewById(R.id.btnFloat);
         font.setOnClickListener(v -> showFontSizeDialog()); inputExpand.setOnClickListener(v -> openInputEditor()); updateFontSize(sp.getInt("font_offset_text", 0), sp.getInt("font_offset_sys", 0)); applySkin(sp.getString("ui_skin", "default"));
         setupScrollControls(); setupEditor(); setupInputEditor(); setupInputWatcher();
         currentIsFast = sp.getBoolean("is_fast_mode", false); rbFast.setChecked(currentIsFast); rbPro.setChecked(!currentIsFast); loadSettings(currentIsFast);
@@ -5079,6 +5198,14 @@ public class MainActivity extends AppCompatActivity {
         });
         if (savedInstanceState == null) restoreScreenState(null); else restoreScreenState(savedInstanceState);
         if (savedInstanceState == null) handleIntent(getIntent());
+        android.widget.ImageButton edition = findViewById(R.id.btnEdition);
+        applyEdition(edition, sp.getBoolean("lanEdition", false));
+        edition.setOnClickListener(v -> {
+            boolean lan = !sp.getBoolean("lanEdition", false);
+            setLauncherEdition(lan);
+            sp.edit().putBoolean("lanEdition", lan).apply();
+            applyEdition(edition, lan);
+        });
         title.setOnClickListener(v -> showHelp());
         menu.setOnClickListener(v -> { editingTypoKey = null; ((Button) findViewById(R.id.btnAddTypo)).setText("添加"); EditText original = findViewById(R.id.etOriginal); original.setText(""); original.setHint("原始文本"); ((EditText) findViewById(R.id.etCorrected)).setText(""); TextView whitelistHint = findViewById(R.id.tvWhitelistJumpHint); if (whitelistHint != null) whitelistHint.setVisibility(View.GONE); drawerLayout.openDrawer(GravityCompat.END); renderCustomTyposUI(); renderHistoryUI(); });
         floatButton.setOnClickListener(v -> {
@@ -5086,6 +5213,40 @@ public class MainActivity extends AppCompatActivity {
         });
         setupMainButtons(); setupDrawerButtons(); btnSaveTxt.setEnabled(inputText.length() > 0 || hasDisplayedCorrectionResult());
         for (TextView editor : new TextView[]{inputText, outputText, expandedInputEditText, expandedEditText, editTemp, editThreshDe1, editThreshDe2, editThreshDe3, editThreshZuo, editThreshZuo4}) editor.setSaveEnabled(false);
+    }
+
+    private void setLauncherEdition(boolean lan) {
+        android.content.pm.PackageManager pm = getPackageManager();
+        String prefix = MainActivity.class.getPackage().getName() + ".";
+        android.content.ComponentName enable = new android.content.ComponentName(this, prefix + (lan ? "LanLauncher" : "NormalLauncher"));
+        android.content.ComponentName disable = new android.content.ComponentName(this, prefix + (lan ? "NormalLauncher" : "LanLauncher"));
+        int on = android.content.pm.PackageManager.COMPONENT_ENABLED_STATE_ENABLED;
+        int off = android.content.pm.PackageManager.COMPONENT_ENABLED_STATE_DISABLED;
+        int keep = android.content.pm.PackageManager.DONT_KILL_APP;
+        if (android.os.Build.VERSION.SDK_INT >= 33) {
+            pm.setComponentEnabledSettings(java.util.Arrays.asList(
+                new android.content.pm.PackageManager.ComponentEnabledSetting(enable, on, keep),
+                new android.content.pm.PackageManager.ComponentEnabledSetting(disable, off, keep)));
+        } else {
+            pm.setComponentEnabledSetting(enable, on, keep);
+            pm.setComponentEnabledSetting(disable, off, keep);
+        }
+    }
+
+    private void applyEdition(android.widget.ImageButton edition, boolean lan) {
+        int accent = lan ? 0xFFDE4E8C : 0xFF1976D2;
+        edition.setColorFilter(accent);
+        edition.setContentDescription(lan ? "切换到普通版" : "切换到特供版");
+        ((Button)findViewById(R.id.btnFont)).setTextColor(lan ? accent : 0xFF2196F3);
+        Button floating = findViewById(R.id.btnFloat);
+        floating.setBackgroundTintList(android.content.res.ColorStateList.valueOf(lan ? 0xFFF69BC2 : 0xFF03A9F4));
+        floating.setTextColor(lan ? 0xFF59364A : 0xFFFFFFFF);
+        btnCheck.setBackgroundResource(lan ? R.drawable.bg_check_lan : R.drawable.bg_check_gradient);
+        btnCheck.setTextColor(lan ? 0xFF59364A : 0xFFECF5FF);
+        for(Button action : new Button[]{btnImport,btnPaste,btnClear,btnCopy,btnSaveTxt}) {
+            action.setBackgroundTintList(lan ? android.content.res.ColorStateList.valueOf(0xFFD9EEFF) : null);
+            action.setTextColor(lan ? 0xFF214F78 : getColor(R.color.btn_light_green_text));
+        }
     }
 
     @SuppressLint("ClickableViewAccessibility")
@@ -7516,6 +7677,45 @@ cat > "app/src/main/res/drawable-night/ic_input_collapse_handle.xml" <<'DEDEDE_S
 DEDEDE_SOURCE_EOF
 
 mkdir -p "app/src/main/res/layout"
+cat > "app/src/main/res/drawable/bg_history_menu.xml" <<'DEDEDE_SOURCE_EOF'
+<inset xmlns:android="http://schemas.android.com/apk/res/android" android:insetLeft="3dp" android:insetRight="3dp" android:insetTop="7dp" android:insetBottom="7dp">
+    <ripple android:color="?attr/colorControlHighlight">
+        <item><shape><corners android:radius="4dp"/><solid android:color="@color/history_menu_bg"/></shape></item>
+    </ripple>
+</inset>
+DEDEDE_SOURCE_EOF
+
+cat > "app/src/main/res/drawable/ic_history_menu.xml" <<'DEDEDE_SOURCE_EOF'
+<vector xmlns:android="http://schemas.android.com/apk/res/android" android:width="24dp" android:height="24dp" android:viewportWidth="24" android:viewportHeight="24">
+    <path android:fillColor="@android:color/transparent" android:strokeColor="@color/history_menu_ink" android:strokeWidth="1.65" android:strokeLineCap="round" android:strokeLineJoin="round" android:pathData="M3,6h18 M3,12h18 M3,18h18"/>
+</vector>
+DEDEDE_SOURCE_EOF
+
+cat > "app/src/main/res/drawable/ic_edition.xml" <<'DEDEDE_SOURCE_EOF'
+<vector xmlns:android="http://schemas.android.com/apk/res/android" android:width="24dp" android:height="24dp" android:viewportWidth="24" android:viewportHeight="24">
+    <path android:fillColor="@android:color/transparent" android:strokeColor="#1976D2" android:strokeWidth="1.65" android:strokeLineCap="round" android:strokeLineJoin="round" android:pathData="M4,11v-1a4,4 0,0 1,4 -4h12 M17,3l3,3 -3,3 M20,13v1a4,4 0,0 1,-4 4H4 M7,15l-3,3 3,3"/>
+</vector>
+DEDEDE_SOURCE_EOF
+
+cat > "app/src/main/res/drawable/edition_action.xml" <<'DEDEDE_SOURCE_EOF'
+<inset xmlns:android="http://schemas.android.com/apk/res/android" android:insetLeft="4dp" android:insetRight="4dp" android:insetTop="6dp" android:insetBottom="6dp">
+    <ripple android:color="?attr/colorControlHighlight">
+        <item><shape><corners android:radius="2.1dp"/><solid android:color="@color/btn_light_green_bg"/></shape></item>
+    </ripple>
+</inset>
+DEDEDE_SOURCE_EOF
+
+cat > "app/src/main/res/drawable/bg_check_lan.xml" <<'DEDEDE_SOURCE_EOF'
+<?xml version="1.0" encoding="utf-8"?>
+<ripple xmlns:android="http://schemas.android.com/apk/res/android" android:color="#22FFFFFF">
+    <item>
+        <inset android:insetLeft="4dp" android:insetRight="4dp" android:insetTop="6dp" android:insetBottom="6dp">
+            <shape><corners android:radius="12dp"/><solid android:color="#F69BC2"/></shape>
+        </inset>
+    </item>
+</ripple>
+DEDEDE_SOURCE_EOF
+
 cat > "app/src/main/res/layout/activity_main.xml" <<'DEDEDE_SOURCE_EOF'
 <?xml version="1.0" encoding="utf-8"?>
 <androidx.drawerlayout.widget.DrawerLayout xmlns:android="http://schemas.android.com/apk/res/android"
@@ -7524,11 +7724,12 @@ cat > "app/src/main/res/layout/activity_main.xml" <<'DEDEDE_SOURCE_EOF'
     <FrameLayout android:id="@+id/mainContentFrame" android:layout_width="match_parent" android:layout_height="match_parent" android:background="@color/bg_color">
         <LinearLayout android:id="@+id/mainBody" android:layout_width="match_parent" android:layout_height="match_parent" android:orientation="vertical" android:paddingStart="14dp" android:paddingEnd="14dp" android:paddingTop="7dp" android:paddingBottom="14dp" android:background="@color/bg_color">
             <RelativeLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginBottom="3dp">
-                <TextView android:id="@+id/tvTitle" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="纠错 Pro" android:textSize="20sp" android:textStyle="bold" android:textColor="@color/text_primary" android:layout_alignParentStart="true" android:layout_centerVertical="true" android:clickable="true" android:focusable="true"/>
+                <ImageButton android:id="@+id/btnMenu" android:layout_width="42dp" android:layout_height="44dp" android:layout_alignParentStart="true" android:layout_centerVertical="true" android:src="@drawable/ic_history_menu" android:background="@drawable/bg_history_menu" android:contentDescription="历史记录" android:padding="8dp"/>
+                <TextView android:id="@+id/tvTitle" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="纠错 Pro" android:textSize="20sp" android:textStyle="bold" android:textColor="@color/text_primary" android:layout_toEndOf="@id/btnMenu" android:layout_centerVertical="true" android:clickable="true" android:focusable="true"/>
+                <ImageButton android:id="@+id/btnEdition" android:layout_width="42dp" android:layout_height="44dp" android:layout_toEndOf="@id/tvTitle" android:layout_centerVertical="true" android:src="@drawable/ic_edition" android:background="?attr/selectableItemBackgroundBorderless" android:contentDescription="切换到特供版" android:padding="8dp"/>
                 <LinearLayout android:layout_width="wrap_content" android:layout_height="wrap_content" android:orientation="horizontal" android:layout_alignParentEnd="true" android:layout_centerVertical="true" android:gravity="center_vertical">
                     <androidx.appcompat.widget.AppCompatButton android:id="@+id/btnFloat" android:layout_width="24dp" android:layout_height="24dp" android:layout_marginEnd="8dp" android:text="✓" android:textSize="12sp" android:background="@drawable/circle_btn_bg" android:textColor="#FFFFFF" android:stateListAnimator="@null" android:padding="0dp"/>
                     <Button android:id="@+id/btnFont" android:layout_width="34dp" android:layout_height="34dp" android:text="A" android:textStyle="bold" android:textSize="19sp" android:background="@null" android:textColor="#2196F3" android:padding="0dp" android:insetTop="0dp" android:insetBottom="0dp"/>
-                    <Button android:id="@+id/btnMenu" android:layout_width="32dp" android:layout_height="32dp" android:text="≡" android:textSize="14sp" android:backgroundTint="#BDBDBD" android:padding="0dp" android:insetTop="0dp" android:insetBottom="0dp" android:layout_marginStart="8dp"/>
                 </LinearLayout>
             </RelativeLayout>
 
@@ -7581,11 +7782,11 @@ cat > "app/src/main/res/layout/activity_main.xml" <<'DEDEDE_SOURCE_EOF'
                     <ProgressBar android:id="@+id/progressBar" style="?android:attr/progressBarStyleHorizontal" android:layout_width="match_parent" android:layout_height="4dp" android:progressTint="#81C784" android:max="100" android:progress="0" android:layout_marginTop="-4dp" android:layout_marginBottom="4dp" android:visibility="invisible"/>
 
                     <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:layout_marginBottom="10dp">
-                        <Button android:id="@+id/btnImport" android:layout_width="0dp" android:layout_height="48dp" android:layout_weight="1" android:text="导入" android:textSize="13sp" android:backgroundTint="@color/btn_light_green_bg" android:textColor="@color/btn_light_green_text" android:layout_marginRight="4dp"/>
-                        <Button android:id="@+id/btnPaste" android:layout_width="0dp" android:layout_height="48dp" android:layout_weight="1" android:text="粘贴" android:textSize="13sp" android:backgroundTint="@color/btn_light_green_bg" android:textColor="@color/btn_light_green_text" android:layout_marginRight="4dp"/>
-                        <Button android:id="@+id/btnClear" android:layout_width="0dp" android:layout_height="48dp" android:layout_weight="1" android:text="清空" android:textSize="13sp" android:backgroundTint="@color/btn_light_green_bg" android:textColor="@color/btn_light_green_text" android:layout_marginRight="4dp"/>
-                        <Button android:id="@+id/btnCopy" android:layout_width="0dp" android:layout_height="48dp" android:layout_weight="1" android:text="复制" android:textSize="13sp" android:backgroundTint="@color/btn_light_green_bg" android:textColor="@color/btn_light_green_text" android:layout_marginRight="4dp" android:enabled="false"/>
-                        <Button android:id="@+id/btnSaveTxt" android:layout_width="0dp" android:layout_height="48dp" android:layout_weight="1" android:text="保存" android:textSize="13sp" android:backgroundTint="@color/btn_light_green_bg" android:textColor="@color/btn_light_green_text"/>
+                        <Button android:id="@+id/btnImport" android:layout_width="0dp" android:layout_height="48dp" android:layout_weight="1" android:text="导入" android:textSize="13sp" android:background="@drawable/edition_action" android:backgroundTint="@null" android:textColor="@color/btn_light_green_text" android:layout_marginRight="4dp"/>
+                        <Button android:id="@+id/btnPaste" android:layout_width="0dp" android:layout_height="48dp" android:layout_weight="1" android:text="粘贴" android:textSize="13sp" android:background="@drawable/edition_action" android:backgroundTint="@null" android:textColor="@color/btn_light_green_text" android:layout_marginRight="4dp"/>
+                        <Button android:id="@+id/btnClear" android:layout_width="0dp" android:layout_height="48dp" android:layout_weight="1" android:text="清空" android:textSize="13sp" android:background="@drawable/edition_action" android:backgroundTint="@null" android:textColor="@color/btn_light_green_text" android:layout_marginRight="4dp"/>
+                        <Button android:id="@+id/btnCopy" android:layout_width="0dp" android:layout_height="48dp" android:layout_weight="1" android:text="复制" android:textSize="13sp" android:background="@drawable/edition_action" android:backgroundTint="@null" android:textColor="@color/btn_light_green_text" android:layout_marginRight="4dp" android:enabled="false"/>
+                        <Button android:id="@+id/btnSaveTxt" android:layout_width="0dp" android:layout_height="48dp" android:layout_weight="1" android:text="保存" android:textSize="13sp" android:background="@drawable/edition_action" android:backgroundTint="@null" android:textColor="@color/btn_light_green_text"/>
                     </LinearLayout>
                     <TextView android:id="@+id/tvResultStaleWarning" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="已修改原始文本，以下纠错结果对应修改前的内容，建议重新纠错。" android:textColor="#D32F2F" android:textSize="13sp" android:textStyle="bold" android:paddingLeft="8dp" android:paddingRight="8dp" android:paddingBottom="8dp" android:visibility="gone"/>
 
@@ -7706,6 +7907,7 @@ mkdir -p "app/src/main/res/values-night"
 cat > "app/src/main/res/values-night/colors.xml" <<'DEDEDE_SOURCE_EOF'
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <color name="history_menu_bg">#565B62</color><color name="history_menu_ink">#D7DBDF</color>
     <color name="bg_color">#121212</color>
     <color name="custom_rule_action">#9AC4A3</color>
     <color name="card_bg">#1E1E1E</color>
@@ -7734,6 +7936,7 @@ mkdir -p "app/src/main/res/values"
 cat > "app/src/main/res/values/colors.xml" <<'DEDEDE_SOURCE_EOF'
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <color name="history_menu_bg">#C7C7C7</color><color name="history_menu_ink">#626870</color>
     <color name="icon_bg">#2196F3</color>
     <color name="bg_color">#F8F9FA</color>
     <color name="custom_rule_action">#568060</color>
@@ -7990,135 +8193,21 @@ rm -f app/src/main/assets/sys_idioms.dat
 cp app_icon.png app/src/main/res/mipmap-xxxhdpi/ic_launcher.png
 python3 protect_rules.py
 
-# =================== Android 普通版 / 兰特供版 ====================
-# 两个版本复用上方生成的同一套 Java、XML、规则与模型。
-# 仅在构建前改动所需颜色和图标；以后添加功能无须复制第二份源码。
-apply_android_skin() {
-  local skin="$1"
-  python3 - "$skin" <<'DEDEDE_SKIN_PY'
-from pathlib import Path
-import re
-import shutil
-import sys
+cp lan.png app/src/main/res/mipmap-xxxhdpi/ic_launcher_lan.png
 
-skin = sys.argv[1]
-if skin not in ('normal', 'lan'):
-    raise SystemExit('无效皮肤版本：' + skin)
-res = Path('app/src/main/res')
-
-def replace_exact(relative, old, new):
-    path = res / relative
-    source = path.read_text(encoding='utf-8')
-    found = source.count(old)
-    if found != 1:
-        raise RuntimeError(f'{path}：目标内容应有 1 处，实际 {found} 处：{old}')
-    path.write_text(source.replace(old, new, 1), encoding='utf-8')
-
-def change_button(relative, button_id, original, replacement, add_text_color=False):
-    path = res / relative
-    source = path.read_text(encoding='utf-8')
-    pattern = re.compile(r'<(?:Button|androidx\.appcompat\.widget\.AppCompatButton)\b[^>]*\bandroid:id="@\+id/' + re.escape(button_id) + r'"[^>]*>', re.S)
-    matches = list(pattern.finditer(source))
-    if len(matches) != 1:
-        raise RuntimeError(f'{path}：按钮 {button_id} 应有 1 处，实际 {len(matches)} 处')
-    match = matches[0]
-    tag = match.group()
-    if tag.count(original) != 1:
-        raise RuntimeError(f'{path}：按钮 {button_id} 的默认样式不符')
-    tag = tag.replace(original, replacement, 1)
-    if add_text_color:
-        if 'android:textColor=' in tag:
-            raise RuntimeError(f'{path}：按钮 {button_id} 已设置文字颜色，停止覆盖')
-        tag = tag[:-2] + ' android:textColor="#59364A"/>' if tag.endswith('/>') else tag[:-1] + ' android:textColor="#59364A">'
-    path.write_text(source[:match.start()] + tag + source[match.end():], encoding='utf-8')
-
-# Keep the normal package ID for upgrades; Lan gets its own data and permissions.
-project = Path('app/build.gradle')
-source = project.read_text(encoding='utf-8')
-package = 'com.app.dededi.pte.lan' if skin == 'lan' else 'com.app.dededi.pte'
-source, count = re.subn(r'applicationId "com\.app\.dededi\.pte(?:\.lan)?"',
-                        'applicationId "' + package + '"', source)
-if count != 1:
-    raise RuntimeError('应用标识配置异常，停止构建')
-project.write_text(source, encoding='utf-8')
-manifest = Path('app/src/main/AndroidManifest.xml')
-source = manifest.read_text(encoding='utf-8')
-source, count = re.subn(r'android:label="纠错 Pro(?: · 兰)?"',
-                        'android:label="' + ('纠错 Pro · 兰' if skin == 'lan' else '纠错 Pro') + '"', source)
-if count != 1:
-    raise RuntimeError('应用名称配置异常，停止构建')
-manifest.write_text(source, encoding='utf-8')
-
-if skin == 'lan':
-    # 兰特供版独立安装；共用代码，只调整指定图标和配色。
-    replace_exact('drawable/bg_check_gradient.xml',
-                  '<solid android:color="#2196F3"/>', '<solid android:color="#F69BC2"/>')
-    replace_exact('drawable/circle_btn_bg.xml',
-                  '<solid android:color="#03A9F4"/>', '<solid android:color="#F69BC2"/>')
-    replace_exact('drawable/circle_bg.xml',
-                  '<solid android:color="#2196F3"/>', '<solid android:color="#F69BC2"/>')
-    change_button('layout/activity_main.xml', 'btnFont',
-                  'android:textColor="#2196F3"', 'android:textColor="#DE4E8C"')
-    change_button('layout/activity_main.xml', 'btnFloat',
-                  'android:textColor="#FFFFFF"', 'android:textColor="#59364A"')
-    for button in ('btnImport', 'btnPaste', 'btnClear', 'btnCopy', 'btnSaveTxt'):
-        change_button('layout/activity_main.xml', button,
-                      'android:backgroundTint="@color/btn_light_green_bg"', 'android:backgroundTint="#D9EEFF"')
-        change_button('layout/activity_main.xml', button,
-                      'android:textColor="@color/btn_light_green_text"', 'android:textColor="#214F78"')
-    change_button('layout/activity_main.xml', 'btnCheck',
-                  'android:textColor="#ECF5FF"', 'android:textColor="#59364A"')
-    change_button('layout/layout_floating.xml', 'btnFloatCheck',
-                  'android:backgroundTint="#2196F3"', 'android:backgroundTint="#F69BC2"',
-                  add_text_color=True)
-
-icon = Path('lan.png' if skin == 'lan' else 'app_icon.png')
-if not icon.is_file() or icon.stat().st_size < 32 or icon.read_bytes()[:8] != b'\x89PNG\r\n\x1a\n':
-    raise RuntimeError(f'找不到有效的 PNG 图标：{icon}（应放仓库根目录）')
-shutil.copyfile(icon, res / 'mipmap-xxxhdpi/ic_launcher.png')
-print(f'Android 皮肤已配置：{skin}，图标：{icon}')
-DEDEDE_SKIN_PY
-}
-
-case "$BUILD_MODE" in
-  normal) android_variants=(normal) ;;
-  lan)    android_variants=(lan) ;;
-  both)   android_variants=(normal lan) ;;
-esac
-
-# --prepare-only 保持原有含义：仅生成工程，不运行 Gradle。
-# both 模式的预备工程为普通版，实际构建时才分别生成两种 APK。
-if [[ "${1:-}" == "--prepare-only" ]]; then
-  apply_android_skin "${android_variants[0]}"
-  exit 0
-fi
+if [[ "${1:-}" == "--prepare-only" ]]; then exit 0; fi
 
 mkdir -p dist
-# 避免切换 BUILD_MODE 后混入上次构建留下的另一版本文件。
-rm -f Dedede-HCAM-V2-PTE.apk dist/Dedede-Normal.apk dist/Dedede-Lan.apk dist/Dedede-Normal.zip dist/Dedede-Lan.zip
-for skin in "${android_variants[@]}"; do
-  echo "====== 开始构建 Android ${skin} 版 ======" 
-  apply_android_skin "$skin"
-  if ! gradle --no-daemon assembleRelease --stacktrace --console=plain > "build_${skin}.log" 2>&1; then
-    tail -n 300 "build_${skin}.log"
-    exit 1
-  fi
-  test -s app/build/outputs/apk/release/app-release.apk
-  if [[ "$skin" == normal ]]; then
-    cp app/build/outputs/apk/release/app-release.apk dist/Dedede-Normal.apk
-  else
-    cp app/build/outputs/apk/release/app-release.apk dist/Dedede-Lan.apk
-  fi
-done
-
-# 仅保留发布用 ZIP；APK 只作为构建、装包过程中的临时产物。
+if ! gradle --no-daemon assembleRelease --stacktrace --console=plain > build_android.log 2>&1; then
+  tail -n 300 build_android.log
+  exit 1
+fi
+test -s app/build/outputs/apk/release/app-release.apk
 python3 - <<'DEDEDE_ZIP_PY'
 from pathlib import Path
 from zipfile import ZipFile, ZIP_STORED
-for apk in sorted(Path('dist').glob('Dedede-*.apk')):
-    with ZipFile(apk.with_suffix('.zip'), 'w', compression=ZIP_STORED) as z:
-        z.write(apk, arcname=apk.name)
-for apk in Path('dist').glob('Dedede-*.apk'):
-    apk.unlink()
-print('已完成 ZIP：', ', '.join(p.name for p in (Path('dist/Dedede-Normal.zip'), Path('dist/Dedede-Lan.zip')) if p.is_file()))
+dest = Path('dist/Dedede-Pro.zip')
+with ZipFile(dest.with_suffix('.tmp'), 'w', compression=ZIP_STORED) as z:
+    z.write('app/build/outputs/apk/release/app-release.apk', arcname='Dedede-Pro.apk')
+dest.with_suffix('.tmp').replace(dest)
 DEDEDE_ZIP_PY
