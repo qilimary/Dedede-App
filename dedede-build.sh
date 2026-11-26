@@ -636,6 +636,7 @@ final class TermMatcher {
     private int[] anchorPairs=new int[entries.length];
     private byte[] positions=new byte[entries.length];
     private static final int CAN_OMIT=32;
+    private final BitSet fiveGapBuckets=new BitSet(1<<17);
     private int[] observedPairs=new int[16384];
     private int pairCount;
     private void indexPairs(String word){
@@ -694,9 +695,15 @@ final class TermMatcher {
         if(last==1){protectedPairs.add(pair(w.charAt(0),w.charAt(1)));return;}
         anchor(LEADING,w.charAt(1),w.charAt(2),entry,0);
         if(entry.protect)return;
-        if(w.length()>=6){
+        if(w.length()==5){
+            anchor(LONG,w.charAt(0),w.charAt(1),entry,0);
+            anchor(LONG,w.charAt(1),w.charAt(2),entry,1);
+            anchor(LONG,w.charAt(3),w.charAt(4),entry,3);
+            anchor(LONG,w.charAt(0),w.charAt(2),entry,CAN_OMIT);
+            fiveGapBuckets.set(bucket(pair(w.charAt(0),w.charAt(2))));
+        }else if(w.length()>=6){
             // k substitutions leave at least one of k+1 disjoint seeds intact.
-            int seeds=w.length()/3+1;
+            int seeds=(w.length()+1)/3+1;
             for(int i=0;i<seeds;i++){
                 int p=i*w.length()/seeds;
                 anchor(LONG,w.charAt(p),w.charAt(p+1),entry,p);
@@ -716,7 +723,8 @@ final class TermMatcher {
         if(at+1<s.length()&&protectedPairs.contains(pair(c,s.charAt(at+1))))doc.occupied.set(at,at+2);
         if(at+2<s.length())probe(LEADING,s.charAt(at+1),s.charAt(at+2),0,doc,s,at,custom,exact,literal);
         if(at>=2)probe(TRAILING,s.charAt(at-2),s.charAt(at-1),0,doc,s,at,custom,exact,literal);
-        if(at+1<s.length()&&han(s.charAt(at+1)))probeLong(doc,s,at,custom,exact,literal);
+        if(at+1<s.length()&&han(s.charAt(at+1)))probeLong(doc,s,at,custom,exact,literal,false);
+        if(at+2<s.length()&&han(s.charAt(at+2))&&fiveGapBuckets.get(bucket(pair(c,s.charAt(at+2)))))probeLong(doc,s,at,custom,exact,literal,true);
         if(at==0)return;
         char pre=s.charAt(at-1);
         probe(INTERNAL,pre,c,-1,doc,s,at,custom,exact,literal);
@@ -753,7 +761,7 @@ final class TermMatcher {
                 if(target!=w.charAt(pos-1)&&target!=w.charAt(pos+1))doc.hits.add(new Hit(start,w,pos,n+delta,delta>0?EXTRA:MISSING));
             }else if(!isProtectedPair(source,target,"癌炎")&&!isProtectedPair(source,target,"黏粘")){
                 if(share(sounds[source],sounds[target]))doc.hits.add(new Hit(start,w,pos,TERM));
-                else if(n>=4&&(kind==INTERNAL||n>=5&&(kind==LEADING||kind==TRAILING))&&!isProtectedPair(source,target,"型性")&&share(syllables[source],syllables[target]))
+                else if(n>=4&&!isProtectedPair(source,target,"型性")&&share(syllables[source],syllables[target]))
                     doc.toneHits.add(new Hit(start,w,pos,NEAR_TONE));
                 else if(n>=6&&han(source)&&!share(syllables[source],syllables[target])&&
                     MEANINGFUL.indexOf(source)<0&&MEANINGFUL.indexOf(target)<0)
@@ -761,35 +769,41 @@ final class TermMatcher {
             }
         }
     }
-    private void probeLong(Scan doc,String s,int at,boolean[] custom,boolean[] exact,boolean[] literal){
-        char a0=s.charAt(at),b0=s.charAt(at+1);
+    private void probeLong(Scan doc,String s,int at,boolean[] custom,boolean[] exact,boolean[] literal,boolean gap){
+        char a0=s.charAt(at),b0=s.charAt(at+(gap?2:1));
         int key=pair(a0,b0),hash=bucket(key);
         int[] offsets=bucketOffsets[LONG];
         for(int id=offsets[hash],stop=offsets[hash+1];id<stop;id++){
             if(anchorPairs[id]!=key)continue;
             Entry entry=entries[id]; String w=entry.text;
-            int pos=positions[id], start=at-pos, n=w.length(), end=start+n;
+            int flags=positions[id];if(((flags&CAN_OMIT)!=0)!=gap)continue;
+            int pos=flags&(CAN_OMIT-1), start=at-pos, n=w.length(), end=start+n;
             if(start<0||end>s.length())continue;
-            int seeds=n/3+1;
-            boolean earlier=false;
-            for(int i=0;i<seeds;i++){
-                int p=i*n/seeds;
-                if(p>=pos)break;
-                if(s.regionMatches(start+p,w,p,2)){earlier=true;break;}
+            if(n==5){
+                if((gap||pos>0)&&s.regionMatches(start,w,0,2))continue;
+                if((gap||pos>1)&&s.regionMatches(start+1,w,1,2))continue;
+                if(gap&&s.regionMatches(start+3,w,3,2))continue;
+            }else{
+                int seeds=(n+1)/3+1;
+                boolean earlier=false;
+                for(int i=0;i<seeds;i++){
+                    int p=i*n/seeds;
+                    if(p>=pos)break;
+                    if(s.regionMatches(start+p,w,p,2)){earlier=true;break;}
+                }
+                if(earlier)continue;
             }
-            if(earlier)continue;
-            int count=0,first=-1; boolean sameTone=false;
+            int count=0,first=-1;
             for(int i=0;i<n;i++){
                 char a=s.charAt(start+i),b=w.charAt(i);
                 if(a==b)continue;
-                if(++count>n/3||!share(syllables[a],syllables[b])||
+                if(++count>((n+1)/3)||!share(syllables[a],syllables[b])||
                     FIXED_CHARACTERS.indexOf(a)>=0||FIXED_CHARACTERS.indexOf(b)>=0||
                     isProtectedPair(a,b,"癌炎")||isProtectedPair(a,b,"黏粘")||isProtectedPair(a,b,"型性")||
                     excluded(s,start+i,entry.exclusions)){count=-1;break;}
                 if(first<0)first=i;
-                sameTone|=share(sounds[a],sounds[b]);
             }
-            if(count>=2&&sameTone&&!guarded(custom,exact,literal,start,end)&&!Proofreader.touchesIdentifier(s,start,end))
+            if(count>=2&&!guarded(custom,exact,literal,start,end)&&!Proofreader.touchesIdentifier(s,start,end))
                 doc.longHits.add(new Hit(start,w,first,TERM));
         }
     }
