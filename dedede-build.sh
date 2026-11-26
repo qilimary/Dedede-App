@@ -526,7 +526,8 @@ public final class Proofreader {
             if(!han(text.charAt(p))||custom[p]||literals[p])continue;
             char c=text.charAt(p);int end=p+1;
             if(PRONOUNS.indexOf(c)>=0&&(p==0||text.charAt(p-1)!=c))while(end<text.length()&&text.charAt(end)==c)end++;
-            if(PRONOUNS.indexOf(c)>=0&&end-p>=2&&(p==0||text.charAt(p-1)!=c)&&left(text,p,DUP_LEFT_WORDS)&&prefix(text,end,DUP_RIGHT_WORDS)&&!namedUse(text,end)&&!any(custom,p,end)&&!any(exact,p,end)&&!any(literals,p,end))pending.add(new Edit(p,text.substring(p,end),String.valueOf(c),""));
+            // Three/four consecutive pronouns may be intentional stuttering in unquoted dialogue.
+            if(PRONOUNS.indexOf(c)>=0&&(end-p==2||end-p>=5)&&(p==0||text.charAt(p-1)!=c)&&left(text,p,DUP_LEFT_WORDS)&&prefix(text,end,DUP_RIGHT_WORDS)&&!namedUse(text,end)&&!any(custom,p,end)&&!any(exact,p,end)&&!any(literals,p,end))pending.add(new Edit(p,text.substring(p,end),String.valueOf(c),""));
             for(String word:REPEATS){
                 if(c!=word.charAt(0)||p>=word.length()&&text.regionMatches(p-word.length(),word,0,word.length()))continue;int stop=p+word.length()*2;
                 if(stop>text.length()||!text.startsWith(word+word,p)||!left(text,p,DUP_LEFT_WORDS)&&!suffix(text,p,LEFT_WORDS))continue;
@@ -4461,7 +4462,7 @@ public class MainActivity extends AppCompatActivity {
             while ((line = reader.readLine()) != null) parseTypoLine(line, words, exclusions);
         } catch (Exception error) { throw new IllegalStateException("错词库加载失败",error); }
         // 内置白名单：匹配整词后保护其中的五字，不截断前面开始的更长错词；用户白名单另有跨词保护。
-        for (String word : new String[]{"舒的", "怎的", "能的", "您的", "得得得", "得吃", "得逞", "折射得", "简单得只有", "简单得甚至", "去想的那些", "吊儿郎当的，", "来了个猛的", "来个猛的", "书里写的那般", "作甚", "下得山来", "十里地", "百里地", "几里地", "谈不到一块的", "同样地，", "长久的凝视", "没有书上写的那么", "眼见得", "漫长得没有", "出门得通过", "本地话", "当家做主", "做笔记", "做了标记", "做过的调整", "得道成仙", "得道了", "目的地", "断断续续地，", "支吾地回", "晓得初中", "药厂产的，", "实时的云", "可靠的网", "精确的图", "得脸的样子", "直得起腰杆", "领导的做派", "客气地挽留", "真诚地挽留", "知书达礼", "可造之材", "做了点评"}) { words.put(word, word); exclusions.remove(word); }
+        for (String word : new String[]{"舒的", "怎的", "能的", "您的", "得得得", "得吃", "得逞", "折射得", "简单得只有", "简单得甚至", "去想的那些", "吊儿郎当的，", "来了个猛的", "来个猛的", "书里写的那般", "作甚", "下得山来", "十里地", "百里地", "几里地", "谈不到一块的", "同样地，", "长久的凝视", "没有书上写的那么", "眼见得", "漫长得没有", "出门得通过", "本地话", "当家做主", "做笔记", "做了标记", "做过的调整", "得道成仙", "得道了", "目的地", "断断续续地，", "支吾地回", "晓得初中", "药厂产的，", "实时的云", "可靠的网", "精确的图", "得脸的样子", "直得起腰杆", "领导的做派", "客气地挽留", "真诚地挽留", "知书达礼", "可造之材", "做了点评", "被绑的那", "承受的恐怕"}) { words.put(word, word); exclusions.remove(word); }
         try {
             JSONObject custom = new JSONObject(context.getSharedPreferences("DededeConfig", MODE_PRIVATE).getString("custom_typos", "{}")); Iterator<String> keys = custom.keys();
             while (keys.hasNext()) { String source = keys.next(); if (source.isEmpty()) continue;
