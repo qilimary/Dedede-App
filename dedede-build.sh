@@ -753,7 +753,7 @@ final class TermMatcher {
                 if(target!=w.charAt(pos-1)&&target!=w.charAt(pos+1))doc.hits.add(new Hit(start,w,pos,n+delta,delta>0?EXTRA:MISSING));
             }else if(!isProtectedPair(source,target,"癌炎")&&!isProtectedPair(source,target,"黏粘")){
                 if(share(sounds[source],sounds[target]))doc.hits.add(new Hit(start,w,pos,TERM));
-                else if(n>=4&&kind==INTERNAL&&!isProtectedPair(source,target,"型性")&&share(syllables[source],syllables[target]))
+                else if(n>=4&&(kind==INTERNAL||n>=5&&(kind==LEADING||kind==TRAILING))&&!isProtectedPair(source,target,"型性")&&share(syllables[source],syllables[target]))
                     doc.toneHits.add(new Hit(start,w,pos,NEAR_TONE));
                 else if(n>=6&&han(source)&&!share(syllables[source],syllables[target])&&
                     MEANINGFUL.indexOf(source)<0&&MEANINGFUL.indexOf(target)<0)
@@ -905,6 +905,14 @@ final class TermMatcher {
     private static boolean guarded(boolean[] a,boolean[] b,boolean[] literals,int start,int end){
         for(int p=start;p<end;p++)if(a[p]||b[p]||literals[p])return true;return false;
     }
+    private static final Comparator<Hit> HIT_ORDER=Comparator.comparingInt((Hit h)->h.start).thenComparingInt(h->-h.end);
+    private static boolean singleSubstitution(Hit h){
+        return h.reason.equals(TERM)||h.reason.equals(NEAR_TONE)||h.reason.equals(ENTITY);
+    }
+    private int phoneticRank(String s,Hit h){
+        char source=s.charAt(h.change),target=h.value.charAt(h.change-h.start);
+        return share(sounds[source],sounds[target])?2:share(syllables[source],syllables[target])?1:0;
+    }
     private static final class Scan {
         final List<Hit> hits=new ArrayList<>(),toneHits=new ArrayList<>(),longHits=new ArrayList<>();
         final Set<String> exact=new HashSet<>();
@@ -931,27 +939,59 @@ final class TermMatcher {
         doc.hits.removeIf(h->{if(!h.reason.equals(SUSPECTED_TYPO))return false;reviews.add(h);return true;});
         if(!doc.toneHits.isEmpty()){
             BitSet claimed=new BitSet();
-            for(Hit hit:doc.hits)claimed.set(hit.start,hit.end);
+            int maxSpan=0;
+            for(Hit hit:doc.hits){claimed.set(hit.start,hit.end);maxSpan=Math.max(maxSpan,hit.end-hit.start);}
+            int primaryCount=doc.hits.size();boolean sortedPrimary=false;
             for(Hit tone:doc.toneHits){
                 int overlap=claimed.nextSetBit(tone.start);
-                if(doc.occupied.get(tone.change)||overlap>=0&&overlap<tone.end)continue;
+                if(doc.occupied.get(tone.change))continue;
+                if(overlap>=0&&overlap<tone.end){
+                    // Keep the old overlap protection except for rival single-character substitutions.
+                    boolean blocked=false;
+                    if(!sortedPrimary){
+                        doc.hits.subList(0,primaryCount).sort(HIT_ORDER);sortedPrimary=true;
+                    }
+                    // A primary hit can overlap only if its start is within maxSpan of tone.start.
+                    int lo=0,hi=primaryCount,minimum=tone.start-maxSpan+1;
+                    while(lo<hi){int mid=(lo+hi)>>>1;if(doc.hits.get(mid).start<minimum)lo=mid+1;else hi=mid;}
+                    for(int j=lo;j<primaryCount;j++){
+                        Hit h=doc.hits.get(j);if(h.start>=tone.end)break;
+                        if(tone.start<h.end&&(!singleSubstitution(h)||h.change!=tone.change)){
+                            blocked=true;break;
+                        }
+                    }
+                    if(blocked)continue;
+                }
                 doc.hits.add(tone);
             }
         }
         for(Hit review:reviews)
             if(doc.hits.stream().noneMatch(h->h.start<review.end&&review.start<h.end))doc.hits.add(review);
         if(doc.hits.size()<2)return mergeLong(s,doc,doc.hits);
-        doc.hits.sort(Comparator.comparingInt((Hit h)->h.start).thenComparingInt(h->-h.end));
+        doc.hits.sort(HIT_ORDER);
         List<Hit> result=new ArrayList<>();
         for(int i=0;i<doc.hits.size();){
+            int begin=i;
             Hit first=doc.hits.get(i++);int end=first.end;boolean conflict=false;
+            boolean comparable=singleSubstitution(first);
+            int firstDelta=first.value.length()-(first.end-first.start);
             while(i<doc.hits.size()&&doc.hits.get(i).start<end){
                 Hit next=doc.hits.get(i++);end=Math.max(end,next.end);
-                int nextDelta=next.value.length()-(next.end-next.start),firstDelta=first.value.length()-(first.end-first.start);
+                int nextDelta=next.value.length()-(next.end-next.start);
+                comparable &= next.change==first.change&&singleSubstitution(next);
                 if(next.change!=first.change||nextDelta!=firstDelta
                     ||nextDelta>=0&&next.value.charAt(next.change-next.start)!=first.value.charAt(first.change-first.start))conflict=true;
             }
-            if(!conflict)result.add(first);
+            if(!conflict){result.add(first);continue;}
+            if(!comparable)continue;
+            // Rank same-position substitutions by phonetic agreement, then matched term length; equal-rank equal-length disagreements stay unchanged.
+            Hit best=first;int rank=phoneticRank(s,first);boolean tied=false;
+            for(int j=begin+1;j<i;j++){
+                Hit next=doc.hits.get(j);int nextRank=phoneticRank(s,next);
+                if(nextRank>rank||nextRank==rank&&next.value.length()>best.value.length()){best=next;rank=nextRank;tied=false;}
+                else if(nextRank==rank&&next.value.length()==best.value.length()&&next.value.charAt(next.change-next.start)!=best.value.charAt(best.change-best.start))tied=true;
+            }
+            if(!tied)result.add(best);
         }
         return mergeLong(s,doc,result);
     }
@@ -1265,7 +1305,7 @@ public final class CorrectionCore {
         if (exactAll == null) return null;
         final boolean[] customAll = dictionary.protectedPositions(text);
         final boolean[] literals = Proofreader.literalPositions(text,false);
-        final List<TermMatcher.Hit> termHits = TermMatcher.get().collect(text,customAll,exactAll,literals,() -> listener != null && listener.isCancelled());
+        List<TermMatcher.Hit> termHits;
         int nextTerm = 0;
         final Proofreader.Edit[] proofEdits = proofreader.collect(text, customAll, exactAll, Proofreader.literalPositions(text), true, () -> listener != null && listener.isCancelled());
         if (proofEdits == null) return null;
@@ -1273,6 +1313,11 @@ public final class CorrectionCore {
         for (Proofreader.Edit edit : proofEdits) if (edit != null) Arrays.fill(blockedAll, edit.start, edit.end, true);
         int sentenceOffset = 0, skipUntil = 0;
         List<String> sentences = splitText(text, text.length());
+        List<List<MainActivity.TextBlock>> stage = new ArrayList<>(sentences.size());
+        int[] stageStarts = new int[sentences.size()], stageSentences = new int[sentences.size()];
+        // Reuse the original document until a projected block actually diverges.
+        StringBuilder projection = null;
+        int projectedPrefix = 0;
         List<List<MainActivity.TextBlock>> allBlocks = new ArrayList<>(sentences.size());
         StringBuilder fullCleanText = new StringBuilder(text.length());
         int errorCount = 0, pendingTypos = 0;
@@ -1284,8 +1329,6 @@ public final class CorrectionCore {
             String sentence = sentences.get(sentenceIndex);
             int sentenceStart = sentenceOffset; sentenceOffset += sentence.length();
             if (sentence.isEmpty() || skipUntil >= sentenceOffset) {
-                if (listener != null && sentenceIndex == sentences.size() - 1)
-                    listener.onProgress(sentences.size(), sentences.size(), allBlocks, errorCount, android.os.SystemClock.elapsedRealtime() - startTime);
                 continue;
             }
 
@@ -1330,9 +1373,64 @@ public final class CorrectionCore {
             intermediate = applyGrammar(intermediate, fastMode, proofreader, exactAll, originalStart,
                     hasDictionaryCorrection, blockedPositions, exactPositions, originalStart == sentenceStart, listener);
             if (intermediate == null) return null;
-            int firstTerm=nextTerm;
-            while(nextTerm<termHits.size()&&termHits.get(nextTerm).start<sentenceOffset)nextTerm++;
-            if(firstTerm<nextTerm)intermediate=applyTerms(intermediate,termHits,firstTerm,nextTerm,text,originalStart);
+            stageStarts[stage.size()] = originalStart;
+            stageSentences[stage.size()] = sentenceIndex;
+            stage.add(intermediate);
+            int sourcePosition = originalStart;
+            for (MainActivity.TextBlock block : intermediate) {
+                String current = block.current;
+                if (projection == null) {
+                    // Stage blocks retain their original source spans; identical blocks need no character comparison.
+                    boolean identical = projectedPrefix == sourcePosition && current == block.original
+                            && current.length() <= text.length() - projectedPrefix;
+                    sourcePosition += block.original.length();
+                    if (identical || text.regionMatches(projectedPrefix, current, 0, current.length())) {
+                        projectedPrefix += current.length();
+                        continue;
+                    }
+                    projection = new StringBuilder(text.length());
+                    projection.append(text, 0, projectedPrefix);
+                }
+                projection.append(current);
+            }
+        }
+        String projected = projection == null
+                ? (projectedPrefix == text.length() ? text : text.substring(0, projectedPrefix))
+                : projection.toString();
+        boolean unchanged = projected == text || projected.equals(text);
+        if (unchanged) projected = text;
+        boolean[] projectedCustom = unchanged ? customAll : dictionary.protectedPositions(projected);
+        boolean[] projectedExact = unchanged ? exactAll : proofreader.exactPositions(projected, () -> listener != null && listener.isCancelled());
+        if (projectedExact == null) return null;
+        boolean[] projectedLiteral = unchanged ? literals : Proofreader.literalPositions(projected,false);
+        int pos=0;
+        for(int k=0;k<stage.size();k++){
+            if (listener != null && listener.isCancelled()) return null;
+            int orig=stageStarts[k];
+            for(MainActivity.TextBlock block:stage.get(k)){
+                int end=pos+block.current.length();
+                if(block.type==0&&!block.isMutable){if(!unchanged)for(int j=pos;j<end;j++){int oi=orig+j-pos;projectedCustom[j]|=customAll[oi];projectedExact[j]|=exactAll[oi];projectedLiteral[j]|=literals[oi];}}
+                else if(block.type==4 && pos<end){
+                    // Copy on write: the original mask is still needed by the first stage.
+                    if(projectedCustom==customAll)projectedCustom=customAll.clone();
+                    Arrays.fill(projectedCustom,pos,end,true);
+                }
+                orig+=block.original.length();pos=end;
+            }
+        }
+        termHits=TermMatcher.get().collect(projected,projectedCustom,projectedExact,projectedLiteral,()->listener!=null&&listener.isCancelled());
+        int projectedStart=0;
+        for(int stageIndex=0;stageIndex<stage.size();stageIndex++){
+            if (listener != null && listener.isCancelled()) return null;
+            int sentenceIndex = stageSentences[stageIndex];
+            List<MainActivity.TextBlock> intermediate=stage.get(stageIndex);
+            int originalStart=stageStarts[stageIndex];
+            String sentence=sentences.get(sentenceIndex);
+            int projectedEnd=projectedStart;
+            for(MainActivity.TextBlock block:intermediate)projectedEnd+=block.current.length();
+            int firstTerm=nextTerm;while(nextTerm<termHits.size()&&termHits.get(nextTerm).start<projectedEnd)nextTerm++;
+            if(firstTerm<nextTerm)intermediate=applyProjected(intermediate,termHits,firstTerm,nextTerm,projected,projectedStart,projectedEnd);
+            projectedStart=projectedEnd;
             int originalPosition = originalStart;
             for (MainActivity.TextBlock block : intermediate) {
                 if (block.isMutable) {
@@ -1402,9 +1500,9 @@ public final class CorrectionCore {
             for (MainActivity.TextBlock block : finalSentence) fullCleanText.append(block.current);
             allBlocks.add(finalSentence);
             long now = android.os.SystemClock.elapsedRealtime();
-            if (listener != null && (now - lastProgressTime >= progressInterval(text.length()) || sentenceIndex == sentences.size() - 1)) {
+            if (listener != null && (now - lastProgressTime >= progressInterval(text.length()) || stageIndex == stage.size() - 1)) {
                 lastProgressTime = now;
-                listener.onProgress(sentenceIndex + 1, sentences.size(), allBlocks, errorCount, now - startTime);
+                listener.onProgress(stageIndex == stage.size() - 1 ? sentences.size() : sentenceIndex + 1, sentences.size(), allBlocks, errorCount, now - startTime);
             }
         }
         if (listener != null && listener.isCancelled()) return null;
@@ -1412,6 +1510,34 @@ public final class CorrectionCore {
         Result result=new Result(allBlocks, fullCleanText.toString(), errorCount, pendingTypos, elapsed); result.modelNanos=modelNanos;result.modelCalls=modelCalls;result.reviewCalls=reviewCalls;return result;
     }
 
+    private static List<MainActivity.TextBlock> applyProjected(List<MainActivity.TextBlock> blocks,List<TermMatcher.Hit> hits,int first,int limit,String text,int start,int end){
+        boolean[] locked=new boolean[end-start]; int p=start;
+        for(MainActivity.TextBlock block:blocks){int q=p+block.current.length();if(block.type!=0||block.isMutable){Arrays.fill(locked,p-start,q-start,true);if(p==q&&p>start&&p<end){locked[p-start-1]=true;locked[p-start]=true;}}p=q;}
+        List<TermMatcher.Hit> edits=new ArrayList<>();
+        for(int h=first;h<limit;h++){
+            TermMatcher.Hit hit=hits.get(h);if(hit.start<start||hit.end>end)continue;
+            boolean overlap=false;for(int j=hit.start;j<hit.end;j++)overlap|=locked[j-start];
+            if(!overlap){edits.add(hit);continue;}
+            if(hit.value.length()!=hit.end-hit.start||TermMatcher.SUSPECTED_TYPO.equals(hit.reason))continue;
+            boolean conflict=false;for(int j=hit.start;j<hit.end;j++)if(text.charAt(j)!=hit.value.charAt(j-hit.start)&&locked[j-start]){conflict=true;break;}
+            if(conflict)continue;
+            for(int j=hit.start;j<hit.end;j++)if(text.charAt(j)!=hit.value.charAt(j-hit.start))edits.add(new TermMatcher.Hit(j,hit.value.substring(j-hit.start,j-hit.start+1),0,1,hit.reason));
+        }
+        if(edits.isEmpty())return blocks;
+        edits.sort(java.util.Comparator.comparingInt(h->h.start));
+        List<MainActivity.TextBlock> output=new ArrayList<>(blocks.size());
+        int i=0, index=0;
+        while(i<blocks.size()){
+            MainActivity.TextBlock block=blocks.get(i);
+            if(block.type!=0||block.isMutable){output.add(block);start+=block.current.length();i++;continue;}
+            int begin=i,stop=start;while(i<blocks.size()&&blocks.get(i).type==0&&!blocks.get(i).isMutable)stop+=blocks.get(i++).current.length();
+            int copy=start;
+            while(index<edits.size()&&edits.get(index).start<stop){TermMatcher.Hit hit=edits.get(index++);if(hit.start<copy||hit.end>stop)continue;
+                appendNormalText(output,text.substring(copy,hit.start));String original=text.substring(hit.start,hit.end);boolean review=TermMatcher.SUSPECTED_TYPO.equals(hit.reason);MainActivity.TextBlock edited=new MainActivity.TextBlock(original,review?original:hit.value,true,1f,review?6:2);if(review){edited.modelCorrected=hit.value;edited.exp=hit.reason;}output.add(edited);copy=hit.end;}
+            if(copy==start)output.addAll(blocks.subList(begin,i));else appendNormalText(output,text.substring(copy,stop));start=stop;
+        }
+        return output;
+    }
     // Only untouched contiguous source spans can receive a lower-priority suggestion.
     private static List<MainActivity.TextBlock> applyTerms(List<MainActivity.TextBlock> blocks,
             List<TermMatcher.Hit> hits,int index,int limit,String text,int start) {
@@ -1562,8 +1688,8 @@ public final class CorrectionCore {
 
         List<MainActivity.TextBlock> result = new ArrayList<>(blocks.size());
         BlockCursor source = new BlockCursor(blocks);
-        List<MainActivity.TextBlock> rendered = new ArrayList<>();
-        StringBuilder replacement = new StringBuilder();
+        List<MainActivity.TextBlock> rendered = null;
+        StringBuilder replacement = null;
         int changeEnd = -1, copiedTo = -1;
         String explanation = "";
         for (int at = 0; at < length;) {
@@ -1571,7 +1697,8 @@ public final class CorrectionCore {
             GrammarHit hit = hits[at];
             String quantifier = hit == null && !blocked[at] && !exact[at] ? quantifierReplacement(projected, at) : null;
             if (hit == null && quantifier == null) { at++; continue; }
-            rendered.clear();
+            if (rendered == null) rendered = new ArrayList<>();
+            else rendered.clear();
             if (hit != null) appendGrammarHit(rendered, hit, hits);
             else appendGrammarChange(rendered, projected.substring(at, at + 1), quantifier, "量词搭配");
             int next = at;
@@ -1594,7 +1721,8 @@ public final class CorrectionCore {
                     changeEnd = spanEnd;
                     copiedTo = spanStart;
                     explanation = change.exp;
-                    replacement.setLength(0);
+                    if (replacement == null) replacement = new StringBuilder();
+                    else replacement.setLength(0);
                 }
                 changeEnd = Math.max(changeEnd, spanEnd);
                 replacement.append(projected, copiedTo, start).append(change.current);
