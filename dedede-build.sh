@@ -1222,7 +1222,8 @@ import java.util.regex.Matcher;
 public final class CorrectionCore {
     private static final String[] LABELS = {"的", "地", "得", "做", "作"};
     // Desktop builds read this value via scripts/sync_android.py.
-    static final int MAX_SEQUENCE_LENGTH = 340;
+    static final int MAX_SEQUENCE_LENGTH = 320;
+    private static final int INFERENCE_OVERLAP = 32;
     private CorrectionCore() {}
 
     public interface Listener {
@@ -1492,24 +1493,35 @@ public final class CorrectionCore {
                     if (!MainActivity.isTemperatureValid(temperature)) {
                         throw new IllegalArgumentException("温度参数必须在 0.5～2.0 之间");
                     }
-                    int inferenceOffset = 0;
+                    int coreStart = 0;
                     List<String> inferenceSegments = inferText.length() <= MAX_SEQUENCE_LENGTH
                             ? java.util.Collections.singletonList(inferText) : splitText(inferText);
-                    for (String part : inferenceSegments) {
-                        int end = inferenceOffset + part.length();
-                        boolean[] partIgnored = inferenceSegments.size() == 1 ? ignored : Arrays.copyOfRange(ignored, inferenceOffset, end);
+                    boolean singleSegment = inferenceSegments.size() == 1;
+                    for (String segment : inferenceSegments) {
+                        int coreEnd = coreStart + segment.length();
+                        int winStart = singleSegment ? 0 : Math.max(0, coreStart - INFERENCE_OVERLAP);
+                        int winEnd = singleSegment ? inferText.length() : Math.min(inferText.length(), coreEnd + INFERENCE_OVERLAP);
+                        if (winStart > 0 && ((Character.isLowSurrogate(inferText.charAt(winStart)) && Character.isHighSurrogate(inferText.charAt(winStart - 1)))
+                                || (inferText.charAt(winStart - 1) == '\r' && inferText.charAt(winStart) == '\n'))) winStart++;
+                        if (winEnd < inferText.length() && ((Character.isLowSurrogate(inferText.charAt(winEnd)) && Character.isHighSurrogate(inferText.charAt(winEnd - 1)))
+                                || (inferText.charAt(winEnd - 1) == '\r' && inferText.charAt(winEnd) == '\n'))) winEnd--;
+                        String part = (winStart == 0 && winEnd == inferText.length()) ? inferText : inferText.substring(winStart, winEnd);
+                        int coreOffset = coreStart - winStart, coreLimit = coreEnd - winStart;
+                        boolean[] partIgnored = singleSegment ? ignored : Arrays.copyOfRange(ignored, winStart, winEnd);
+                        if (coreOffset > 0) Arrays.fill(partIgnored, 0, coreOffset, true);
+                        if (coreLimit < part.length()) Arrays.fill(partIgnored, coreLimit, part.length(), true);
                         FiveCharInference.Prediction prediction = FiveCharInference.predict(part, partIgnored, MainActivity.proTokenizer, MainActivity.proModule, temperature, () -> listener != null && listener.isCancelled());
                         if (prediction == null) return null;
                         modelNanos += prediction.modelNanos; modelCalls += prediction.calls; reviewCalls += prediction.reviews;
-                        for (int i = 0; i < part.length(); i++) {
+                        for (int i = coreOffset; i < coreLimit; i++) {
                             int label = prediction.labels[i]; if (label < 0) continue;
                             String replacement = LABELS[label]; float confidence = prediction.confidence[i]; char character = part.charAt(i);
                             if (!replacement.equals(String.valueOf(character)) && confidence >= thresholds[label]) {
-                                MainActivity.TextBlock block = map[inferenceOffset + i]; block.current = replacement; block.modelCorrected = replacement; block.isMutable = true; block.conf = confidence; block.type = 1; errorCount++;
+                                MainActivity.TextBlock block = map[winStart + i]; block.current = replacement; block.modelCorrected = replacement; block.isMutable = true; block.conf = confidence; block.type = 1; errorCount++;
                                 if (reportErrors) listener.onError("发现错误：" + character + " → " + replacement + " (置信度:" + String.format(Locale.getDefault(), "%.2f", confidence) + ") | 共 " + errorCount + " 处", false);
                             }
                         }
-                        inferenceOffset = end;
+                        coreStart = coreEnd;
                     }
                 }
             }
@@ -1553,34 +1565,6 @@ public final class CorrectionCore {
             while(index<edits.size()&&edits.get(index).start<stop){TermMatcher.Hit hit=edits.get(index++);if(hit.start<copy||hit.end>stop)continue;
                 appendNormalText(output,text.substring(copy,hit.start));String original=text.substring(hit.start,hit.end);boolean review=TermMatcher.SUSPECTED_TYPO.equals(hit.reason);MainActivity.TextBlock edited=new MainActivity.TextBlock(original,review?original:hit.value,true,1f,review?6:2);if(review){edited.modelCorrected=hit.value;edited.exp=hit.reason;}output.add(edited);copy=hit.end;}
             if(copy==start)output.addAll(blocks.subList(begin,i));else appendNormalText(output,text.substring(copy,stop));start=stop;
-        }
-        return output;
-    }
-    // Only untouched contiguous source spans can receive a lower-priority suggestion.
-    private static List<MainActivity.TextBlock> applyTerms(List<MainActivity.TextBlock> blocks,
-            List<TermMatcher.Hit> hits,int index,int limit,String text,int start) {
-        List<MainActivity.TextBlock> output=new ArrayList<>(blocks.size());
-        for(int i=0;i<blocks.size();){
-            MainActivity.TextBlock block=blocks.get(i);
-            if(block.type!=0||block.isMutable){
-                output.add(block);start+=block.original.length();i++;continue;
-            }
-            int begin=i,end=start;
-            while(i<blocks.size()&&blocks.get(i).type==0&&!blocks.get(i).isMutable)end+=blocks.get(i++).original.length();
-            int copy=start;
-            while(index<limit&&hits.get(index).start<end){
-                TermMatcher.Hit hit=hits.get(index++);
-                if(hit.start<copy||hit.end>end)continue;
-                appendNormalText(output,text.substring(copy,hit.start));
-                String original=text.substring(hit.start,hit.end);
-                boolean review=TermMatcher.SUSPECTED_TYPO.equals(hit.reason);
-                MainActivity.TextBlock edited=new MainActivity.TextBlock(original,review?original:hit.value,true,1f,review?6:2);
-                if(review){edited.modelCorrected=hit.value;edited.exp=hit.reason;}
-                output.add(edited);copy=hit.end;
-            }
-            if(copy==start)output.addAll(blocks.subList(begin,i));
-            else appendNormalText(output,text.substring(copy,end));
-            start=end;
         }
         return output;
     }
@@ -2839,18 +2823,51 @@ public final class HistoryStore {
         } catch (Exception ignored) { return ""; }
     }
 
-    public static void deleteRecord(Context context, String fileId) {
-        if (fileId == null || fileId.isEmpty()) return;
-        synchronized (AppExecutors.HISTORY_LOCK) { deleteFiles(new File(context.getFilesDir(), "history"), fileId); }
+    public static void deleteRecord(Context context, SharedPreferences preferences, String fileId, int fallbackIndex, Runnable onDone) {
+        Context appContext = context.getApplicationContext();
+        final long epoch = HISTORY_EPOCH.get();
+        AppExecutors.HISTORY.execute(() -> {
+            if (epoch != HISTORY_EPOCH.get()) return;
+            synchronized (AppExecutors.HISTORY_LOCK) {
+                if (epoch != HISTORY_EPOCH.get()) return;
+                if (fileId != null && !fileId.isEmpty()) deleteFiles(new File(appContext.getFilesDir(), "history"), fileId);
+                try {
+                    JSONArray history = new JSONArray(preferences.getString("history_records", "[]"));
+                    JSONArray remaining = new JSONArray();
+                    boolean removed = false;
+                    for (int i = 0; i < history.length(); i++) {
+                        JSONObject item = history.getJSONObject(i);
+                        String itemId = item.optString("file", item.optString("fileName", ""));
+                        if (!removed && fileId != null && !fileId.isEmpty() && fileId.equals(itemId)) {
+                            removed = true;
+                            continue;
+                        }
+                        if (!removed && (fileId == null || fileId.isEmpty()) && i == fallbackIndex) {
+                            removed = true;
+                            continue;
+                        }
+                        remaining.put(item);
+                    }
+                    if (removed) preferences.edit().putString("history_records", remaining.toString()).apply();
+                } catch (Exception ignored) {}
+            }
+            if (onDone != null) AppExecutors.MAIN.post(() -> { if (epoch == HISTORY_EPOCH.get()) onDone.run(); });
+        });
     }
 
-    public static void clear(Context context) {
-        HISTORY_EPOCH.incrementAndGet();
-        synchronized (AppExecutors.HISTORY_LOCK) {
-            File directory = new File(context.getFilesDir(), "history");
-            File[] files = directory.listFiles();
-            if (files != null) for (File file : files) file.delete();
-        }
+    public static void clear(Context context, SharedPreferences preferences, Runnable onDone) {
+        Context appContext = context.getApplicationContext();
+        final long epoch = HISTORY_EPOCH.incrementAndGet();
+        AppExecutors.HISTORY.execute(() -> {
+            synchronized (AppExecutors.HISTORY_LOCK) {
+                if (epoch != HISTORY_EPOCH.get()) return;
+                File directory = new File(appContext.getFilesDir(), "history");
+                File[] files = directory.listFiles();
+                if (files != null) for (File file : files) file.delete();
+                preferences.edit().putString("history_records", "[]").apply();
+            }
+            if (onDone != null) AppExecutors.MAIN.post(() -> { if (epoch == HISTORY_EPOCH.get()) onDone.run(); });
+        });
     }
 
     private static void deleteFiles(File directory, String fileId) {
@@ -4853,7 +4870,11 @@ public class MainActivity extends AppCompatActivity {
         text = PUNCT_PATTERN_2.matcher(PUNCT_PATTERN_1.matcher(text).replaceAll("……")).replaceAll("……");
         StringBuilder result = new StringBuilder(text.length()); boolean inQuote = false;
         for (int i = 0; i < text.length(); i++) {
-            char c = text.charAt(i); boolean punctuation = c == ',' || c == '.' || c == ':' || c == ';' || c == '?' || c == '!' || c == '"' || c == '(' || c == ')' || c == '\'';
+            char c = text.charAt(i);
+            if (c == '“') inQuote = true;
+            else if (c == '”') inQuote = false;
+            else if (c == '\n' && i + 1 < text.length() && text.charAt(i + 1) == '\n') inQuote = false;
+            boolean punctuation = c == ',' || c == '.' || c == ':' || c == ';' || c == '?' || c == '!' || c == '"' || c == '(' || c == ')' || c == '\'';
             if (punctuation) {
                 boolean previousChinese = false, nextChinese = false;
                 for (int j = i - 1; j >= Math.max(0, i - 3); j--) { if (isChinese(text.charAt(j))) { previousChinese = true; break; } if (!Character.isWhitespace(text.charAt(j))) break; }
@@ -6614,7 +6635,10 @@ public class MainActivity extends AppCompatActivity {
             } catch (Exception ignored) {}
         });
         findViewById(R.id.btnClearHistory).setOnClickListener(v -> new AlertDialog.Builder(this).setMessage("是否清空全部历史记录？").setPositiveButton("是", (d, w) -> {
-            HistoryStore.clear(this); sp.edit().putString("history_records", "[]").apply(); lastSavedHistoryFileId = null; isManuallyEditedOut = false; boolean old = isRestoringHistory; isRestoringHistory = true; inputText.setText(""); isRestoringHistory = old; allSentencesBlocks.clear(); outputText.setText(""); setResultStaleWarning(false); btnCheck.setText("开始纠错"); btnCopy.setEnabled(false); btnSaveTxt.setEnabled(false); renderHistoryUI(); AppToast.show(this, "历史记录已全部清空", Toast.LENGTH_SHORT);
+            historyRestoreGeneration++; lastSavedHistoryFileId = null; isManuallyEditedOut = false; boolean old = isRestoringHistory; isRestoringHistory = true; inputText.setText(""); isRestoringHistory = old; allSentencesBlocks.clear(); outputText.setText(""); setResultStaleWarning(false); btnCheck.setText("开始纠错"); btnCopy.setEnabled(false); btnSaveTxt.setEnabled(false);
+            LinearLayout historyContainer = findViewById(R.id.llHistory); if (historyContainer != null) historyContainer.removeAllViews();
+            HistoryStore.clear(this, sp, () -> { if (!isFinishing() && !isDestroyed()) renderHistoryUI(); });
+            AppToast.show(this, "历史记录已全部清空", Toast.LENGTH_SHORT);
         }).setNegativeButton("否", null).show());
     }
 
@@ -6748,7 +6772,7 @@ public class MainActivity extends AppCompatActivity {
                 LinearLayout item = new LinearLayout(this); item.setOrientation(LinearLayout.VERTICAL); item.setPadding(0, 24, 0, 24); item.setBackgroundResource(R.drawable.item_bg_selector); item.setClickable(true);
                 TextView timeView = new TextView(this); timeView.setText(time); timeView.setTextSize(12f + Math.max(-3, Math.min(3, sp.getInt("font_offset_sys", 0)))); timeView.setTextColor(0xFF9E9E9E); TextView previewView = new TextView(this); previewView.setText(preview); previewView.setTextSize(14f + Math.max(-3, Math.min(3, sp.getInt("font_offset_sys", 0)))); item.addView(timeView); item.addView(previewView);
                 item.setOnClickListener(v -> restoreHistory(record, fileId)); int index = i;
-                item.setOnLongClickListener(v -> { new AlertDialog.Builder(this).setMessage("确认删除这条历史记录吗？").setPositiveButton("删除", (d, w) -> deleteHistoryRecord(records, index, fileId)).setNegativeButton("取消", null).show(); return true; });
+                item.setOnLongClickListener(v -> { new AlertDialog.Builder(this).setMessage("确认删除这条历史记录吗？").setPositiveButton("删除", (d, w) -> deleteHistoryRecord(index, fileId)).setNegativeButton("取消", null).show(); return true; });
                 container.addView(item);
                 if (i < records.length() - 1) { View line = new View(this); line.setLayoutParams(new LinearLayout.LayoutParams(-1, 1)); line.setBackgroundColor(0xFFE0E0E0); container.addView(line); }
             }
@@ -6775,10 +6799,11 @@ public class MainActivity extends AppCompatActivity {
         });
     }
 
-    private void deleteHistoryRecord(JSONArray records, int index, String fileId) {
-        HistoryStore.deleteRecord(this, fileId);
-        if (fileId.equals(lastSavedHistoryFileId)) { lastSavedHistoryFileId = null; isManuallyEditedOut = false; boolean old = isRestoringHistory; isRestoringHistory = true; inputText.setText(""); isRestoringHistory = old; allSentencesBlocks.clear(); outputText.setText(""); setResultStaleWarning(false); btnCheck.setText("开始纠错"); btnCopy.setEnabled(false); btnSaveTxt.setEnabled(false); AppToast.show(this, "当前显示的历史记录已被删除", Toast.LENGTH_SHORT); }
-        records.remove(index); sp.edit().putString("history_records", records.toString()).apply(); renderHistoryUI();
+    private void deleteHistoryRecord(int index, String fileId) {
+        if (fileId != null && !fileId.isEmpty() && fileId.equals(lastSavedHistoryFileId)) {
+            historyRestoreGeneration++; lastSavedHistoryFileId = null; isManuallyEditedOut = false; boolean old = isRestoringHistory; isRestoringHistory = true; inputText.setText(""); isRestoringHistory = old; allSentencesBlocks.clear(); outputText.setText(""); setResultStaleWarning(false); btnCheck.setText("开始纠错"); btnCopy.setEnabled(false); btnSaveTxt.setEnabled(false); AppToast.show(this, "当前显示的历史记录已被删除", Toast.LENGTH_SHORT);
+        }
+        HistoryStore.deleteRecord(this, sp, fileId, index, () -> { if (!isFinishing() && !isDestroyed()) renderHistoryUI(); });
     }
 
     @Override public void onBackPressed() {
@@ -7010,6 +7035,8 @@ public class MainActivity extends AppCompatActivity {
                 success = true;
             } catch (IllegalArgumentException exception) {
                 errorMessage = exception.getMessage();
+            } catch (OutOfMemoryError error) {
+                errorMessage = "文本过长或内存不足，无法保存为单张图片，请改用 PDF 或 DOCX";
             } catch (Exception ignored) {}
             boolean saved = success;
             String message = saved ? "保存成功" : (errorMessage != null && !errorMessage.isEmpty() ? errorMessage : "保存过程出现错误");
@@ -7044,7 +7071,7 @@ public class MainActivity extends AppCompatActivity {
         android.text.TextPaint paint = new android.text.TextPaint(android.graphics.Paint.ANTI_ALIAS_FLAG); paint.setTextSize(40); paint.setColor(Color.BLACK); String value = text.isEmpty() ? "无内容" : text;
         android.text.StaticLayout layout = new android.text.StaticLayout(value, paint, 1000, Layout.Alignment.ALIGN_NORMAL, 1.5f, 0, false); int height = Math.max(80, layout.getHeight() + 80);
         if (height > 30000) throw new IllegalArgumentException("文本过长，无法保存为单张图片，请改用 PDF 或 DOCX");
-        Bitmap bitmap = Bitmap.createBitmap(1080, height, Bitmap.Config.ARGB_8888);
+        Bitmap bitmap = Bitmap.createBitmap(1080, height, Bitmap.Config.RGB_565);
         try { android.graphics.Canvas canvas = new android.graphics.Canvas(bitmap); canvas.drawColor(Color.WHITE); canvas.translate(40, 40); layout.draw(canvas); bitmap.compress(jpeg ? Bitmap.CompressFormat.JPEG : Bitmap.CompressFormat.PNG, jpeg ? 90 : 100, output); }
         finally { bitmap.recycle(); }
     }
@@ -7076,7 +7103,8 @@ public class MainActivity extends AppCompatActivity {
                     proAcquired = acquireProEngine(this);
                     if (!proAcquired) throw new IllegalStateException("专业 HCAM 模型加载失败：" + SecureAsset.lastErrorSummary());
                 }
-                StringBuilder liveErrors = new StringBuilder(), liveText = new StringBuilder(text.length() + 100); int[] processed = {0}, liveErrorCount = {0}, docIndex = {1}; boolean multiDocument = text.contains("---------------------------------"); boolean[] markerPending = {multiDocument};
+                final int liveTextLimit = 30000;
+                StringBuilder liveErrors = new StringBuilder(), liveText = new StringBuilder(Math.min(text.length(), liveTextLimit) + 100); int[] processed = {0}, liveErrorCount = {0}, docIndex = {1}, liveTextChars = {0}; boolean multiDocument = text.contains("---------------------------------"); boolean[] markerPending = {multiDocument}, liveTextTruncated = {false};
                 CorrectionCore.Result result = CorrectionCore.run(text, fastMode, temperature, thresholdDe, thresholdDi, thresholdDe3, thresholdZuo, thresholdZuo4, new CorrectionCore.Listener() {
                     @Override public boolean isCancelled() { return !isCheckingMain || generation != inferenceGeneration || isFinishing() || isDestroyed(); }
                     @Override public boolean wantsErrorMessages() { return false; }
@@ -7087,16 +7115,32 @@ public class MainActivity extends AppCompatActivity {
                         while (processed[0] < completed.size()) {
                             List<TextBlock> sentence = completed.get(processed[0]++);
                             appendLiveErrors(sentence, liveErrors, liveErrorCount);
+                            if (liveTextTruncated[0]) continue;
                             for (TextBlock block : sentence) {
+                                int remaining = liveTextLimit - liveTextChars[0];
+                                if (block.current.length() > remaining) {
+                                    if (remaining > 0) {
+                                        if (markerPending[0] && docIndex[0] == 1) { liveText.append("<font color='#757575'>［文档").append(docIndex[0]++).append("］</font><br>"); markerPending[0] = false; }
+                                        int cut = remaining;
+                                        if (Character.isHighSurrogate(block.current.charAt(cut - 1)) && Character.isLowSurrogate(block.current.charAt(cut))) cut--;
+                                        appendLiveHtmlText(liveText, block.current.substring(0, cut));
+                                        liveTextChars[0] += cut;
+                                    }
+                                    liveTextTruncated[0] = true;
+                                    break;
+                                }
                                 if (markerPending[0] && docIndex[0] == 1) { liveText.append("<font color='#757575'>［文档").append(docIndex[0]++).append("］</font><br>"); markerPending[0] = false; }
                                 appendLiveHtmlText(liveText, block.current);
+                                liveTextChars[0] += block.current.length();
                                 if (block.current.contains("---------------------------------")) liveText.append("<br><font color='#757575'>［文档").append(docIndex[0]++).append("］</font><br>");
                             }
                         }
                         if (!previewPending.compareAndSet(false, true)) return;
-                        StringBuilder htmlBuilder = new StringBuilder(liveErrors.length() + liveText.length() + 256).append("<b>正在纠错...</b><br>已耗时 ").append(String.format(Locale.getDefault(), "%.1f", elapsed / 1000.0)).append(" 秒<br>进度：").append(current).append(" / ").append(total).append("<br><br>");
+                        StringBuilder htmlBuilder = new StringBuilder(liveErrors.length() + liveText.length() + 320).append("<b>正在纠错...</b><br>已耗时 ").append(String.format(Locale.getDefault(), "%.1f", elapsed / 1000.0)).append(" 秒<br>进度：").append(current).append(" / ").append(total).append("<br><br>");
                         if (liveErrors.length() > 0) htmlBuilder.append("<b><font color='#757575'>【纠错记录】：</font></b><br>").append(liveErrors);
-                        String html = htmlBuilder.append("<br><b><font color='#757575'>【全文预览】：</font></b><br>").append(liveText).toString();
+                        htmlBuilder.append("<br><b><font color='#757575'>【全文预览】：</font></b><br>").append(liveText);
+                        if (liveTextTruncated[0]) htmlBuilder.append("<br><font color='#757575'>……（文本过长，暂省略）</font>");
+                        String html = htmlBuilder.toString();
                         Spanned preview = Html.fromHtml(html, Html.FROM_HTML_MODE_COMPACT);
                         final int displayedErrors = liveErrorCount[0];
                         AppExecutors.MAIN.post(() -> {
@@ -7903,22 +7947,34 @@ public class SymbolCleanActivity extends Activity {
                     d.dismiss();
                 }).create();
 
-        if (Settings.canDrawOverlays(this)) {
-            int type = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
-                    ? WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY : WindowManager.LayoutParams.TYPE_PHONE;
-            dialog.getWindow().setType(type);
+        if (dialog.getWindow() != null) {
+            if (Settings.canDrawOverlays(this)) {
+                int type = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
+                        ? WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY : WindowManager.LayoutParams.TYPE_PHONE;
+                dialog.getWindow().setType(type);
+            }
+            dialog.getWindow().setBackgroundDrawable(new ColorDrawable(0xFFFFFFFF));
         }
-        dialog.getWindow().setBackgroundDrawable(new ColorDrawable(0xFFFFFFFF));
         dialog.setOnShowListener(d -> {
             dialog.getButton(AlertDialog.BUTTON_POSITIVE).setTextColor(0xFF4CAF50);
             dialog.getButton(AlertDialog.BUTTON_NEGATIVE).setTextColor(0xFF9E9E9E);
         });
         dialog.setOnDismissListener(d -> finish());
-        dialog.show();
-        WindowManager.LayoutParams lp = new WindowManager.LayoutParams();
-        lp.copyFrom(dialog.getWindow().getAttributes());
-        lp.width = (int) (getResources().getDisplayMetrics().widthPixels * 0.80f);
-        dialog.getWindow().setAttributes(lp);
+        try {
+            dialog.show();
+        } catch (RuntimeException error) {
+            android.util.Log.w("Dedede", "符号清理弹窗显示失败", error);
+            MainActivity.TextCleanCallback current = callback;
+            if (current != null) current.onCleaned(finalText);
+            finish();
+            return;
+        }
+        if (dialog.getWindow() != null) {
+            WindowManager.LayoutParams lp = new WindowManager.LayoutParams();
+            lp.copyFrom(dialog.getWindow().getAttributes());
+            lp.width = (int) (getResources().getDisplayMetrics().widthPixels * 0.80f);
+            dialog.getWindow().setAttributes(lp);
+        }
     }
 
     private CheckBox createCheckBox(String text, boolean checked) {
@@ -8467,7 +8523,8 @@ source_path = Path('app/src/main/java/com/app/dedede/MainActivity.java')
 source = source_path.read_text(encoding='utf-8')
 anchor = source.index('public static final List<GramRule> gramRules')
 start = source.index('    public static synchronized void ensureRulesLoaded()', anchor)
-end = source.index('    public static final String NUMS', start)
+limit = source.index('    public static final String NUMS', start)
+end = source.index('} catch (Throwable error)', start, limit)
 region = source[start:end]
 literal_pattern = re.compile(r'"(?:\\.|[^"\\])*"')
 strings = []
