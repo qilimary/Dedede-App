@@ -4425,7 +4425,7 @@ public class MainActivity extends AppCompatActivity {
     private static void jumpAndFlash(TextView textView, int offset, ScrollView preferred) {
         try {
             Spannable text = (Spannable) textView.getText(); if (offset < 0 || offset > text.length()) return; Layout layout = textView.getLayout(); if (layout == null) return;
-            int line = layout.getLineForOffset(offset), lineStart = layout.getLineStart(line), lineEnd = layout.getLineEnd(line), y = layout.getLineTop(line);
+            int line = layout.getLineForOffset(offset), lineStart = layout.getLineStart(line), lineEnd = layout.getLineEnd(line), y = textView.getTotalPaddingTop() + layout.getLineTop(line);
             ScrollView scroll = preferred;
             if (scroll == null) {
                 android.content.Context context = textView.getContext();
@@ -5030,7 +5030,21 @@ public class MainActivity extends AppCompatActivity {
     private RadioGroup rgMode;
     private DrawerLayout drawerLayout;
     private SharedPreferences sp;
-    private boolean currentIsFast, hasStartedChecking, autoScrollEnabled = true, isTouchingScrollView, isTyposExpanded, isRestoringHistory, isManuallyEditedOut, displayedResultStale, originalIsManuallyEdited, isEditorSelfModifying, firstEditorCursorTapPending, isInputEditorOpen, isInputEditorSelfModifying, showJumpHintForCurrentResult, pendingFreshJumpHintDecision;
+    private boolean currentIsFast, hasStartedChecking, isTouchingScrollView, isTyposExpanded, isRestoringHistory, isManuallyEditedOut, displayedResultStale, originalIsManuallyEdited, isEditorSelfModifying, firstEditorCursorTapPending, isInputEditorOpen, isInputEditorSelfModifying, showJumpHintForCurrentResult, pendingFreshJumpHintDecision;
+    private static final int LIVE_SCROLL_DEFAULT = 0, LIVE_SCROLL_FOLLOW_BOTTOM = 1, LIVE_SCROLL_READING = 2;
+    private int liveScrollMode = LIVE_SCROLL_DEFAULT, liveBodyStart = -1, liveErrorsStart = -1, liveErrorsEnd = -1;
+    private int lastRenderedBodyStart = -1, lastRenderedErrorsStart = -1, lastRenderedErrorsEnd = -1;
+    private boolean liveProgrammaticScroll, liveGestureMoved, liveDownward;
+    private float liveTouchDownX, liveTouchDownY;
+    private int liveTouchDownScroll;
+    private final android.graphics.Rect liveTouchRect = new android.graphics.Rect();
+    private final int[] liveTouchLocation = new int[2];
+    private android.view.ViewTreeObserver.OnPreDrawListener livePreDraw;
+    private ReadingAnchor pendingReadingAnchor;
+    private int liveFlashRel = -1;
+    private long liveFlashStarted;
+    private BackgroundColorSpan liveFlashSpan;
+    private Spannable liveFlashText;
     private volatile boolean isCheckingMain, modelsLoading;
     private volatile long inferenceGeneration;
     private int saveFormat;
@@ -5605,17 +5619,183 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
+    private static final class LiveMarker {
+        final int start, end, bodyOffset;
+        LiveMarker(int start, int end, int bodyOffset) { this.start = start; this.end = end; this.bodyOffset = bodyOffset; }
+    }
+
+    private static final class ReadingAnchor {
+        final int region, offset, fineY;
+        ReadingAnchor(int region, int offset, int fineY) { this.region = region; this.offset = offset; this.fineY = fineY; }
+    }
+
+    private int liveMaxScroll() {
+        View child = scrollView.getChildAt(0);
+        return child == null ? 0 : Math.max(0, child.getHeight() - scrollView.getHeight());
+    }
+
+    private boolean liveAtBottom() {
+        return liveMaxScroll() > 0 && !scrollView.canScrollVertically(1);
+    }
+
+    private void clearLivePreDraw() {
+        if (livePreDraw != null && outputText != null) {
+            android.view.ViewTreeObserver observer = outputText.getViewTreeObserver();
+            if (observer.isAlive()) observer.removeOnPreDrawListener(livePreDraw);
+        }
+        livePreDraw = null; pendingReadingAnchor = null;
+    }
+
+    private void resetLivePreview() {
+        clearLivePreDraw(); clearLiveFlash();
+        liveScrollMode = LIVE_SCROLL_DEFAULT; liveBodyStart = liveErrorsStart = liveErrorsEnd = -1;
+        isTouchingScrollView = liveGestureMoved = liveDownward = false;
+    }
+
+    private void setLiveScrollY(int y) {
+        liveProgrammaticScroll = true;
+        try { scrollView.scrollTo(0, Math.max(0, Math.min(liveMaxScroll(), y))); }
+        finally { liveProgrammaticScroll = false; }
+    }
+
+    // Offsets refer to a stable prefix in each region, never to HTML or the changing header.
+    private ReadingAnchor captureReadingAnchor() {
+        if (pendingReadingAnchor != null) return pendingReadingAnchor;
+        Layout layout = outputText.getLayout(); int y = scrollView.getScrollY();
+        if (layout == null || outputText.length() == 0) return new ReadingAnchor(2, 0, y);
+        int pad = outputText.getTotalPaddingTop();
+        int line = layout.getLineForVertical(Math.max(0, y - pad));
+        int offset = layout.getLineStart(line), fine = y - pad - layout.getLineTop(line);
+        if (liveBodyStart >= 0 && offset >= liveBodyStart) return new ReadingAnchor(0, offset - liveBodyStart, fine);
+        if (liveErrorsStart >= 0 && offset >= liveErrorsStart && offset < liveErrorsEnd) return new ReadingAnchor(1, offset - liveErrorsStart, fine);
+        return new ReadingAnchor(2, 0, y);
+    }
+
+    private void restoreReadingAnchor(ReadingAnchor anchor, int errorsStart, int errorsEnd, int bodyStart) {
+        if (anchor == null) return;
+        Layout layout = outputText.getLayout();
+        if (layout == null || anchor.region == 2) { setLiveScrollY(anchor.fineY); return; }
+        int base = anchor.region == 0 ? bodyStart : errorsStart;
+        if (base < 0) { setLiveScrollY(scrollView.getScrollY()); return; }
+        int end = anchor.region == 0 ? outputText.length() : errorsEnd;
+        int offset = Math.min(Math.max(base, end - 1), base + anchor.offset);
+        setLiveScrollY(outputText.getTotalPaddingTop() + layout.getLineTop(layout.getLineForOffset(offset)) + anchor.fineY);
+    }
+
+    private void scheduleLiveLayout(long gen, ReadingAnchor anchor, boolean finished, int errorsStart, int errorsEnd, int bodyStart) {
+        clearLivePreDraw(); pendingReadingAnchor = anchor;
+        android.view.ViewTreeObserver.OnPreDrawListener listener = new android.view.ViewTreeObserver.OnPreDrawListener() {
+            @Override public boolean onPreDraw() {
+                android.view.ViewTreeObserver observer = outputText.getViewTreeObserver();
+                if (observer.isAlive()) observer.removeOnPreDrawListener(this);
+                if (livePreDraw != this) return true;
+                livePreDraw = null; pendingReadingAnchor = null;
+                if (gen != inferenceGeneration || isDestroyed() || isFinishing()) return true;
+                if (anchor != null && liveScrollMode == LIVE_SCROLL_READING) restoreReadingAnchor(anchor, errorsStart, errorsEnd, bodyStart);
+                else if (!isTouchingScrollView) {
+                    if (finished) setLiveScrollY(0);
+                    else if (liveScrollMode == LIVE_SCROLL_FOLLOW_BOTTOM) setLiveScrollY(liveMaxScroll());
+                    else if (liveScrollMode == LIVE_SCROLL_DEFAULT) {
+                        Layout layout = outputText.getLayout();
+                        int y = 0;
+                        if (layout != null && errorsEnd > errorsStart && errorsStart >= 0) {
+                            int line = layout.getLineForOffset(errorsEnd - 1);
+                            y = outputText.getTotalPaddingTop() + layout.getLineBottom(line) - scrollView.getHeight() + dpPx(12f);
+                        }
+                        setLiveScrollY(y);
+                    }
+                }
+                updateLiveFlash();
+                if (finished) liveScrollMode = LIVE_SCROLL_DEFAULT;
+                return true;
+            }
+        };
+        livePreDraw = listener; outputText.getViewTreeObserver().addOnPreDrawListener(listener);
+    }
+
+    private void clearLiveFlash() {
+        if (liveFlashText != null && liveFlashSpan != null) liveFlashText.removeSpan(liveFlashSpan);
+        liveFlashText = null; liveFlashSpan = null; liveFlashRel = -1; liveFlashStarted = 0L;
+    }
+
+    private void updateLiveFlash() {
+        if (liveFlashText != null && liveFlashSpan != null) liveFlashText.removeSpan(liveFlashSpan);
+        liveFlashText = null; liveFlashSpan = null;
+        if (liveFlashRel < 0) return;
+        long age = android.os.SystemClock.uptimeMillis() - liveFlashStarted;
+        if (age >= 1300L) { liveFlashRel = -1; outputText.invalidate(); return; }
+        int base = isCheckingMain ? liveBodyStart : lastRenderedBodyStart;
+        CharSequence text = outputText.getText(); Layout layout = outputText.getLayout();
+        int offset = base + liveFlashRel;
+        if (base >= 0 && offset >= base && offset < text.length() && layout != null && layout.getText().length() == text.length() && text instanceof Spannable && (age < 500L || age >= 800L)) {
+            int line = layout.getLineForOffset(offset);
+            int a = layout.getLineStart(line), b = layout.getLineEnd(line);
+            if (a >= 0 && a < b && b <= text.length()) {
+                liveFlashText = (Spannable) text; liveFlashSpan = new BackgroundColorSpan(0x609E9E9E);
+                liveFlashText.setSpan(liveFlashSpan, a, b, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+            }
+        }
+        outputText.invalidate();
+    }
+
+    private void jumpLiveToOffset(int rel, long gen) {
+        if (!isCheckingMain || gen != inferenceGeneration || liveGestureMoved) return;
+        if (rel < 0) { AppToast.show(this, "该处位于暂省略的后文，纠错完成后可定位", Toast.LENGTH_SHORT); return; }
+        Layout layout = outputText.getLayout(); int offset = liveBodyStart + rel;
+        if (layout == null || liveBodyStart < 0 || offset >= outputText.length()) return;
+        clearLivePreDraw(); liveScrollMode = LIVE_SCROLL_READING; liveDownward = false;
+        setLiveScrollY(outputText.getTotalPaddingTop() + layout.getLineTop(layout.getLineForOffset(offset)) - scrollView.getHeight() / 3);
+        clearLiveFlash(); liveFlashRel = rel; liveFlashStarted = android.os.SystemClock.uptimeMillis();
+        final long started = liveFlashStarted;
+        updateLiveFlash();
+        Runnable refresh = () -> { if (gen == inferenceGeneration && started == liveFlashStarted && !isDestroyed()) updateLiveFlash(); };
+        AppExecutors.MAIN.postDelayed(refresh, 500L); AppExecutors.MAIN.postDelayed(refresh, 800L); AppExecutors.MAIN.postDelayed(refresh, 1300L);
+    }
+
+    // Activity dispatch sees the entire gesture even when TextView consumes DOWN or ScrollView intercepts MOVE.
+    @Override public boolean dispatchTouchEvent(MotionEvent event) {
+        int action = event.getActionMasked();
+        if (isCheckingMain && scrollView != null && outputText != null) {
+            if (action == MotionEvent.ACTION_DOWN) {
+                liveGestureMoved = false; liveDownward = false;
+                scrollView.getLocationOnScreen(liveTouchLocation);
+                liveTouchRect.set(liveTouchLocation[0], liveTouchLocation[1], liveTouchLocation[0] + scrollView.getWidth(), liveTouchLocation[1] + scrollView.getHeight());
+                isTouchingScrollView = scrollView.isShown() && liveTouchRect.contains((int) event.getRawX(), (int) event.getRawY());
+                if (isTouchingScrollView) { liveTouchDownX = event.getRawX(); liveTouchDownY = event.getRawY(); liveTouchDownScroll = scrollView.getScrollY(); }
+            } else if (action == MotionEvent.ACTION_MOVE && isTouchingScrollView && Math.max(Math.abs(event.getRawY() - liveTouchDownY), Math.abs(event.getRawX() - liveTouchDownX)) > android.view.ViewConfiguration.get(this).getScaledTouchSlop()) {
+                if (!liveGestureMoved) clearLivePreDraw();
+                liveGestureMoved = true; liveScrollMode = LIVE_SCROLL_READING;
+            }
+        }
+        boolean handled = super.dispatchTouchEvent(event);
+        if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) {
+            if (isCheckingMain && isTouchingScrollView && liveGestureMoved && scrollView.getScrollY() > liveTouchDownScroll && liveAtBottom()) liveScrollMode = LIVE_SCROLL_FOLLOW_BOTTOM;
+            isTouchingScrollView = false;
+        }
+        return handled;
+    }
+
     @SuppressLint("ClickableViewAccessibility")
     private void setupScrollControls() {
         View touchArea = findViewById(R.id.scrollTouchArea);
         touchArea.setOnTouchListener((v, event) -> {
-            View child = scrollView.getChildAt(0); int max = child == null ? 0 : child.getHeight() - scrollView.getHeight();
-            if (max > 0 && v.getHeight() > 0) scrollView.scrollTo(0, (int) (Math.max(0, Math.min(event.getY(), v.getHeight())) / v.getHeight() * max));
-            int action = event.getActionMasked(); if (action == MotionEvent.ACTION_DOWN) { isTouchingScrollView = true; autoScrollEnabled = false; } else if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) { isTouchingScrollView = false; if (!scrollView.canScrollVertically(1)) autoScrollEnabled = true; }
+            int max = liveMaxScroll();
+            if (isCheckingMain && max > 0) { clearLivePreDraw(); liveScrollMode = LIVE_SCROLL_READING; liveGestureMoved = true; }
+            if (max > 0 && v.getHeight() > 0) setLiveScrollY((int)(Math.max(0, Math.min(event.getY(), v.getHeight())) / v.getHeight() * max));
+            int action = event.getActionMasked();
+            if (isCheckingMain && max > 0 && action == MotionEvent.ACTION_UP) {
+                liveScrollMode = liveAtBottom() ? LIVE_SCROLL_FOLLOW_BOTTOM : LIVE_SCROLL_READING;
+                liveDownward = false;
+                // dispatchTouchEvent must not reinterpret a scrollbar gesture.
+                liveGestureMoved = false;
+            }
             return true;
         });
-        scrollView.setOnTouchListener((v, event) -> { int action = event.getActionMasked(); if (action == MotionEvent.ACTION_DOWN) { isTouchingScrollView = true; autoScrollEnabled = false; } else if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) { isTouchingScrollView = false; if (!scrollView.canScrollVertically(1)) autoScrollEnabled = true; } return false; });
-        scrollView.setOnScrollChangeListener((v, x, y, oldX, oldY) -> { if (y < oldY) autoScrollEnabled = false; if (!isTouchingScrollView && !v.canScrollVertically(1)) autoScrollEnabled = true; });
+        scrollView.setOnScrollChangeListener((v, x, y, oldX, oldY) -> {
+            if (!isCheckingMain || liveProgrammaticScroll || livePreDraw != null || y == oldY) return;
+            if (isTouchingScrollView && liveGestureMoved) { liveDownward = y > oldY; liveScrollMode = LIVE_SCROLL_READING; }
+            else if (liveGestureMoved && liveDownward && y > oldY && liveAtBottom()) liveScrollMode = LIVE_SCROLL_FOLLOW_BOTTOM;
+        });
         View editorTouch = findViewById(R.id.editorScrollTouchArea);
         editorTouch.setOnTouchListener((v, event) -> { View child = editorScrollView.getChildAt(0); int max = child == null ? 0 : child.getHeight() - editorScrollView.getHeight(); if (max > 0 && v.getHeight() > 0) editorScrollView.scrollTo(0, (int) (Math.max(0, Math.min(event.getY(), v.getHeight())) / v.getHeight() * max)); return true; });
         setupInputSmoothScroll();
@@ -6557,7 +6737,7 @@ public class MainActivity extends AppCompatActivity {
 
     private void beginCheck() {
         if (inputText.length() == 0) { AppToast.show(this, "文本为空", Toast.LENGTH_SHORT); return; }
-        autoScrollEnabled = true;
+        resetLivePreview();
         isManuallyEditedOut = false;
         setResultStaleWarning(false);
         allSentencesBlocks.clear();
@@ -6600,6 +6780,7 @@ public class MainActivity extends AppCompatActivity {
         saveHistory(raw, lastSavedHistoryFileId);
         isCheckingMain = true;
         btnCheck.setText("取消");
+        outputText.setText("正在纠错..."); setLiveScrollY(0);
         doInference(fast, temperature);
     }
 
@@ -6887,6 +7068,7 @@ public class MainActivity extends AppCompatActivity {
     @Override protected void onPause() { flushInputSync(); saveSettings(currentIsFast); super.onPause(); }
 
     @Override protected void onDestroy() {
+        resetLivePreview();
         inputSyncHandler.removeCallbacksAndMessages(null);
         isCheckingMain = false; inferenceGeneration++; importGeneration++; importing = false;
         if (instance == this) instance = null;
@@ -7077,7 +7259,7 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void cancelMainCheck() {
-        isCheckingMain = false; inferenceGeneration++;
+        isCheckingMain = false; inferenceGeneration++; resetLivePreview();
         getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         progressBar.setVisibility(View.INVISIBLE); btnCheck.setText("开始纠错"); btnCheck.setEnabled(true);
         allSentencesBlocks.clear(); isManuallyEditedOut = false; lastEditorSpannable = null; currentClauseLinks.clear(); setResultStaleWarning(false);
@@ -7103,8 +7285,13 @@ public class MainActivity extends AppCompatActivity {
                     proAcquired = acquireProEngine(this);
                     if (!proAcquired) throw new IllegalStateException("专业 HCAM 模型加载失败：" + SecureAsset.lastErrorSummary());
                 }
-                final int liveTextLimit = 30000;
-                StringBuilder liveErrors = new StringBuilder(), liveText = new StringBuilder(Math.min(text.length(), liveTextLimit) + 100); int[] processed = {0}, liveErrorCount = {0}, docIndex = {1}, liveTextChars = {0}; boolean multiDocument = text.contains("---------------------------------"); boolean[] markerPending = {multiDocument}, liveTextTruncated = {false};
+                final int liveTextLimit = text.length() <= 33000 ? 33000 : 30000;
+                SpannableStringBuilder liveErrors = new SpannableStringBuilder(), liveBody = new SpannableStringBuilder();
+                List<LiveMarker> liveMarkers = new ArrayList<>();
+                Map<TextBlock, Integer> offsets = new java.util.IdentityHashMap<>();
+                int[] processed = {0}, liveErrorCount = {0}, docIndex = {1}, liveChars = {0};
+                boolean multiDocument = text.contains("---------------------------------");
+                boolean[] markerPending = {multiDocument}, truncated = {false};
                 CorrectionCore.Result result = CorrectionCore.run(text, fastMode, temperature, thresholdDe, thresholdDi, thresholdDe3, thresholdZuo, thresholdZuo4, new CorrectionCore.Listener() {
                     @Override public boolean isCancelled() { return !isCheckingMain || generation != inferenceGeneration || isFinishing() || isDestroyed(); }
                     @Override public boolean wantsErrorMessages() { return false; }
@@ -7113,52 +7300,80 @@ public class MainActivity extends AppCompatActivity {
                         // The final result is rendered immediately after run() returns.
                         if (current == total) return;
                         while (processed[0] < completed.size()) {
-                            List<TextBlock> sentence = completed.get(processed[0]++);
-                            appendLiveErrors(sentence, liveErrors, liveErrorCount);
-                            if (liveTextTruncated[0]) continue;
-                            for (TextBlock block : sentence) {
-                                int remaining = liveTextLimit - liveTextChars[0];
-                                if (block.current.length() > remaining) {
-                                    if (remaining > 0) {
-                                        if (markerPending[0] && docIndex[0] == 1) { liveText.append("<font color='#757575'>［文档").append(docIndex[0]++).append("］</font><br>"); markerPending[0] = false; }
-                                        int cut = remaining;
-                                        if (Character.isHighSurrogate(block.current.charAt(cut - 1)) && Character.isLowSurrogate(block.current.charAt(cut))) cut--;
-                                        appendLiveHtmlText(liveText, block.current.substring(0, cut));
-                                        liveTextChars[0] += cut;
+                            List<TextBlock> sentence = completed.get(processed[0]++); offsets.clear();
+                            if (!truncated[0]) for (TextBlock block : sentence) {
+                                int remaining = liveTextLimit - liveChars[0];
+                                int length = block.current.length(), cut = Math.min(remaining, length);
+                                if (cut < length && cut > 0 && Character.isHighSurrogate(block.current.charAt(cut - 1)) && Character.isLowSurrogate(block.current.charAt(cut))) cut--;
+                                if (cut > 0 || length == 0) {
+                                    if (markerPending[0]) { appendDocumentMarker(liveBody, docIndex[0]++); markerPending[0] = false; }
+                                    int start = liveBody.length(); liveBody.append(block.current, 0, cut);
+                                    if (isActiveCorrection(block)) {
+                                        int offset = cut == 0 && start > 0 ? start - 1 : start;
+                                        offsets.put(block, offset);
                                     }
-                                    liveTextTruncated[0] = true;
-                                    break;
+                                    liveChars[0] += cut;
+                                    if (cut == length && block.current.contains("---------------------------------")) appendDocumentMarker(liveBody, docIndex[0]++);
                                 }
-                                if (markerPending[0] && docIndex[0] == 1) { liveText.append("<font color='#757575'>［文档").append(docIndex[0]++).append("］</font><br>"); markerPending[0] = false; }
-                                appendLiveHtmlText(liveText, block.current);
-                                liveTextChars[0] += block.current.length();
-                                if (block.current.contains("---------------------------------")) liveText.append("<br><font color='#757575'>［文档").append(docIndex[0]++).append("］</font><br>");
+                                if (cut < length) { truncated[0] = true; break; }
                             }
+                            appendLiveErrors(sentence, liveErrors, liveMarkers, offsets, liveErrorCount);
                         }
                         if (!previewPending.compareAndSet(false, true)) return;
-                        StringBuilder htmlBuilder = new StringBuilder(liveErrors.length() + liveText.length() + 320).append("<b>正在纠错...</b><br>已耗时 ").append(String.format(Locale.getDefault(), "%.1f", elapsed / 1000.0)).append(" 秒<br>进度：").append(current).append(" / ").append(total).append("<br><br>");
-                        if (liveErrors.length() > 0) htmlBuilder.append("<b><font color='#757575'>【纠错记录】：</font></b><br>").append(liveErrors);
-                        htmlBuilder.append("<br><b><font color='#757575'>【全文预览】：</font></b><br>").append(liveText);
-                        if (liveTextTruncated[0]) htmlBuilder.append("<br><font color='#757575'>……（文本过长，暂省略）</font>");
-                        String html = htmlBuilder.toString();
-                        Spanned preview = Html.fromHtml(html, Html.FROM_HTML_MODE_COMPACT);
-                        final int displayedErrors = liveErrorCount[0];
+                        SpannableStringBuilder preview = new SpannableStringBuilder();
+                        appendSectionHeader(preview, "正在纠错...\n");
+                        preview.append("已耗时 ").append(String.format(Locale.getDefault(), "%.1f", elapsed / 1000.0)).append(" 秒\n进度：").append(String.valueOf(current)).append(" / ").append(String.valueOf(total)).append("\n\n");
+                        int errorsStart = -1, errorsEnd = -1;
+                        if (liveErrors.length() > 0) {
+                            appendSectionHeader(preview, "【纠错记录】：\n"); errorsStart = preview.length();
+                            preview.append(liveErrors); errorsEnd = preview.length();
+                        }
+                        preview.append('\n'); appendSectionHeader(preview, "【全文预览】：\n");
+                        final int bodyStart = preview.length(); preview.append(liveBody);
+                        if (truncated[0]) appendSectionHeader(preview, "\n……（文本过长，暂省略）");
+                        if (errorsStart >= 0) for (LiveMarker marker : liveMarkers) {
+                            final int rel = marker.bodyOffset >= liveBody.length() ? -1 : marker.bodyOffset;
+                            preview.setSpan(new JumpSpan() {
+                                @Override public int getTargetOffset(Spanned text) { return rel < 0 ? -1 : bodyStart + rel; }
+                                @Override public void onClick(View view) { jumpLiveToOffset(rel, generation); }
+                                @Override public void updateDrawState(TextPaint paint) { paint.setColor(0xFF2196F3); paint.setUnderlineText(rel >= 0); }
+                            }, errorsStart + marker.start, errorsStart + marker.end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+                        }
+                        final int es = errorsStart, ee = errorsEnd;
                         AppExecutors.MAIN.post(() -> {
                             previewPending.set(false);
-                            if (!isCheckingMain || generation != inferenceGeneration || isFinishing() || isDestroyed()) return; progressBar.setMax(total); progressBar.setProgress(current); outputText.setText(preview);
-                            if (autoScrollEnabled) scrollView.post(() -> { if (generation != inferenceGeneration || isDestroyed()) return; if (displayedErrors > 0) { Layout layout = outputText.getLayout(); int offset = outputText.getText().toString().indexOf("【纠错记录】："); if (layout != null && offset >= 0) scrollView.scrollTo(0, Math.max(0, layout.getLineTop(layout.getLineForOffset(offset)) - scrollView.getHeight() + 150)); } else scrollView.scrollTo(0, 0); });
+                            if (!isCheckingMain || generation != inferenceGeneration || isFinishing() || isDestroyed()) return;
+                            progressBar.setMax(total); progressBar.setProgress(current);
+                            // Do not replace the TextView under the finger; the next progress event catches up.
+                            if (isTouchingScrollView) return;
+                            ReadingAnchor anchor = liveScrollMode == LIVE_SCROLL_READING ? captureReadingAnchor() : null;
+                            if (!(outputText.getMovementMethod() instanceof MyLinkMovementMethod)) outputText.setMovementMethod(MyLinkMovementMethod.getInstance());
+                            outputText.setHighlightColor(Color.TRANSPARENT);
+                            liveProgrammaticScroll = true;
+                            try { outputText.setText(preview, TextView.BufferType.SPANNABLE); } finally { liveProgrammaticScroll = false; }
+                            liveErrorsStart = es; liveErrorsEnd = ee; liveBodyStart = bodyStart;
+                            scheduleLiveLayout(generation, anchor, false, es, ee, bodyStart);
                         });
                     }
                 });
                 if (result == null) {
-                    AppExecutors.MAIN.post(() -> { if (generation != inferenceGeneration || isDestroyed()) return; outputText.setText("已取消纠错。"); btnCheck.setText("开始纠错"); btnCheck.setEnabled(true); progressBar.setVisibility(View.INVISIBLE); });
+                    AppExecutors.MAIN.post(() -> { if (generation != inferenceGeneration || isDestroyed()) return; isCheckingMain = false; resetLivePreview(); outputText.setText("已取消纠错。"); btnCheck.setText("开始纠错"); btnCheck.setEnabled(true); progressBar.setVisibility(View.INVISIBLE); });
                     return;
                 }
                 if (generation != inferenceGeneration || isDestroyed()) return;
                 HistoryStore.saveBlocks(this, historyFileId, result.blocks, result.elapsedMs);
-                AppExecutors.MAIN.post(() -> { if (generation != inferenceGeneration || isDestroyed()) return; isCheckingMain = false; btnCheck.setText("继续纠错"); allSentencesBlocks = result.blocks; lastTimeMs = result.elapsedMs; markFreshCorrectionResult(); setResultStaleWarning(false); renderFinalBlocks(); btnCheck.setEnabled(true); btnCopy.setEnabled(true); btnSaveTxt.setEnabled(true); scrollView.post(() -> scrollView.fullScroll(View.FOCUS_UP)); });
+                AppExecutors.MAIN.post(() -> {
+                    if (generation != inferenceGeneration || isDestroyed()) return;
+                    if (isTouchingScrollView && liveGestureMoved) liveScrollMode = LIVE_SCROLL_READING;
+                    ReadingAnchor anchor = liveScrollMode == LIVE_SCROLL_READING ? captureReadingAnchor() : null;
+                    isCheckingMain = false; isTouchingScrollView = false;
+                    btnCheck.setText("继续纠错"); allSentencesBlocks = result.blocks; lastTimeMs = result.elapsedMs; markFreshCorrectionResult(); setResultStaleWarning(false); renderFinalBlocks(); btnCheck.setEnabled(true); btnCopy.setEnabled(true); btnSaveTxt.setEnabled(true);
+                    if (anchor == null) clearLiveFlash();
+                    scheduleLiveLayout(generation, anchor, true, lastRenderedErrorsStart, lastRenderedErrorsEnd, lastRenderedBodyStart);
+                    liveErrorsStart = liveErrorsEnd = liveBodyStart = -1;
+                });
             } catch (Throwable exception) {
-                String message = errorDetails(exception); AppExecutors.MAIN.post(() -> { if (generation != inferenceGeneration || isDestroyed()) return; isCheckingMain = false; btnCheck.setText("开始纠错"); outputText.setText("推理运行中断: " + message); btnCheck.setEnabled(true); btnSaveTxt.setEnabled(true); });
+                String message = errorDetails(exception); AppExecutors.MAIN.post(() -> { if (generation != inferenceGeneration || isDestroyed()) return; isCheckingMain = false; resetLivePreview(); btnCheck.setText("开始纠错"); outputText.setText("推理运行中断: " + message); btnCheck.setEnabled(true); btnSaveTxt.setEnabled(true); });
             } finally {
                 if (proAcquired) releaseProEngine();
                 AppExecutors.MAIN.post(() -> { if (generation != inferenceGeneration || isDestroyed()) return; getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON); progressBar.setVisibility(View.INVISIBLE); });
@@ -7172,26 +7387,26 @@ public class MainActivity extends AppCompatActivity {
         return !block.userModified && block.exp != null && !block.exp.isEmpty();
     }
 
-    private void appendLiveErrors(List<TextBlock> sentence, StringBuilder html, int[] errorCount) {
+    private void appendLiveErrors(List<TextBlock> sentence, SpannableStringBuilder builder, List<LiveMarker> markers, Map<TextBlock, Integer> offsets, int[] count) {
         boolean hasError = false;
         for (TextBlock block : sentence) if (isActiveCorrection(block)) { hasError = true; break; }
         if (!hasError) return;
         for (List<TextBlock> group : buildErrorGroups(sentence)) {
-            List<TextBlock> errors = new ArrayList<>(); for (TextBlock block : group) if (isActiveCorrection(block)) errors.add(block); if (errors.isEmpty()) continue;
-            html.append("<font color='#2196F3'><b>["); for (int i = 0; i < errors.size(); i++) { html.append(errorCount[0] + i + 1); if (i < errors.size() - 1) html.append(','); } html.append("]</b></font> ");
-            for (TextBlock block : group) {
-                String original = escapeHtmlQuick(block.original), current = escapeHtmlQuick(block.current);
-                if (isActiveCorrection(block)) {
-                    errorCount[0]++; String note = block.type == 1 ? " (置信度:" + String.format(Locale.getDefault(), "%.2f", block.conf) + ")" : (block.type == 4 ? " (自定义)" : (showCorrectionNote(block) ? " (" + escapeHtmlQuick(block.exp) + ")" : "")); String oldColor = block.type == 6 ? "#E53935" : "#9E9E9E";
-                    if (block.current.equals(block.original)) html.append("<font color='#E53935'><b>").append(original).append("</b></font><font color='#9E9E9E'><small>").append(note).append("</small></font>");
-                    else { html.append("<font color='").append(oldColor).append("'><s>").append(original).append("</s></font>");
-                        if (!block.current.isEmpty()) html.append(" <font color='#E53935'><b>").append(current).append("</b></font><font color='#9E9E9E'><small>").append(note).append("</small></font>"); }
-                } else html.append(original);
+            int n = 0, target = -1;
+            for (TextBlock block : group) if (isActiveCorrection(block)) {
+                n++; Integer offset = offsets.get(block); if (target < 0 && offset != null) target = offset;
             }
-            html.append("<br><br>");
+            if (n == 0) continue;
+            int start = builder.length(); appendNumbers(builder, count[0], n);
+            markers.add(new LiveMarker(start, builder.length(), target)); count[0] += n;
+            // Same text and styling helpers as the final checklist, but no edit actions until completion.
+            for (TextBlock block : group) {
+                if (isActiveCorrection(block)) appendCorrection(builder, block, false);
+                else builder.append(block.current);
+            }
+            builder.append('\n');
         }
     }
-
     private List<List<TextBlock>> buildErrorGroups(List<TextBlock> sentence) {
         List<List<TextBlock>> clauses = new ArrayList<>(); List<TextBlock> clause = new ArrayList<>();
         for (TextBlock block : sentence) {
@@ -7294,7 +7509,7 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void renderFinalBlocks() {
-        currentClauseLinks.clear();
+        currentClauseLinks.clear(); lastRenderedBodyStart = lastRenderedErrorsStart = lastRenderedErrorsEnd = -1;
         int currentErrors = 0, pendingTypos = 0;
         for (List<TextBlock> sentence : allSentencesBlocks) for (TextBlock block : sentence) if (isActiveCorrection(block)) {
             currentErrors++;
@@ -7329,6 +7544,7 @@ public class MainActivity extends AppCompatActivity {
         } else {
             String header = "共更正 " + (currentErrors - pendingTypos) + " 处错误。" + (pendingTypos > 0 ? " 另有 " + pendingTypos + " 处疑似错别字。" : "") + (elapsedText.isEmpty() ? "" : " " + elapsedText) + (showJumpHintForCurrentResult ? "\n（点击序号可快速跳转）" : "") + "\n\n"; int start = main.length(); main.append(header); main.setSpan(new ForegroundColorSpan(0xFF757575), start, main.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
             appendSectionHeader(main, "【纠错清单：】\n"); appendSectionHeader(editor, "【纠错清单：】\n");
+            lastRenderedErrorsStart = main.length();
             int errorIndex = 0;
             for (List<TextBlock> sentence : allSentencesBlocks) {
                 for (List<TextBlock> group : buildErrorGroups(sentence)) {
@@ -7366,6 +7582,7 @@ public class MainActivity extends AppCompatActivity {
                     currentClauseLinks.add(link);
                 }
             }
+            lastRenderedErrorsEnd = main.length();
             int separatorStart = main.length(); main.append("\n---------------------------------\n\n"); main.setSpan(new ForegroundColorSpan(0xFF757575), separatorStart, main.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
             int editorSeparatorStart = editor.length(); editor.append("\n---------------------------------\n\n"); editor.setSpan(new ForegroundColorSpan(0xFF757575), editorSeparatorStart, editor.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
         }
@@ -7373,7 +7590,7 @@ public class MainActivity extends AppCompatActivity {
         appendSectionHeader(main, currentErrors > 0 ? "【修正后的全文】\n" : "【原文】\n"); appendSectionHeader(editor, currentErrors > 0 ? "【修正后的全文】\n" : "【原文】\n");
         if (main.length() > 0) main.setSpan(new IgnoredInCopySpan(), 0, main.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
         if (editor.length() > 0) editor.setSpan(new IgnoredInCopySpan(), 0, editor.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
-        baseOffset[0] = main.length(); main.append(fullMain); editor.append(fullEditor);
+        baseOffset[0] = main.length(); lastRenderedBodyStart = baseOffset[0]; main.append(fullMain); editor.append(fullEditor);
         for (ClauseLink link : currentClauseLinks) {
             link.targetOffset = -1;
             for (TargetSpan target : link.targetSpans) {
