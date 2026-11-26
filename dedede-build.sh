@@ -630,10 +630,10 @@ final class TermMatcher {
 
     // A bucket identifies two unchanged neighbours. All candidates are verified against the full word.
     private static final int LEADING=0, INTERNAL=1, TRAILING=2, LONG=3;
-    private final int[][] heads=new int[4][1<<17];
+    private final int[][] bucketOffsets=new int[4][(1<<17)+1];
     private final Set<Integer> protectedPairs=new HashSet<>();
     private Entry[] entries=new Entry[16384];
-    private int[] next=new int[entries.length];
+    private int[] anchorPairs=new int[entries.length];
     private byte[] positions=new byte[entries.length];
     private static final int CAN_OMIT=32;
     private int[] observedPairs=new int[16384];
@@ -648,13 +648,47 @@ final class TermMatcher {
     private int count;
 
     private static int pair(char a,char b){return (a<<16)|b;}
-    private static int bucket(char a,char b){int key=pair(a,b)*0x9e3779b9;return key>>>15;}
-    private void anchor(int kind,char a,char b,Entry entry,int pos){
-        if(++count==entries.length){
-            entries=Arrays.copyOf(entries,count*2);next=Arrays.copyOf(next,count*2);positions=Arrays.copyOf(positions,count*2);
+    private static int bucket(int key){return (key*0x9e3779b9)>>>15;}
+
+    private void anchor(int kind,char a,char b,Entry entry,int pos) {
+        if (count == entries.length) {
+            entries = Arrays.copyOf(entries, count*2);
+            positions = Arrays.copyOf(positions, count*2);
+            anchorPairs = Arrays.copyOf(anchorPairs, count*2);
         }
-        int h=bucket(a,b);entries[count]=entry;positions[count]=(byte)pos;next[count]=heads[kind][h];heads[kind][h]=count;
+        int key = pair(a,b);
+        bucketOffsets[kind][bucket(key)]++;
+        // Five position bits and the omission flag occupy the low six bits.
+        positions[count] = (byte)((kind << 6) | pos);
+        anchorPairs[count] = key;
+        entries[count++] = entry;
     }
+
+    private void packAnchors() {
+        int end = 0;
+        for (int[] offsets : bucketOffsets) {
+            for (int h = 0; h < offsets.length-1; h++) {
+                end += offsets[h];
+                offsets[h] = end;
+            }
+            offsets[offsets.length-1] = end;
+        }
+        Entry[] packedEntries = new Entry[count];
+        byte[] packedPositions = new byte[count];
+        int[] packedPairs = new int[count];
+        for (int i = 0; i < count; i++) {
+            int flags = positions[i] & 0xff, key = anchorPairs[i];
+            // Fill from the end to keep the original newest-first candidate order.
+            int dest = --bucketOffsets[flags >>> 6][bucket(key)];
+            packedEntries[dest] = entries[i];
+            packedPositions[dest] = (byte)(flags & 63);
+            packedPairs[dest] = key;
+        }
+        entries = packedEntries;
+        positions = packedPositions;
+        anchorPairs = packedPairs;
+    }
+
     private void index(Entry entry){
         String w=entry.text;int last=w.length()-1;
         if(last==1){protectedPairs.add(pair(w.charAt(0),w.charAt(1)));return;}
@@ -691,7 +725,10 @@ final class TermMatcher {
     }
     private void probe(int kind,char a,char b,int delta,Scan doc,String s,int at,boolean[] custom,boolean[] exact,boolean[] literal){
         if(!han(a)||!han(b))return;
-        for(int id=heads[kind][bucket(a,b)];id!=0;id=next[id]){
+        int key=pair(a,b), hash=bucket(key);
+        int[] offsets=bucketOffsets[kind];
+        for(int id=offsets[hash],stop=offsets[hash+1];id<stop;id++){
+            if(anchorPairs[id]!=key)continue;
             int flags=positions[id];if(delta<0&&(flags&CAN_OMIT)==0)continue;
             Entry entry=entries[id];String w=entry.text;int n=w.length(),pos=flags&(CAN_OMIT-1),start=at-pos,end=start+n+delta;
             if(start<0||end>s.length())continue;
@@ -725,11 +762,14 @@ final class TermMatcher {
         }
     }
     private void probeLong(Scan doc,String s,int at,boolean[] custom,boolean[] exact,boolean[] literal){
-        int hash=bucket(s.charAt(at),s.charAt(at+1));
-        for(int id=heads[LONG][hash];id!=0;id=next[id]){
+        char a0=s.charAt(at),b0=s.charAt(at+1);
+        int key=pair(a0,b0),hash=bucket(key);
+        int[] offsets=bucketOffsets[LONG];
+        for(int id=offsets[hash],stop=offsets[hash+1];id<stop;id++){
+            if(anchorPairs[id]!=key)continue;
             Entry entry=entries[id]; String w=entry.text;
             int pos=positions[id], start=at-pos, n=w.length(), end=start+n;
-            if(start<0||end>s.length()||!s.regionMatches(at,w,pos,2))continue;
+            if(start<0||end>s.length())continue;
             int seeds=n/3+1;
             boolean earlier=false;
             for(int i=0;i<seeds;i++){
@@ -805,16 +845,22 @@ final class TermMatcher {
             if(line.isEmpty()||line.startsWith("#"))continue;
             int cut=line.indexOf(" n=");boolean protect=line.startsWith("!");
             String term=line.substring(protect?1:0,cut<0?line.length():cut);
-            if(term.length()<(protect?2:3)||term.length()>32||!term.chars().allMatch(ch->han((char)ch)))
+            if(!validTerm(term,protect))
                 throw new IOException("术语格式错误："+line);
             indexPairs(term);
             index(new Entry(term,cut<0?EMPTY:words(line.substring(cut+3).trim()),protect));
         }
+        packAnchors();
         Arrays.sort(observedPairs,0,pairCount);
         int unique=0;
         for(int i=0;i<pairCount;i++)
             if(unique==0||observedPairs[i]!=observedPairs[unique-1])observedPairs[unique++]=observedPairs[i];
         observedPairs=Arrays.copyOf(observedPairs,unique);
+    }
+    private static boolean validTerm(String term, boolean protect) {
+        if (term.length() < (protect ? 2 : 3) || term.length() > 32) return false;
+        for (int i = 0; i < term.length(); i++) if (!han(term.charAt(i))) return false;
+        return true;
     }
     private static volatile TermMatcher cached;
     static TermMatcher get() throws IOException {
@@ -863,7 +909,8 @@ final class TermMatcher {
         final List<Hit> hits=new ArrayList<>(),toneHits=new ArrayList<>(),longHits=new ArrayList<>();
         final Set<String> exact=new HashSet<>();
         final BitSet occupied=new BitSet();
-        final Map<String,List<Mention>> groups=new HashMap<>();
+        final Map<String,List<Mention>> people=new HashMap<>(), places=new HashMap<>();
+        final Map<String,List<List<Mention>>> groups=new HashMap<>();
     }
     List<Hit> collect(String s,boolean[] custom,boolean[] exact,boolean[] literal,BooleanSupplier cancelled){
         if(s.length()<3)return Collections.emptyList();
@@ -878,7 +925,7 @@ final class TermMatcher {
             }
         }
         doc.hits.removeIf(h->(doc.occupied.get(h.change)&&(!h.reason.equals(EXTRA)||h.change==h.end-1||doc.occupied.get(h.change+1)))||!hasTermEvidence(s,h,doc));
-        for(Map.Entry<String,List<Mention>> g:doc.groups.entrySet())resolve(s,g.getValue(),doc.hits,g.getKey().charAt(0));
+        for(Map.Entry<String,List<List<Mention>>> g:doc.groups.entrySet())resolve(s,g.getValue(),doc.hits,g.getKey().charAt(0));
         vetoPaired(s,doc.hits);
         List<Hit> reviews=new ArrayList<>();
         doc.hits.removeIf(h->{if(!h.reason.equals(SUSPECTED_TYPO))return false;reviews.add(h);return true;});
@@ -978,11 +1025,13 @@ final class TermMatcher {
         }
         boolean person=marker.kind==ACTION_MARK;int stop=offset;
         int weakStart=-1;
-        for(int length=2;length<=(person?24:4);length++){
-            int start=stop-length;if(start<0)break;
-            if(!han(s.charAt(start))||start>0&&s.charAt(start-1)=='·')continue;
-            boolean valid=true;for(int j=start;j<stop;j++)if(!(person?nameChar(s.charAt(j)):han(s.charAt(j)))||!person&&BAD_STEM.indexOf(s.charAt(j))>=0){valid=false;break;}
-            if(!valid)continue;
+        for(int length=1;length<=(person?24:4);length++){
+            int start=stop-length;
+            if(start<0)break;
+            char ch=s.charAt(start);
+            // Every longer suffix includes this character too.
+            if(person ? !nameChar(ch) : !han(ch)||BAD_STEM.indexOf(ch)>=0)break;
+            if(length<2||!han(ch)||start>0&&s.charAt(start-1)=='·')continue;
             boolean intro=before(s,start,INTRO);
             boolean anchored=intro||edge(s,start-1)||before(s,start,person?SUBJECT:MOVE)||before(s,start,JOINT);
             if(!anchored){if(!person&&length==2)weakStart=start;continue;}
@@ -1004,17 +1053,26 @@ final class TermMatcher {
         String name=s.substring(start,end);
         boolean joint=before(s,start,JOINT)||after(s,end,JOINT);
         Mention mention=new Mention(start,name,role,person,intro,joint);
+        Map<String,List<Mention>> names = person ? doc.people : doc.places;
+        List<Mention> occurrences = names.get(name);
+        if (occurrences != null) {
+            occurrences.add(mention);
+            return;
+        }
+        occurrences = new ArrayList<>();
+        occurrences.add(mention);
+        names.put(name, occurrences);
         for (int pos=0; pos<name.length(); pos++) {
             char[] readings = sounds[name.charAt(pos)];
             if (readings == null) continue;
             for (char reading : readings)
-                doc.groups.computeIfAbsent(entityKey(name,pos,reading,person),k->new ArrayList<>()).add(mention);
+                doc.groups.computeIfAbsent(entityKey(name,pos,reading,person),k->new ArrayList<>()).add(occurrences);
             char[] bases=syllables[name.charAt(pos)];
             if(person&&name.length()>=3&&pos>0&&bases!=null)
                 for(char syllable:bases)
-                    doc.groups.computeIfAbsent("N"+entityKey(name,pos,syllable,true),k->new ArrayList<>()).add(mention);
+                    doc.groups.computeIfAbsent("N"+entityKey(name,pos,syllable,true),k->new ArrayList<>()).add(occurrences);
         }
-        if(person){String shape=shapeKey(name);if(shape!=null)doc.groups.computeIfAbsent("V"+shape,k->new ArrayList<>()).add(mention);}
+        if(person){String shape=shapeKey(name);if(shape!=null)doc.groups.computeIfAbsent("V"+shape,k->new ArrayList<>()).add(occurrences);}
     }
     // Check explicit comparisons even when neither name is adjacent to a speech verb.
     private void vetoPaired(String s,List<Hit> hits){
@@ -1058,15 +1116,14 @@ final class TermMatcher {
         }
         return true;
     }
-    private void resolve(String text,List<Mention> group,List<Hit> hits,char groupKind){
-        boolean shape=groupKind=='V',near=groupKind=='N';
-        if(group.size()<2)return;
-        Map<String,List<Mention>> variants=new HashMap<>();
-        for(Mention m:group){if(m.joint)return;variants.computeIfAbsent(m.name,k->new ArrayList<>()).add(m);if(variants.size()>2)return;}
+    private void resolve(String text,List<List<Mention>> variants,List<Hit> hits,char groupKind){
         if(variants.size()!=2)return;
-        for(List<Mention> few:variants.values()){
+        for(List<Mention> occurrences:variants)
+            for(Mention mention:occurrences)if(mention.joint)return;
+        boolean shape=groupKind=='V',near=groupKind=='N';
+        for(List<Mention> few:variants){
             if(few.size()>2)continue;
-            for(List<Mention> many:variants.values()){
+            for(List<Mention> many:variants){
                 if(few==many||many.size()<few.size())continue;
                 boolean named=false;for(Mention m:many)named|=m.intro;
                 if(few.size()==2&&(!named||many.size()<6))continue;
@@ -1107,7 +1164,6 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.Locale;
 import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
 public final class CorrectionCore {
     private static final String[] LABELS = {"的", "地", "得", "做", "作"};
@@ -1118,6 +1174,7 @@ public final class CorrectionCore {
     public interface Listener {
         boolean isCancelled();
         void onProgress(int current, int total, List<List<MainActivity.TextBlock>> completed, int errorCount, long elapsedMs);
+        default boolean wantsErrorMessages() { return true; }
         void onError(String message, boolean needsMinimumDisplay);
     }
 
@@ -1126,8 +1183,10 @@ public final class CorrectionCore {
         public final String cleanText;
         public final int errorCount;
         public final long elapsedMs;
+        public final int pendingTypos;
         public long modelNanos; public int modelCalls,reviewCalls;
-        Result(List<List<MainActivity.TextBlock>> blocks, String cleanText, int errorCount, long elapsedMs) {
+        Result(List<List<MainActivity.TextBlock>> blocks, String cleanText, int errorCount, int pendingTypos, long elapsedMs) {
+            this.pendingTypos = pendingTypos;
             this.blocks = blocks; this.cleanText = cleanText; this.errorCount = errorCount; this.elapsedMs = elapsedMs;
         }
     }
@@ -1161,7 +1220,9 @@ public final class CorrectionCore {
     private static GrammarHit[] collectGrammarHits(String sentence, boolean fastMode, boolean[] protectedPositions,
             boolean[] exactPositions) {
         GrammarHit[] hits = new GrammarHit[sentence.length()];
-        for (MainActivity.GramRule rule : MainActivity.gramRules) {
+        java.util.BitSet candidates = MainActivity.grammarCandidates(sentence);
+        for (int index = candidates.nextSetBit(0); index >= 0; index = candidates.nextSetBit(index + 1)) {
+            MainActivity.GramRule rule = MainActivity.gramRules.get(index);
             if (fastMode && rule.professionalOnly) continue;
             if (!rule.mayMatch(sentence)) continue;
             Matcher matcher = rule.pattern.matcher(sentence).useTransparentBounds(true).useAnchoringBounds(false);
@@ -1214,7 +1275,8 @@ public final class CorrectionCore {
         List<String> sentences = splitText(text, text.length());
         List<List<MainActivity.TextBlock>> allBlocks = new ArrayList<>(sentences.size());
         StringBuilder fullCleanText = new StringBuilder(text.length());
-        int errorCount = 0;
+        int errorCount = 0, pendingTypos = 0;
+        boolean reportErrors = listener != null && listener.wantsErrorMessages();
         long lastProgressTime = 0;
 
         for (int sentenceIndex = 0; sentenceIndex < sentences.size(); sentenceIndex++) {
@@ -1275,8 +1337,10 @@ public final class CorrectionCore {
             for (MainActivity.TextBlock block : intermediate) {
                 if (block.isMutable) {
                     errorCount++;
-                    if (listener != null) {
-                        String message = TermMatcher.SUSPECTED_TYPO.equals(block.exp) ? block.original + "（疑似错别字）"
+                    boolean pending = TermMatcher.SUSPECTED_TYPO.equals(block.exp) && block.current.equals(block.original);
+                    if (pending) pendingTypos++;
+                    if (reportErrors) {
+                        String message = pending ? block.original + "（疑似错别字）"
                                 : block.current.isEmpty() && block.type == 6 ? "删除：" + block.original
                                 : "发现错误：" + block.original + " → " + block.current;
                         listener.onError(message + " | 共 " + errorCount + " 处", true);
@@ -1326,7 +1390,7 @@ public final class CorrectionCore {
                             String replacement = LABELS[label]; float confidence = prediction.confidence[i]; char character = part.charAt(i);
                             if (!replacement.equals(String.valueOf(character)) && confidence >= thresholds[label]) {
                                 MainActivity.TextBlock block = map[inferenceOffset + i]; block.current = replacement; block.modelCorrected = replacement; block.isMutable = true; block.conf = confidence; block.type = 1; errorCount++;
-                                if (listener != null) listener.onError("发现错误：" + character + " → " + replacement + " (置信度:" + String.format(Locale.getDefault(), "%.2f", confidence) + ") | 共 " + errorCount + " 处", false);
+                                if (reportErrors) listener.onError("发现错误：" + character + " → " + replacement + " (置信度:" + String.format(Locale.getDefault(), "%.2f", confidence) + ") | 共 " + errorCount + " 处", false);
                             }
                         }
                         inferenceOffset = end;
@@ -1345,7 +1409,7 @@ public final class CorrectionCore {
         }
         if (listener != null && listener.isCancelled()) return null;
         long elapsed = android.os.SystemClock.elapsedRealtime() - startTime;
-        Result result=new Result(allBlocks, fullCleanText.toString(), errorCount, elapsed); result.modelNanos=modelNanos;result.modelCalls=modelCalls;result.reviewCalls=reviewCalls;return result;
+        Result result=new Result(allBlocks, fullCleanText.toString(), errorCount, pendingTypos, elapsed); result.modelNanos=modelNanos;result.modelCalls=modelCalls;result.reviewCalls=reviewCalls;return result;
     }
 
     // Only untouched contiguous source spans can receive a lower-priority suggestion.
@@ -1624,8 +1688,15 @@ public final class CorrectionCore {
         }
     }
     private static void markProtectedTargets(String text, boolean[] ignored) {
-        for (Pattern pattern : MainActivity.protectedTargetPatterns) {
-            Matcher matcher = pattern.matcher(text);
+        int active = 0;
+        for (int i = 0; i < text.length(); i++) {
+            int label = "的地得做作".indexOf(text.charAt(i));
+            if (label >= 0 && !ignored[i]) active |= 1 << label;
+        }
+        if (active == 0) return;
+        for (MainActivity.TargetProtection rule : MainActivity.protectedTargetPatterns) {
+            if ((rule.targetMask & active) == 0) continue;
+            Matcher matcher = rule.pattern.matcher(text);
             while (matcher.find()) {
                 int index = matcher.start(1);
                 if (index >= 0 && index < ignored.length && isTarget(text.charAt(index))) ignored[index] = true;
@@ -1749,17 +1820,17 @@ cat > "app/src/main/java/com/app/dedede/FilePickerActivity.java" <<'DEDEDE_SOURC
 package com.app.dedede;
 import android.app.Activity;
 import android.content.Intent;
+import android.content.ClipData;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.widget.Toast;
 import androidx.core.content.ContextCompat;
-import java.util.ArrayList;
-import java.util.List;
 
 public class FilePickerActivity extends Activity {
     @Override protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        if (savedInstanceState != null) return;
         AppToast.show(this, "支持 txt、md、docx、pptx、pdf 及图片格式\n(最多支持上传20个)", Toast.LENGTH_LONG);
         Intent intent = new Intent(Intent.ACTION_GET_CONTENT);
         intent.setType("*/*");
@@ -1771,39 +1842,23 @@ public class FilePickerActivity extends Activity {
     @Override protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
         if (requestCode != 103 || resultCode != RESULT_OK || data == null) { finish(); return; }
-        List<Uri> uris = new ArrayList<>();
-        if (data.getClipData() != null) {
-            int count = data.getClipData().getItemCount();
-            for (int i = 0; i < Math.min(count, 20); i++) uris.add(data.getClipData().getItemAt(i).getUri());
-        } else if (data.getData() != null) {
-            uris.add(data.getData());
+        ClipData selected = data.getClipData(), files = null;
+        int count = selected == null ? 1 : Math.min(selected.getItemCount(), 20);
+        for (int i = 0; i < count; i++) {
+            Uri uri = selected == null ? data.getData() : selected.getItemAt(i).getUri();
+            if (uri == null) continue;
+            if (files == null) files = ClipData.newRawUri("files", uri);
+            else files.addItem(new ClipData.Item(uri));
         }
-        if (uris.isEmpty()) { finish(); return; }
-        AppToast.show(this, "正在处理导入文件，请稍候...", Toast.LENGTH_SHORT);
-        AppExecutors.IO.execute(() -> {
-            StringBuilder combined = new StringBuilder(); String failure = "";
-            for (int i = 0; i < uris.size(); i++) {
-                if (isDestroyed() || isFinishing()) return;
-                String text = MainActivity.extractTextFromUriSync(getApplicationContext(), uris.get(i), null);
-                if (text != null && !text.trim().isEmpty()) {
-                    if (combined.length() > 0) combined.append("\n\n---------------------------------\n\n");
-                    combined.append(text);
-                } else failure = MainActivity.getLastExtractError();
-            }
-            String finalText = combined.toString(), detail = failure;
-            AppExecutors.MAIN.post(() -> {
-                if (isDestroyed() || isFinishing()) return;
-                if (!finalText.trim().isEmpty()) {
-                    Intent serviceIntent = new Intent(this, FloatingService.class);
-                    serviceIntent.putExtra("IMPORTED_TEXT", finalText);
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) ContextCompat.startForegroundService(this, serviceIntent);
-                    else startService(serviceIntent);
-                } else {
-                    AppToast.show(this, detail.isEmpty() ? "无法读取文件内容或内容为空" : "导入失败：" + detail, Toast.LENGTH_LONG);
-                }
-                finish();
-            });
-        });
+        if (files != null) {
+            // Forward the read grant. The service reads the document off the UI thread.
+            Intent service = new Intent(this, FloatingService.class);
+            service.setClipData(files);
+            service.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) ContextCompat.startForegroundService(this, service);
+            else startService(service);
+        }
+        finish();
     }
 }
 DEDEDE_SOURCE_EOF
@@ -1958,23 +2013,68 @@ public class FloatingService extends Service {
         if (!shared.text.equals(text)) {
             restoringFloatInput = true;
             try { editFloatInput.setText(shared.text); } finally { restoringFloatInput = false; }
-            currentHistoryFileId = null; lastCorrectedText = ""; MainActivity.hasNewFloatResult = false; MainActivity.pendingFloatSourceText = null;
+            invalidateFloatResult();
             if (!destroyed) showStatus("其他窗口已更新文本，已同步最新内容。", true);
         }
     }
+    private void invalidateFloatResult() {
+        if (isChecking) {
+            isInterruptRequested = true;
+            inferenceGeneration++;
+            isChecking = false;
+            btnFloatSwitch.setEnabled(true);
+            circleSpin.setVisibility(View.INVISIBLE);
+            floatProgressBar.setVisibility(View.GONE);
+            showStatus("原文已修改，本次纠错已中断。", true);
+        }
+        currentHistoryFileId = null;
+        lastCorrectedText = "";
+        MainActivity.hasNewFloatResult = false; MainActivity.pendingFloatSourceText = null;
+    }
+
     private void refreshFloatInput() {
         flushFloatInputSync();
         DraftSync.Snapshot shared = DraftSync.read(sp); floatDraftRevision = shared.revision;
         if (shared.text.equals(editFloatInput.getText().toString())) return;
         restoringFloatInput = true;
         try { editFloatInput.setText(shared.text); } finally { restoringFloatInput = false; }
-        currentHistoryFileId = null; lastCorrectedText = ""; MainActivity.hasNewFloatResult = false; MainActivity.pendingFloatSourceText = null;
+        invalidateFloatResult();
     }
 
+    private volatile int importGeneration;
+
     @Override public int onStartCommand(Intent intent, int flags, int startId) {
-        if (intent != null && intent.hasExtra("IMPORTED_TEXT")) {
-            String text = intent.getStringExtra("IMPORTED_TEXT");
-            if (editFloatInput != null) MainActivity.checkAndPromptCleanup(this, text, cleaned -> {
+        ClipData files = intent == null ? null : intent.getClipData();
+        if (files != null && editFloatInput != null) {
+            final int generation = ++importGeneration;
+            AppToast.show(this, "正在处理导入文件，请稍候...", Toast.LENGTH_SHORT);
+            AppExecutors.IO.execute(() -> importFiles(files, generation));
+        }
+        return START_NOT_STICKY;
+    }
+
+    private void importFiles(ClipData files, int generation) {
+        StringBuilder combined = new StringBuilder();
+        String failure = "";
+        for (int i = 0; i < Math.min(files.getItemCount(), 20); i++) {
+            if (destroyed || generation != importGeneration) return;
+            android.net.Uri uri = files.getItemAt(i).getUri();
+            if (uri == null) continue;
+            String text = MainActivity.extractTextFromUriSync(this, uri, null);
+            if (text != null && !text.trim().isEmpty()) {
+                if (combined.length() > 0) combined.append("\n\n---------------------------------\n\n");
+                combined.append(text);
+            } else failure = MainActivity.getLastExtractError();
+        }
+        String text = combined.toString(), detail = failure;
+        AppExecutors.MAIN.post(() -> {
+            if (destroyed || generation != importGeneration) return;
+            if (text.isEmpty()) {
+                AppToast.show(this, detail.isEmpty() ? "无法读取文件内容或内容为空" : "导入失败：" + detail, Toast.LENGTH_LONG);
+                return;
+            }
+            MainActivity.checkAndPromptCleanup(this, text, cleaned -> {
+                if (destroyed || generation != importGeneration) return;
                 currentHistoryFileId = null;
                 editFloatInput.setText(cleaned);
                 publishFloatText(cleaned);
@@ -1982,8 +2082,7 @@ public class FloatingService extends Service {
                 AppToast.show(this, "导入成功", Toast.LENGTH_SHORT);
                 if (panelInput.getVisibility() != View.VISIBLE) { panelInput.setVisibility(View.VISIBLE); setFocusable(true); }
             });
-        }
-        return START_NOT_STICKY;
+        });
     }
 
     @SuppressLint("ClickableViewAccessibility")
@@ -2034,18 +2133,7 @@ public class FloatingService extends Service {
                 if (!changed || restoringFloatInput) return;
                 if (!floatSyncDirty) floatDraftRevision = DraftSync.read(sp).revision;
                 floatSyncDirty = true;
-                if (isChecking) {
-                    isInterruptRequested = true;
-                    inferenceGeneration++;
-                    isChecking = false;
-                    btnFloatSwitch.setEnabled(true);
-                    circleSpin.setVisibility(View.INVISIBLE);
-                    floatProgressBar.setVisibility(View.GONE);
-                    showStatus("原文已修改，本次纠错已中断。", true);
-                }
-                currentHistoryFileId = null;
-                lastCorrectedText = "";
-                MainActivity.hasNewFloatResult = false; MainActivity.pendingFloatSourceText = null;
+                invalidateFloatResult();
                 if (s.length() > 0 && !sp.getBoolean("is_fast_mode", false)) MainActivity.warmProEngineAsync(FloatingService.this);
                 AppExecutors.MAIN.removeCallbacks(syncTextRunnable);
                 AppExecutors.MAIN.postDelayed(syncTextRunnable, 400);
@@ -2093,10 +2181,9 @@ public class FloatingService extends Service {
         });
 
         Runnable jumpToApp = () -> {
-            flushFloatInputSync();
-            publishFloatText(editFloatInput.getText().toString());
+            refreshFloatInput();
             if (MainActivity.isEditorOpen) { AppToast.show(this, "编辑模式中无法跳转，请先保存或退出。", Toast.LENGTH_SHORT); return; }
-            Intent intent = new Intent(this, MainActivity.class); intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP); intent.putExtra("SYNC_TEXT", editFloatInput.getText().toString()); intent.putExtra("FROM_FLOAT_JUMP", true); startActivity(intent);
+            Intent intent = new Intent(this, MainActivity.class); intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP); intent.putExtra("FROM_FLOAT_JUMP", true); startActivity(intent);
             panelInput.setVisibility(View.GONE); setFocusable(false);
         };
         btnJump.setOnClickListener(v -> jumpToApp.run()); btnClose.setOnClickListener(v -> stopSelf());
@@ -2245,10 +2332,18 @@ public class FloatingService extends Service {
                     @Override public void onError(String message, boolean minimumDisplay) { if (generation == inferenceGeneration && !isInterruptRequested) showErrorStatus(message); }
                 });
                 if (result == null || isInterruptRequested || destroyed || generation != inferenceGeneration) { finishInterrupted(generation); return; }
-                lastCorrectedText = result.cleanText;
-                MainActivity.pendingFloatBlocks = result.blocks; MainActivity.pendingFloatTimeMs = result.elapsedMs; MainActivity.pendingFloatFileId = fileId; MainActivity.pendingFloatSourceText = text; MainActivity.hasNewFloatResult = true;
                 HistoryStore.saveBlocks(this, fileId, result.blocks, result.elapsedMs);
-                AppExecutors.MAIN.post(() -> { if (MainActivity.instance != null && !MainActivity.instance.isFinishing()) MainActivity.instance.onFloatResultReady(); });
+                AppExecutors.MAIN.post(() -> {
+                    if (destroyed || isInterruptRequested || generation != inferenceGeneration) return;
+                    lastCorrectedText = result.cleanText;
+                    MainActivity.pendingFloatBlocks = result.blocks;
+                    MainActivity.pendingFloatTimeMs = result.elapsedMs;
+                    MainActivity.pendingFloatFileId = fileId;
+                    MainActivity.pendingFloatSourceText = text;
+                    MainActivity.hasNewFloatResult = true;
+                    if (MainActivity.instance != null && !MainActivity.instance.isFinishing())
+                        MainActivity.instance.onFloatResultReady();
+                });
                 finishAfterLastErrorIsVisible(result, generation);
             } catch (Throwable exception) {
                 AppExecutors.MAIN.post(() -> {
@@ -2269,7 +2364,10 @@ public class FloatingService extends Service {
         if (destroyed || isInterruptRequested || generation != inferenceGeneration) { finishInterrupted(generation); return; }
         isChecking = false; btnFloatSwitch.setEnabled(true); circleSpin.setVisibility(View.INVISIBLE);
         String elapsed = String.format(Locale.getDefault(), "%.2f", result.elapsedMs / 1000.0);
-        showStatus((result.errorCount == 0 ? "未发现错误" : "共更正 " + result.errorCount + " 处错误") + "，耗时 " + elapsed + " 秒", true);
+        int corrected = result.errorCount - result.pendingTypos;
+        String summary = result.errorCount == 0 ? "未发现错误" : "共更正 " + corrected + " 处错误";
+        if (result.pendingTypos > 0) summary += "，另有 " + result.pendingTypos + " 处疑似错别字";
+        showStatus(summary + "，耗时 " + elapsed + " 秒", true);
         ClipboardManager clipboard = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
         if (clipboard != null) clipboard.setPrimaryClip(ClipData.newPlainText("Corrected", result.cleanText));
     }
@@ -2978,7 +3076,17 @@ public class MainActivity extends AppCompatActivity {
         for (int i = 0; i < text.length(); i++) { char c = text.charAt(i); if (c == '*') stars++; else if (c == '#') hashes++; else if (c == '-') dashes++; }
         if (stars < 4 && hashes < 4 && dashes < 4) { if (callback != null) callback.onCleaned(text); return; }
         isCleanDialogOpen = true; SymbolCleanActivity.callback = callback;
-        Intent intent = new Intent(context, SymbolCleanActivity.class); intent.putExtra("raw_text", text); intent.putExtra("star", stars >= 4); intent.putExtra("hash", hashes >= 4); intent.putExtra("dash", dashes >= 4); intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP); context.startActivity(intent);
+        SymbolCleanActivity.pendingText = text;
+        Intent intent = new Intent(context, SymbolCleanActivity.class); intent.putExtra("star", stars >= 4); intent.putExtra("hash", hashes >= 4); intent.putExtra("dash", dashes >= 4); intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
+        try {
+            context.startActivity(intent);
+        } catch (RuntimeException error) {
+            isCleanDialogOpen = false;
+            SymbolCleanActivity.pendingText = null;
+            SymbolCleanActivity.callback = null;
+            android.util.Log.w("Dedede", "无法打开符号清理提示", error);
+            if (callback != null) callback.onCleaned(text);
+        }
     }
 
     public static class QuantifierRule {
@@ -3155,12 +3263,79 @@ public class MainActivity extends AppCompatActivity {
     }
     public static final Map<Character, QuantifierRule> quantRules = new HashMap<>();
     public static final List<GramRule> gramRules = new ArrayList<>();
-    public static final List<Pattern> protectedTargetPatterns = new ArrayList<>();
+    static final class TargetProtection {
+        final Pattern pattern;
+        final int targetMask;
+
+        TargetProtection(String regex) {
+            pattern = Pattern.compile(regex);
+            targetMask = capturedTargets(regex);
+        }
+
+        // A protection only marks the start of capture 1. For the literal captures
+        // used here we can skip the regex when those letters are already protected or absent.
+        // Leave other capture/group syntax on the full matching path.
+        private static int capturedTargets(String regex) {
+            int classDepth = 0;
+            for (int i = 0; i < regex.length(); i++) {
+                char c = regex.charAt(i);
+                if (c == '\\') {
+                    if (++i < regex.length() && regex.charAt(i) == 'Q') return 31;
+                } else if (c == '[') {
+                    classDepth++;
+                } else if (c == ']' && classDepth > 0) {
+                    classDepth--;
+                } else if (c == '(' && classDepth == 0) {
+                    if (regex.startsWith("(?:", i) || regex.startsWith("(?=", i) || regex.startsWith("(?!", i)
+                            || regex.startsWith("(?<=", i) || regex.startsWith("(?<!", i)) continue;
+                    if (i + 2 < regex.length() && regex.charAt(i + 2) == ')') {
+                        int label = "的地得做作".indexOf(regex.charAt(i + 1));
+                        if (label >= 0) return 1 << label;
+                    }
+                    if (regex.startsWith("([做作])", i)) return (1 << 3) | (1 << 4);
+                    return 31;
+                }
+            }
+            return 31;
+        }
+    }
+    static final List<TargetProtection> protectedTargetPatterns = new ArrayList<>();
+    // Index the same necessary literals that GramRule.mayMatch already checks.
+    // Candidate bits retain registration order, including rule priority at overlapping positions.
+    private static final java.util.BitSet[] grammarByChar = new java.util.BitSet[65536];
+    private static final java.util.BitSet grammarAlways = new java.util.BitSet();
+
+    private static void indexGrammarRules() {
+        Arrays.fill(grammarByChar, null);
+        grammarAlways.clear();
+        for (int i = 0; i < gramRules.size(); i++) {
+            GramRule rule = gramRules.get(i);
+            if (rule.requiredLiteral != null) registerGrammarChar(rule.requiredLiteral.charAt(0), i);
+            else if (rule.requiredAny != null) {
+                for (String token : rule.requiredAny) registerGrammarChar(token.charAt(0), i);
+            } else grammarAlways.set(i);
+        }
+    }
+
+    private static void registerGrammarChar(char ch, int rule) {
+        if (grammarByChar[ch] == null) grammarByChar[ch] = new java.util.BitSet();
+        grammarByChar[ch].set(rule);
+    }
+
+    static java.util.BitSet grammarCandidates(String sentence) {
+        java.util.BitSet candidates = (java.util.BitSet) grammarAlways.clone();
+        for (int i = 0; i < sentence.length(); i++) {
+            java.util.BitSet group = grammarByChar[sentence.charAt(i)];
+            if (group != null) candidates.or(group);
+        }
+        return candidates;
+    }
+
     private static boolean rulesAttempted;
 
     private static void addRule(String regex, String[][] options) { gramRules.add(new GramRule(regex, options, false)); }
     private static void addProfessionalRule(String regex, String[][] options) { gramRules.add(new GramRule(regex, options, true)); }
-    private static void addProtectedTargetPattern(String regex) { protectedTargetPatterns.add(Pattern.compile(regex)); }
+    private static void addProtectedTargetPattern(String regex) { protectedTargetPatterns.add(new TargetProtection(regex)); }
 
     public static synchronized void ensureRulesLoaded() {
         if (rulesAttempted) return;
@@ -3654,6 +3829,7 @@ public class MainActivity extends AppCompatActivity {
             addRule("(渡过)((?:了)?[ 　]*(?:[一二三四五六七八九十百千万两几多]?[个段次年天月周日]?[的美好愉快漫长幸福痛苦难忘快乐平淡充实短暂]{0,6}))(童年|少年|青年|晚年|余生|一生|岁月|时光|时间|日子|假期|暑假|寒假|周末|佳节|节日|春节|中秋|国庆|生日|夜晚|良宵|春秋|光阴)", new String[][]{{"度过", null, "搭配不当"}});
             addRule("(度过)((?:了)?[ 　]*(?:这|那|一|两|几|多|各)?[个道场次]?)(难关|危机|劫难|险关)", new String[][]{{"渡过", null, "搭配不当"}});
             quantRules.put('牛', new QuantifierRule("头", "头")); quantRules.put('马', new QuantifierRule("匹", "匹")); quantRules.put('狗', new QuantifierRule("只", "只条")); quantRules.put('猫', new QuantifierRule("只", "只")); quantRules.put('猪', new QuantifierRule("头", "头口只")); quantRules.put('羊', new QuantifierRule("只", "只头")); quantRules.put('鸡', new QuantifierRule("只", "只")); quantRules.put('鸭', new QuantifierRule("只", "只")); quantRules.put('鹅', new QuantifierRule("只", "只")); quantRules.put('鸟', new QuantifierRule("只", "只")); quantRules.put('鱼', new QuantifierRule("条", "条尾")); quantRules.put('门', new QuantifierRule("扇", "扇部")); quantRules.put('车', new QuantifierRule("辆", "辆部台座个"));
+            indexGrammarRules();
         } catch (Throwable error) { rulesAttempted=false;gramRules.clear();quantRules.clear();protectedTargetPatterns.clear();throw new IllegalStateException("语法规则加载失败",error); }
     }
 
@@ -5199,7 +5375,7 @@ public class MainActivity extends AppCompatActivity {
         Intent launchIntent = getIntent();
         boolean firstActivityInProcess = !processSessionInitialized;
         processSessionInitialized = true;
-        boolean carriesExternalText = launchIntent != null && (launchIntent.hasExtra("SYNC_TEXT")
+        boolean carriesExternalText = launchIntent != null && (launchIntent.getBooleanExtra("FROM_FLOAT_JUMP", false) || launchIntent.hasExtra("SYNC_TEXT")
                 || (Intent.ACTION_SEND.equals(launchIntent.getAction()) && launchIntent.getType() != null));
         // sync_text 只负责同一进程内主界面与悬浮窗同步，不作为跨进程“草稿恢复”。
         // 系统后台回收后重建必须保留草稿；真正结束任务再从桌面冷启动仍保持原来的清空行为。
@@ -6605,6 +6781,8 @@ public class MainActivity extends AppCompatActivity {
             } else if (intent.getType().startsWith("image/")) {
                 android.net.Uri uri = intent.getParcelableExtra(Intent.EXTRA_STREAM); if (uri != null) importFiles(java.util.Collections.singletonList(uri));
             }
+        } else if (intent.getBooleanExtra("FROM_FLOAT_JUMP", false)) {
+            acceptExternalDraft(DraftSync.read(sp).text);
         } else if (intent.hasExtra("SYNC_TEXT")) {
             String text = intent.getStringExtra("SYNC_TEXT");
             if (text != null) { acceptExternalDraft(text); DraftSync.publish(sp, text); }
@@ -6755,8 +6933,11 @@ public class MainActivity extends AppCompatActivity {
                 StringBuilder liveErrors = new StringBuilder(), liveText = new StringBuilder(text.length() + 100); int[] processed = {0}, liveErrorCount = {0}, docIndex = {1}; boolean multiDocument = text.contains("---------------------------------"); boolean[] markerPending = {multiDocument};
                 CorrectionCore.Result result = CorrectionCore.run(text, fastMode, temperature, thresholdDe, thresholdDi, thresholdDe3, thresholdZuo, thresholdZuo4, new CorrectionCore.Listener() {
                     @Override public boolean isCancelled() { return !isCheckingMain || generation != inferenceGeneration || isFinishing() || isDestroyed(); }
+                    @Override public boolean wantsErrorMessages() { return false; }
                     @Override public void onError(String message, boolean minimumDisplay) {}
                     @Override public void onProgress(int current, int total, List<List<TextBlock>> completed, int errors, long elapsed) {
+                        // The final result is rendered immediately after run() returns.
+                        if (current == total) return;
                         while (processed[0] < completed.size()) {
                             List<TextBlock> sentence = completed.get(processed[0]++);
                             appendLiveErrors(sentence, liveErrors, liveErrorCount);
@@ -7500,13 +7681,15 @@ import java.util.Set;
 
 public class SymbolCleanActivity extends Activity {
     public static MainActivity.TextCleanCallback callback;
+    // The callback and its source share the same process and dialog lifetime.
+    static String pendingText;
 
     @Override protected void onCreate(Bundle savedInstanceState) {
         overridePendingTransition(0, 0);
         super.onCreate(savedInstanceState);
         getWindow().setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
-        String rawText = getIntent().getStringExtra("raw_text");
-        if (rawText == null) rawText = "";
+        String rawText = pendingText;
+        if (rawText == null) { finish(); return; }
         boolean hasStar = getIntent().getBooleanExtra("star", false);
         boolean hasHash = getIntent().getBooleanExtra("hash", false);
         boolean hasDash = getIntent().getBooleanExtra("dash", false);
@@ -7574,9 +7757,11 @@ public class SymbolCleanActivity extends Activity {
                     d.dismiss();
                 }).create();
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            if (Settings.canDrawOverlays(this)) dialog.getWindow().setType(WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY);
-        } else dialog.getWindow().setType(WindowManager.LayoutParams.TYPE_PHONE);
+        if (Settings.canDrawOverlays(this)) {
+            int type = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
+                    ? WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY : WindowManager.LayoutParams.TYPE_PHONE;
+            dialog.getWindow().setType(type);
+        }
         dialog.getWindow().setBackgroundDrawable(new ColorDrawable(0xFFFFFFFF));
         dialog.setOnShowListener(d -> {
             dialog.getButton(AlertDialog.BUTTON_POSITIVE).setTextColor(0xFF4CAF50);
@@ -7595,6 +7780,7 @@ public class SymbolCleanActivity extends Activity {
     }
 
     @Override public void finish() {
+        pendingText = null;
         callback = null;
         MainActivity.isCleanDialogOpen = false;
         super.finish();
