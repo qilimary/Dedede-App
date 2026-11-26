@@ -1328,7 +1328,7 @@ public final class CorrectionCore {
         int sentenceOffset = 0, skipUntil = 0;
         List<String> sentences = splitText(text, text.length());
         List<List<MainActivity.TextBlock>> stage = new ArrayList<>(sentences.size());
-        int[] stageStarts = new int[sentences.size()], stageSentences = new int[sentences.size()];
+        int[] stageStarts = new int[sentences.size()], stageSentences = new int[sentences.size()], stageSentenceStarts = new int[sentences.size()];
         // Reuse the original document until a projected block actually diverges.
         StringBuilder projection = null;
         int projectedPrefix = 0;
@@ -1346,14 +1346,11 @@ public final class CorrectionCore {
                 continue;
             }
 
-            boolean[] exactPositions = Arrays.copyOfRange(exactAll, sentenceStart, sentenceOffset);
-            boolean[] blockedPositions = Arrays.copyOfRange(blockedAll, sentenceStart, sentenceOffset);
-            boolean[] protectedPositions = blockedPositions.clone();
-            for (int i = 0; i < protectedPositions.length; i++) protectedPositions[i] |= exactPositions[i];
+            boolean[] protectedPositions = Arrays.copyOfRange(blockedAll, sentenceStart, sentenceOffset);
+            for (int i = 0; i < protectedPositions.length; i++) protectedPositions[i] |= exactAll[sentenceStart + i];
             List<MainActivity.TextBlock> intermediate = new ArrayList<>(4);
             int cursor = Math.max(0, skipUntil - sentenceStart);
             int originalStart = sentenceStart + cursor, plainStart = cursor;
-            boolean hasDictionaryCorrection = false;
             while (cursor < sentence.length()) {
                 if (listener != null && listener.isCancelled()) return null;
 
@@ -1373,7 +1370,6 @@ public final class CorrectionCore {
                     boolean real = !typoMatch.source.equals(typoMatch.correction);
                     int type = typoMatch.custom ? 4 : 2;
                     intermediate.add(new MainActivity.TextBlock(typoMatch.source, typoMatch.correction, real, 1.0f, type));
-                    hasDictionaryCorrection |= real && !typoMatch.custom;
                     cursor += typoMatch.source.length();
                     plainStart = cursor;
                     skipUntil = Math.max(skipUntil, sentenceStart + cursor);
@@ -1384,10 +1380,8 @@ public final class CorrectionCore {
             }
             appendPlainSpan(intermediate, sentence, plainStart, sentence.length());
 
-            intermediate = applyGrammar(intermediate, fastMode, proofreader, exactAll, originalStart,
-                    hasDictionaryCorrection, blockedPositions, exactPositions, originalStart == sentenceStart, listener);
-            if (intermediate == null) return null;
             stageStarts[stage.size()] = originalStart;
+            stageSentenceStarts[stage.size()] = sentenceStart;
             stageSentences[stage.size()] = sentenceIndex;
             stage.add(intermediate);
             int sourcePosition = originalStart;
@@ -1445,6 +1439,16 @@ public final class CorrectionCore {
             int firstTerm=nextTerm;while(nextTerm<termHits.size()&&termHits.get(nextTerm).start<projectedEnd)nextTerm++;
             if(firstTerm<nextTerm)intermediate=applyProjected(intermediate,termHits,firstTerm,nextTerm,projected,projectedStart,projectedEnd);
             projectedStart=projectedEnd;
+            int sentenceStart = stageSentenceStarts[stageIndex];
+            int sentenceEnd = sentenceStart + sentence.length();
+            boolean hasDictionaryCorrection = false;
+            for (MainActivity.TextBlock block : intermediate) if (isDictionaryCorrection(block)) {hasDictionaryCorrection=true;break;}
+            // Only the unchanged single-block path uses original sentence masks.
+            boolean simpleGrammar = originalStart == sentenceStart && intermediate.size() == 1 && intermediate.get(0).type == 0;
+            intermediate = applyGrammar(intermediate, fastMode, proofreader, exactAll, originalStart,
+                    hasDictionaryCorrection, simpleGrammar ? Arrays.copyOfRange(blockedAll,sentenceStart,sentenceEnd) : null,
+                    simpleGrammar ? Arrays.copyOfRange(exactAll,sentenceStart,sentenceEnd) : null, originalStart==sentenceStart, listener);
+            if (intermediate == null) return null;
             int originalPosition = originalStart;
             for (MainActivity.TextBlock block : intermediate) {
                 if (block.isMutable) {
