@@ -9,7 +9,7 @@ on:
       - app_icon.png
       - lan.png
       - '错别字.txt'
-      - terms.txt
+      - '词库.txt'
       - pinyin.txt
       - '成语.txt'
       - .github/workflows/dedede.yml
