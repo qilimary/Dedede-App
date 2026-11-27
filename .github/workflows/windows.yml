@@ -197,7 +197,7 @@ jobs:
     - dedede-windows.py
     - .github/workflows/windows.yml
     - dedede-build.sh
-    - 错别字.txt
-    - terms.txt
+    - '错别字.txt'
+    - '词库.txt'
     - pinyin.txt
   workflow_dispatch: {}
