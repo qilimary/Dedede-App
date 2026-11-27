@@ -931,7 +931,7 @@ final class TermMatcher {
     static TermMatcher get() throws IOException {
         TermMatcher result=cached;if(result!=null)return result;
         synchronized(TermMatcher.class){
-            if(cached==null)try(BufferedReader p=asset("pinyin.txt");BufferedReader t=asset("terms.txt")){cached=new TermMatcher(p,t);}
+            if(cached==null)try(BufferedReader p=asset("pinyin.txt");BufferedReader t=asset("词库.txt")){cached=new TermMatcher(p,t);}
             return cached;
         }
     }
@@ -8874,7 +8874,7 @@ python3 encrypt.py
 mkdir -p app/src/main/assets app/src/main/res/mipmap-xxxhdpi
 cp generated_security/GeneratedSecuritySeed.java app/src/main/java/com/app/dedede/
 cp generated_security/key-part-a.cpp generated_security/key-part-b.cpp app/src/main/cpp/
-cp pinyin.txt terms.txt sys_core_p.dat sys_vocab_p.dat sys_typo.dat app/src/main/assets/
+cp pinyin.txt 词库.txt sys_core_p.dat sys_vocab_p.dat sys_typo.dat app/src/main/assets/
 rm -f app/src/main/assets/sys_idioms.dat
 cp app_icon.png app/src/main/res/mipmap-xxxhdpi/ic_launcher.png
 python3 protect_rules.py
