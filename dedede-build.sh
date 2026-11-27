@@ -412,6 +412,7 @@ public final class Proofreader {
             }
         }
         wordCount=words.size();
+        if(wordCount==0){roots=first=edges=new int[0];labels=new char[0];terminals=new boolean[0];return;}
         String[] sorted=words.toArray(new String[0]);Arrays.sort(sorted);int capacity=1,max=0;
         for(String word:sorted){capacity+=word.length();max=Math.max(max,word.length());}
         int[] parents=new int[capacity],counts=new int[capacity],path=new int[max+1];char[] chars=new char[capacity];boolean[] ends=new boolean[capacity];
@@ -432,6 +433,12 @@ public final class Proofreader {
     public boolean[] exactPositions(String text){return exactPositions(text,()->false);}
     public boolean[] exactPositions(String text,BooleanSupplier cancelled){
         boolean[] mask=new boolean[text.length()];
+        // Empty optional idiom index: the same all-false mask and cancellation checks,
+        // without the 65536-element root allocation or a per-character lookup.
+        if(wordCount==0){
+            for(int p=0;p<text.length();p+=256)if(cancelled.getAsBoolean())return null;
+            return mask;
+        }
         for(int p=0;p<text.length();p++){
             if((p&255)==0&&cancelled.getAsBoolean())return null;
             int node=roots[text.charAt(p)];if(node==0)continue;
@@ -931,11 +938,15 @@ final class TermMatcher {
     static TermMatcher get() throws IOException {
         TermMatcher result=cached;if(result!=null)return result;
         synchronized(TermMatcher.class){
-            if(cached==null)try(BufferedReader p=asset("pinyin.txt");BufferedReader t=asset("词库.txt")){cached=new TermMatcher(p,t);}
+            if(cached==null)try(BufferedReader p=asset("sys_pinyin.dat");BufferedReader t=asset("sys_terms.dat")){cached=new TermMatcher(p,t);}
             return cached;
         }
     }
-    private static BufferedReader asset(String name)throws IOException{return new BufferedReader(new InputStreamReader(DededeApp.context().getAssets().open(name),java.nio.charset.StandardCharsets.UTF_8));}
+    private static BufferedReader asset(String name)throws IOException{
+        String content=SecureAsset.readUtf8(DededeApp.context(),name);
+        if(content.isEmpty())throw new IOException("术语资源读取失败："+SecureAsset.lastErrorSummary());
+        return new BufferedReader(new StringReader(content));
+    }
     private static String[] words(String text){return text.split("\\s+");}
     private static String entityKey(String name,int position,char reading,boolean person) {
         char[] key = new char[name.length()+2];
@@ -2280,7 +2291,11 @@ public class FloatingService extends Service {
             NotificationChannel channel = new NotificationChannel("float_chan", "悬浮窗后台服务", NotificationManager.IMPORTANCE_LOW);
             getSystemService(NotificationManager.class).createNotificationChannel(channel);
             Notification notification = new Notification.Builder(this, "float_chan").setContentTitle("纠错 Pro").setContentText("悬浮窗运行中").setSmallIcon(R.drawable.ic_dedede_fg).build();
-            startForeground(1, notification);
+            if (Build.VERSION.SDK_INT >= 34) {
+                startForeground(1, notification, android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE);
+            } else {
+                startForeground(1, notification);
+            }
         }
         windowManager = (WindowManager) getSystemService(WINDOW_SERVICE);
         int type = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O ? WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY : WindowManager.LayoutParams.TYPE_PHONE;
@@ -3745,10 +3760,10 @@ public class MainActivity extends AppCompatActivity {
             addRule("(至少|起码|不低于|不少于)([ \\u3000]*)(≥)(?=[ \\u3000]*[0-9零〇一二两三四五六七八九十百千万亿])", new String[][]{{"", null, "下界表达重复"}});
             addRule("(至多|不高于|不超过)([ \\u3000]*)(≤)(?=[ \\u3000]*[0-9零〇一二两三四五六七八九十百千万亿])", new String[][]{{"", null, "上界表达重复"}});
             addRule("(忍俊不禁)()([的地得]?[ 　]*(?:笑出了声音|笑出了声|笑出声音|笑出声来|笑出声|笑得前仰后合|笑得合不拢嘴|笑得直不起腰|笑得停不下来|笑到前仰后合|笑到直不起腰|笑了起来|笑起来|笑了笑|笑个不停|笑不停|发笑起来|发笑了|发笑|笑了|笑着|笑)[ 　]*)(?=[，,。；;！？!?：:、…\n]|$)", new String[][]{{null, "", "语义重复"}});
-            addRule("(忍俊不禁)([的地得]?[ 　]*)(笑了起来|笑起来|笑了笑|发笑起来|发笑了|发笑|笑了|笑着|笑)(?=[ 　]*(?:对着|朝着|向着|跟着|说道|问道|答道|喊道|叫道|骂道|叹道|说|道|问|答|回答|解释|补充|提醒|告诉|喊|叫|骂|叹|讲|谈|对|朝|向|跟|一边|边|又|还|看向|望向|走向|跑向|看|望|瞧|盯|转身|回头|走|跑|坐|站|起身|低头|抬头|点头|摇头|伸手|抬手|挥手|拍|拿|放|递|推|拉|抱|继续|接着|随后|开口))", new String[][]{{null, "", "语义重复"}});
-            addRule("(难言之隐)(的? *)(苦衷|事情|原因)", new String[][]{{null, ""}});
-            addRule("(责无旁贷)(的? *)(责任|义务)", new String[][]{{null, ""}});
-            addRule("(真知灼见)(的? *)(意见|看法|见解)", new String[][]{{null, ""}});
+            addRule("(忍俊不禁)()([的地得]?[ 　]*(?:笑了起来|笑起来|笑了笑|发笑起来|发笑了|发笑|笑了|笑着|笑))(?=[ 　]*(?:对着|朝着|向着|跟着|说道|问道|答道|喊道|叫道|骂道|叹道|说|道|问|答|回答|解释|补充|提醒|告诉|喊|叫|骂|叹|讲|谈|对|朝|向|跟|一边|边|又|还|看向|望向|走向|跑向|看|望|瞧|盯|转身|回头|走|跑|坐|站|起身|低头|抬头|点头|摇头|伸手|抬手|挥手|拍|拿|放|递|推|拉|抱|继续|接着|随后|开口))", new String[][]{{null, "", "语义重复"}});
+            addRule("(难言之隐)()([ 　]*的?[ 　]*(?:苦衷|事情|原因))", new String[][]{{null, ""}});
+            addRule("(责无旁贷[ 　]*的?[ 　]*)()(责任|义务)", new String[][]{{"不可推卸的", null}});
+            addRule("(真知灼见)()([ 　]*的?[ 　]*(?:意见|看法|见解))", new String[][]{{null, ""}});
             addRule("((?:每个|每位|每名|(?:[0-9]{1,4}|[一二两三四五六七八九十百千万零〇]{1,8}|几|若干)(?:个|名|位))[ 　]*(?:学生|老师|同学|职工|员工|工人|医生|护士|警察|司机|顾客|居民|旅客|观众|群众|记者|代表|志愿者|乘客|家长|青年|老人|专家|教授|学生代表|教师|职员|研究员|运动员|科研人员))()(们)(?=$|[都也和与是有各已在会能到来走去说做发讲，,。；;！？!?：:\\n])", new String[][]{{null, "", "语义重复"}});
             addRule("((?:是|成为|变成|被视为)[ 　]*(?:当前|眼下|目前|当下)?当务之急)()([ 　]*的工作)(?=$|[，,。；;！？!?：:\\n])", new String[][]{{null, "", "语义重复"}});
             addRule("((?:荣获|获得|取得)[^，,。；;！？!?：:\\n]{0,16}?殊荣)()([ 　]*称号)(?=$|[的，,。；;！？!?：:\\n])", new String[][]{{null, "", "语义重复"}});
@@ -3758,18 +3773,18 @@ public class MainActivity extends AppCompatActivity {
             addRule("(最多|至多|最高)([ 　]*)(不超过|不高于|不能超过|不能高于)(?=[ 　]*[0-9零〇一二两三四五六七八九十百千万亿])", new String[][]{{null, "", "语义重复"}, {"", null, "语义重复"}});
             addRule("(最少|至少|最低)([ 　]*)(不少于|不低于|不能少于|不能低于)(?=[ 　]*[0-9零〇一二两三四五六七八九十百千万亿])", new String[][]{{null, "", "语义重复"}, {"", null, "语义重复"}});
             addRule("(一直|始终|长期)([ 　]*)(悬而未决)(?=[，,。；;！？!?：:\\n]|$)", new String[][]{{"", null, "语义重复"}});
-            addRule("(各种|各类|各种各样)(的?[ 　]*)(形形色色)(?=[ 　]*(?:的人|的物品|的事物|的商品))", new String[][]{{"", null, "语义重复"}});
+            addRule("((?:各种各样|各种|各类)的?[ 　]*)()(形形色色)(?=[ 　]*(?:的人|的物品|的事物|的商品))", new String[][]{{"", null, "语义重复"}});
             // “许多学校的”修饰学校，且“所有”表示范围，均不能当成重复数量词删除。
             addRule("((?:许多|众多|很多|广大|无数|一大批|大量|万千)(?:[ 　]*的)?)([ 　]*(?:(?:来自[^，,。；;！？!?：:\\n]{1,13}|优秀|勤奋|年轻|杰出)的[ 　]*)?)(莘莘学子)", new String[][]{{"", null, "语义重复：“莘莘”本身已表示众多"}});
             addRule("(漫山遍野|铺天盖地|满山遍野)([ 　]*)(到处|随处|处处)(?=[ 　]*(?:都是|可见|是))", new String[][]{{null, "", "语义重复"}});
             addRule("(人为(?:地|的)?)([ 　]*)(蓄意破坏|蓄意)(?=[，,。；;！？!?：:\\n]|$|的)", new String[][]{{"", null, "语义重复"}});
             addRule("(更加|越发|日益|变得更加)([ 　]*)(变本加厉)(?=[，,。；;！？!?：:\\n]|$|地)", new String[][]{{"", null, "语义重复"}});
-            addRule("(独自|单独|自己)(一人? *)(孑然一身)(?=[，,。；;！？!?：:\\n]|$)", new String[][]{{null, "", "语义重复"}, {"", null, "语义重复"}});
+            addRule("((?:独自|单独|自己)一人? *)()(孑然一身)(?=[，,。；;！？!?：:\\n]|$)", new String[][]{{null, "", "语义重复"}, {"", null, "语义重复"}});
             addRule("(各位|诸位|全体|所有)([ \\u3000]*(?:来宾|嘉宾|领导|老师|同学|朋友|专家|代表|家长|观众|员工|职工|学生))(们)", new String[][]{{null, "", "语义重复"}});
             addRule("(我的|我们的|自己的)([ \\u3000]*)(拙见|拙作|拙笔|寒舍|犬子|家父|家母|家兄|舍弟)", new String[][]{{"", null, "成分冗余"}});
             addRule("(超过|高于|多于|大于|(?<!附)近)([ \\u3000]*[0-9零〇一二两三四五六七八九十百千万亿]+[ \\u3000]*)(多|余|来)(?=[个人名位只条头辆部台口把本次场件张岁年月日天米斤克吨元])", new String[][]{{null, "", "重复啰嗦"}});
-            addRule("(?<![目有标])(的)([ \\u3000]*)(的)(?!确|喀)", new String[][]{{null, "", ""}});
-            addRule("(出于[^，,。；;！？!?：:\\n]{1,15}?)(的原因)(的决定)", new String[][]{{null, "", "语义重复"}});
+            addRule("(?<![目有标打之])(的)([ \\u3000]*)(的)(?!确|喀)", new String[][]{{null, "", ""}});
+            addRule("(出于[^，,。；;！？!?：:\\n]{1,15}?)()(的原因)(?=的决定)", new String[][]{{null, "", "语义重复"}});
 
             // ==========================================
             // 5. 句式杂糅与成分残缺 (高频语法病句)
@@ -3947,7 +3962,8 @@ public class MainActivity extends AppCompatActivity {
             addRule("(俩)([ 　]*)(" + pairQuantifiers + ")", new String[][]{{"两", null, ""}});
             addRule("(仨)([ 　]*)(" + pairQuantifiers + ")", new String[][]{{"三", null, ""}});
             addRule("(?<![第零〇一二两三四五六七八九十百千万亿0-9A-Za-z])(二)()((?:个(?=孩子|人|苹果|问题|办法|包子))|(?:本(?=书|小说|教材|杂志|漫画|字典))|(?:部(?=电影|电视剧|小说|作品))|(?:辆(?=车|汽车|自行车|卡车|轿车))|(?:只(?=猫|狗|鸟|鸡|鸭|鹅|兔子))|(?:张(?=桌子|纸|照片|车票|门票))|(?:台(?=电脑|电视|机器|设备)))", new String[][]{{"两", null}});
-            addRule("(?:(?<=数万|几万|上万)|(?<=数十万|数百万))(名)([^，,。；;！？!?：:、\\n]{0,8}?)(人群)", new String[][]{{"人的", ""}});
+            addRule("(?:(?<=数万|几万|上万)|(?<=数十万|数百万))(名[ 　]*)()(人群)", new String[][]{{"人", ""}});
+            addRule("(?:(?<=数万|几万|上万)|(?<=数十万|数百万))(名)([ 　]*(?:热情|激动|围观|欢呼|聚集|现场|当地|愤怒|兴奋|前来|等候|等待|好奇|抗议|游行|观看|参与|参会|到场)的?[ 　]*)(人群)", new String[][]{{null, "群众"}});
 
             addRule("(下降(?:了)?[ 　]*)()(100[ 　]*倍)" + decreaseEnd, new String[][]{{"降至原来的", "百分之一", "下降/缩短等不能用倍数表示"}});
             addRule("(下降(?:了)?[ 　]*)(" + decreaseArabic + ")([ 　]*倍)" + decreaseEnd, new String[][]{{"降至原来的1/", "", "下降/缩短等不能用倍数表示"}});
@@ -4066,7 +4082,7 @@ public class MainActivity extends AppCompatActivity {
     public static final String NUMS = "一二两三四五六七八九十百千万这那几某";
     public static final String KNOWN_QUANTS = "个只条头匹辆部台口尾座把本名位";
     // 保留仍会误改的词汇；仅在两种量化均通过独立上下文回归后移除保护。
-    public static final String[] IGNORE_WORDS = {"得意", "工作", "怎的", "觉得", "拍立得", "打的", "别地", "佛得角", "安的列斯", "的卢", "地王", "地素时尚", "地基", "地高辛", "地氯雷他定", "地诺孕素", "地尔硫卓", "地奥司明", "地芬尼多", "地拉罗司", "得空", "得耳布尔", "大地", "地窝堡", "地峡", "地热", "得梅因", "得力", "得势", "得名", "得志", "得陇望蜀", "地屈孕酮", "地特胰岛素", "得手", "海得拉巴", "地蚕", "地表", "地籍", "地标", "取得", "难得", "地黄", "地耳", "地被菊", "地磁", "枪的扳机", "枪的板机", "挠的人", "被更狠地惩罚","一如既往地","粗糙的大","出声的笑"};
+    public static final String[] IGNORE_WORDS = {"得意", "工作", "怎的", "觉得", "拍立得", "打的", "别地", "佛得角", "安的列斯", "的卢", "地王", "地素时尚", "地基", "地高辛", "地氯雷他定", "地诺孕素", "地尔硫卓", "地奥司明", "地芬尼多", "地拉罗司", "得空", "得耳布尔", "大地", "地窝堡", "地峡", "地热", "得梅因", "得力", "得势", "得名", "得志", "得陇望蜀", "地屈孕酮", "地特胰岛素", "得手", "海得拉巴", "地蚕", "地表", "地籍", "地标", "取得", "难得", "地黄", "地耳", "地被菊", "地磁", "枪的扳机", "枪的板机", "挠的人", "被更狠地惩罚","一如既往地","粗糙的大","出声的笑","淡然的笑"};
     public static final String[] WHITE_LIST = {};
 
     public static boolean isSafeCharAfterNoun(char c) {
@@ -4168,13 +4184,13 @@ public class MainActivity extends AppCompatActivity {
             int entry = terminal[node] - 1;
             if (entry < 0) return null;
             boolean correction = !sources[entry].equals(corrections[entry]);
-            if (!customs[entry] && correction && isFalsePositiveTypo(text, start, sources[entry])) return null;
+            if (!customs[entry] && correction && isFalsePositiveTypo(text, start, sources[entry], corrections[entry])) return null;
             if (!customs[entry] && correction && Proofreader.touchesIdentifier(text, start, start + sources[entry].length())) return null;
-            if (!customs[entry] && !sources[entry].equals(corrections[entry]) && protectedPositions != null)
+            if (!customs[entry] && correction && protectedPositions != null)
                 for (int i = start; i < start + sources[entry].length(); i++) if (protectedPositions[i]) return null;
             if (!customs[entry] && correction && Proofreader.crossesRepetition(text, start, sources[entry], corrections[entry])) return null;
             if (excluded(text, start, entry)) return new TypoMatch(sources[entry], sources[entry], customs[entry]);
-            if (!customs[entry] && !sources[entry].equals(corrections[entry]) && conflicts(text, start, sources[entry], corrections[entry])) return null;
+            if (!customs[entry] && correction && conflicts(text, start, sources[entry], corrections[entry])) return null;
             return new TypoMatch(sources[entry], corrections[entry], customs[entry]);
         }
         boolean conflicts(String sentence, int index, String source, String correction) {
@@ -4197,7 +4213,7 @@ public class MainActivity extends AppCompatActivity {
     }
     public static TypoMatch findTypoMatch(String sentence, int index) { return typoIndex.find(sentence, index); }
 
-    public static boolean isFalsePositiveTypo(String sentence, int index, String source) {
+    public static boolean isFalsePositiveTypo(String sentence, int index, String source, String correction) {
         for (String white : WHITE_LIST) {
             if (white == null || white.isEmpty()) continue;
             int searchStart = Math.max(0, index - white.length()), searchEnd = Math.min(sentence.length(), index + source.length() + white.length());
@@ -4205,7 +4221,13 @@ public class MainActivity extends AppCompatActivity {
                 if(at+white.length()>index&&sentence.startsWith(white,at))return true;
         }
         
-        if (source.charAt(0) == '做' || source.charAt(0) == '作') {
+        // “做弊”不是有歧义的动宾搭配，允许词库纠正；“做废”（做坏了）仍需上下文保护。
+        if ("做弊".equals(source) && "作弊".equals(correction)) return false;
+        // 只保护首字“做/作”互换的词，不拦截作崇→作祟等修改其他字的错误。
+        if (source.length() == correction.length() && !source.isEmpty()
+                && ((source.charAt(0) == '做' && correction.charAt(0) == '作')
+                || (source.charAt(0) == '作' && correction.charAt(0) == '做'))
+                && source.regionMatches(1, correction, 1, source.length() - 1)) {
             if (index > 0 && "创去要在该想会能可来把给多没不曾刚才将正就爱肯敢配帮替让叫使令".indexOf(sentence.charAt(index - 1)) >= 0) return true;
             if (index + source.length() < sentence.length() && "扇筝联山发牙眼肢手脚衣裤帽鞋饭菜汤了".indexOf(sentence.charAt(index + source.length())) >= 0) return true;
         }
@@ -4238,7 +4260,11 @@ public class MainActivity extends AppCompatActivity {
                 int y = (int) event.getY() - widget.getTotalPaddingTop() + widget.getScrollY();
                 Layout layout = widget.getLayout();
                 if (layout != null) {
-                    int line = layout.getLineForVertical(y), offset = layout.getOffsetForHorizontal(line, x);
+                    if (y < 0 || y >= layout.getHeight()) return false;
+                    int line = layout.getLineForVertical(y);
+                    // 不调用父类的链接定位：父类同样会把行外空白钳到最近字符。
+                    if (x < layout.getLineLeft(line) || x >= layout.getLineRight(line)) return false;
+                    int offset = layout.getOffsetForHorizontal(line, x);
                     ClickableSpan[] links = buffer.getSpans(offset, offset, ClickableSpan.class);
                     if (links.length > 0) { if (action == MotionEvent.ACTION_UP) links[0].onClick(widget); return true; }
                 }
@@ -4528,7 +4554,7 @@ public class MainActivity extends AppCompatActivity {
             while ((line = reader.readLine()) != null) parseTypoLine(line, words, exclusions);
         } catch (Exception error) { throw new IllegalStateException("错词库加载失败",error); }
         // 内置白名单：匹配整词后保护其中的五字，不截断前面开始的更长错词；用户白名单另有跨词保护。
-        for (String word : new String[]{"舒的", "怎的", "能的", "您的", "得得得", "得吃", "得逞", "折射得", "简单得只有", "简单得甚至", "去想的那些", "吊儿郎当的，", "来了个猛的", "来个猛的", "书里写的那般", "作甚", "下得山来", "十里地", "百里地", "几里地", "谈不到一块的", "同样地，", "长久的凝视", "没有书上写的那么", "眼见得", "漫长得没有", "出门得通过", "本地话", "当家做主", "做笔记", "做了标记", "做过的调整", "得道成仙", "得道了", "目的地", "断断续续地，", "支吾地回", "晓得初中", "药厂产的，", "实时的云", "可靠的网", "精确的图", "得脸的样子", "直得起腰杆", "领导的做派", "客气地挽留", "真诚地挽留", "知书达礼", "可造之材", "做了点评", "被绑的那", "承受的恐怕"}) { words.put(word, word); exclusions.remove(word); }
+        for (String word : new String[]{"舒的", "怎的", "能的", "您的", "得得得", "得吃", "得逞", "折射得", "简单得只有", "简单得甚至", "去想的那些", "吊儿郎当的，", "来了个猛的", "来个猛的", "书里写的那般", "作甚", "下得山来", "十里地", "百里地", "几里地", "谈不到一块的", "同样地，", "长久的凝视", "没有书上写的那么", "眼见得", "漫长得没有", "出门得通过", "本地话", "当家做主", "做笔记", "做了标记", "做过的调整", "得道成仙", "得道了", "目的地", "断断续续地，", "支吾地回", "晓得初中", "药厂产的，", "实时的云", "可靠的网", "精确的图", "得脸的样子", "直得起腰杆", "领导的做派", "客气地挽留", "真诚地挽留", "知书达礼", "可造之材", "做了点评", "被绑的那", "承受的恐怕", "淡然的笑"}) { words.put(word, word); exclusions.remove(word); }
         try {
             JSONObject custom = new JSONObject(context.getSharedPreferences("DededeConfig", MODE_PRIVATE).getString("custom_typos", "{}")); Iterator<String> keys = custom.keys();
             while (keys.hasNext()) { String source = keys.next(); if (source.isEmpty()) continue;
@@ -4836,6 +4862,25 @@ public class MainActivity extends AppCompatActivity {
         return boundaries;
     }
 
+    // 仅在 OCR 导入路径拼接硬换行；保留空行、明确段末标点及缩进。
+    private static String joinOcrHardBreaks(String text) {
+        StringBuilder joined = new StringBuilder(text.length());
+        int start = 0;
+        for (int i = 0; i < text.length(); i++) {
+            char c = text.charAt(i);
+            if (c != '\n') continue;
+            int end = i;
+            while (end > start && (text.charAt(end - 1) == ' ' || text.charAt(end - 1) == '\t'
+                    || text.charAt(end - 1) == '\r' || text.charAt(end - 1) == '　')) end--;
+            boolean merge = end > start && i + 1 < text.length()
+                    && isChinese(text.charAt(i + 1))
+                    && "。！？!?．.；;…：:！？”’」』）】》〉\"".indexOf(text.charAt(end - 1)) < 0;
+            joined.append(text, start, merge ? end : i + 1);
+            start = i + 1;
+        }
+        return joined.append(text, start, text.length()).toString();
+    }
+
     private static String joinOcrLines(List<OcrLineResult> lines) {
         StringBuilder result = new StringBuilder();
         for (OcrLineResult line : lines) {
@@ -4853,7 +4898,7 @@ public class MainActivity extends AppCompatActivity {
         if (fullBitmap.getHeight() <= OCR_SINGLE_PASS_MAX_HEIGHT && pixels <= OCR_SINGLE_PASS_MAX_PIXELS) {
             if (callback != null) AppExecutors.MAIN.post(() -> callback.onProgress(1, 1));
             String value = recognizeInputImage(InputImage.fromBitmap(fullBitmap, 0));
-            return cleanOcrText(fixPunctuation(value));
+            return joinOcrHardBreaks(cleanOcrText(fixPunctuation(value)));
         }
 
         List<Integer> boundaries = buildOcrCoreBoundaries(fullBitmap);
@@ -4890,7 +4935,7 @@ public class MainActivity extends AppCompatActivity {
             }
         }
 
-        return cleanOcrText(fixPunctuation(joinOcrLines(acceptedLines)));
+        return joinOcrHardBreaks(cleanOcrText(fixPunctuation(joinOcrLines(acceptedLines))));
     }
 
     public static String performOcrOnPdf(android.net.Uri uri, Context context, TextExtractCallback callback) throws Exception {
@@ -5386,14 +5431,14 @@ public class MainActivity extends AppCompatActivity {
         int textOffset = sp.getInt("font_offset_text", 0), systemOffset = sp.getInt("font_offset_sys", 0), skinDepth = sp.getInt("skin_depth", 50);
         float density = getResources().getDisplayMetrics().density;
         LinearLayout layout = new LinearLayout(this); layout.setOrientation(LinearLayout.VERTICAL); layout.setPadding((int) (24 * density), (int) (20 * density), (int) (24 * density), (int) (12 * density));
-        TextView title = new TextView(this); title.setText("调节字体大小"); title.setTextSize(18f); title.setTextColor(Color.BLACK); title.setTypeface(android.graphics.Typeface.create("sans-serif-medium", 0));
-        TextView textLabel = new TextView(this); textLabel.setText("正文字号 (输入/输出/便签): " + (15 + textOffset)); textLabel.setTextSize(14f); textLabel.setTextColor(0xFF666666); textLabel.setPadding(0, (int) (18 * density), 0, (int) (4 * density));
+        TextView title = new TextView(this); title.setText("调节字体大小"); title.setTextSize(18f); title.setTextColor(getColor(R.color.text_primary)); title.setTypeface(android.graphics.Typeface.create("sans-serif-medium", 0));
+        TextView textLabel = new TextView(this); textLabel.setText("正文字号 (输入/输出/便签): " + (15 + textOffset)); textLabel.setTextSize(14f); textLabel.setTextColor(getColor(R.color.text_secondary)); textLabel.setPadding(0, (int) (18 * density), 0, (int) (4 * density));
         android.widget.SeekBar textSeek = new android.widget.SeekBar(this); textSeek.setMax(14); textSeek.setProgress(textOffset + 4); textSeek.setPadding((int) (8 * density), 0, (int) (8 * density), (int) (10 * density));
-        TextView systemLabel = new TextView(this); systemLabel.setText("系统字号 (按钮/标题等): " + (systemOffset > 0 ? "+" + systemOffset : systemOffset)); systemLabel.setTextSize(14f); systemLabel.setTextColor(0xFF666666); systemLabel.setPadding(0, (int) (6 * density), 0, (int) (4 * density));
+        TextView systemLabel = new TextView(this); systemLabel.setText("系统字号 (按钮/标题等): " + (systemOffset > 0 ? "+" + systemOffset : systemOffset)); systemLabel.setTextSize(14f); systemLabel.setTextColor(getColor(R.color.text_secondary)); systemLabel.setPadding(0, (int) (6 * density), 0, (int) (4 * density));
         android.widget.SeekBar systemSeek = new android.widget.SeekBar(this); systemSeek.setMax(6); systemSeek.setProgress(Math.max(0, Math.min(6, systemOffset + 3))); systemSeek.setPadding((int) (8 * density), 0, (int) (8 * density), (int) (10 * density));
 
         LinearLayout skinRow = new LinearLayout(this); skinRow.setOrientation(LinearLayout.HORIZONTAL); skinRow.setGravity(android.view.Gravity.CENTER); skinRow.setPadding(0, (int) (6 * density), 0, (int) (2 * density));
-        TextView depthLabel = new TextView(this); depthLabel.setText("界面深浅"); depthLabel.setTextSize(13f); depthLabel.setTextColor(0xFF777777); depthLabel.setPadding(0, (int) (8 * density), 0, 0);
+        TextView depthLabel = new TextView(this); depthLabel.setText("界面深浅"); depthLabel.setTextSize(13f); depthLabel.setTextColor(getColor(R.color.text_secondary)); depthLabel.setPadding(0, (int) (8 * density), 0, 0);
         android.widget.SeekBar depthSeek = new android.widget.SeekBar(this); depthSeek.setMax(100); depthSeek.setProgress(skinDepth); depthSeek.setPadding((int) (8 * density), 0, (int) (8 * density), (int) (6 * density));
         Runnable refreshDepthVisibility = () -> {
             boolean showDepth = !"default".equals(sp.getString("ui_skin", "default"));
@@ -5408,7 +5453,7 @@ public class MainActivity extends AppCompatActivity {
                 android.widget.ImageButton button = skinButtons[i]; if (button == null) continue;
                 boolean active = skinKeys[i].equals(selected);
                 android.graphics.drawable.GradientDrawable bg = new android.graphics.drawable.GradientDrawable(); bg.setShape(android.graphics.drawable.GradientDrawable.OVAL);
-                bg.setColor(active ? 0x143F51B5 : Color.TRANSPARENT); bg.setStroke((int) ((active ? 2 : 1) * density), active ? skinAccent(skinKeys[i]) : 0x22000000); button.setBackground(bg);
+                bg.setColor(active ? 0x143F51B5 : Color.TRANSPARENT); bg.setStroke((int) ((active ? 2 : 1) * density), active ? skinAccent(skinKeys[i]) : ((getColor(R.color.text_secondary) & 0x00FFFFFF) | 0x33000000)); button.setBackground(bg);
             }
         };
         for (int i = 0; i < skinKeys.length; i++) {
@@ -5429,7 +5474,7 @@ public class MainActivity extends AppCompatActivity {
         });
 
         Button done = new Button(this); done.setText("完成"); done.setTextColor(0xFF2196F3); done.setBackgroundColor(Color.TRANSPARENT); LinearLayout.LayoutParams doneParams = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT); doneParams.gravity = android.view.Gravity.END; doneParams.rightMargin = (int) (1 * density); done.setLayoutParams(doneParams);
-        Button reset = new Button(this); reset.setText("恢复默认"); reset.setTextColor(0xFF777777); reset.setBackgroundColor(Color.TRANSPARENT);
+        Button reset = new Button(this); reset.setText("恢复默认"); reset.setTextColor(getColor(R.color.text_secondary)); reset.setBackgroundColor(Color.TRANSPARENT);
         LinearLayout actions = new LinearLayout(this); actions.setOrientation(LinearLayout.HORIZONTAL); actions.setGravity(android.view.Gravity.END | android.view.Gravity.CENTER_VERTICAL); actions.addView(reset); actions.addView(done);
         // 将按钮文字向字号滑条右端对齐，不改变弹窗内容的横向留白。
         actions.setTranslationX(24f * density);
@@ -5461,7 +5506,7 @@ public class MainActivity extends AppCompatActivity {
         });
         done.setOnClickListener(v -> { persist.run(); dialog.dismiss(); }); dialog.setOnCancelListener(d -> persist.run()); dialog.show();
         WindowManager.LayoutParams params = new WindowManager.LayoutParams(); params.copyFrom(dialog.getWindow().getAttributes()); params.dimAmount = Math.max(0f, Math.min(1f, params.dimAmount * .9f)); params.width = (int) (getResources().getDisplayMetrics().widthPixels * 0.86f); params.gravity = android.view.Gravity.TOP | android.view.Gravity.CENTER_HORIZONTAL; params.y = (int) (getResources().getDisplayMetrics().heightPixels * 0.12f); dialog.getWindow().setAttributes(params);
-        android.graphics.drawable.GradientDrawable background = new android.graphics.drawable.GradientDrawable(); background.setColor(Color.WHITE); background.setCornerRadius(16f); dialog.getWindow().setBackgroundDrawable(background);
+        android.graphics.drawable.GradientDrawable background = new android.graphics.drawable.GradientDrawable(); background.setColor(getColor(R.color.card_bg)); background.setCornerRadius(16f); dialog.getWindow().setBackgroundDrawable(background);
     }
 
     private abstract static class SimpleSeekListener implements android.widget.SeekBar.OnSeekBarChangeListener {
@@ -5641,6 +5686,7 @@ public class MainActivity extends AppCompatActivity {
         inputEditorOverlay = findViewById(R.id.inputEditorOverlay); expandedInputEditText = findViewById(R.id.expandedInputEditText); tvInputEditorWordCount = findViewById(R.id.tvInputEditorWordCount);
         inputBoxContainer = findViewById(R.id.inputBoxContainer); belowInputContainer = findViewById(R.id.belowInputContainer); inputBottomHandleLayer = findViewById(R.id.inputBottomHandleLayer); inputBottomOutsideStrip = findViewById(R.id.inputBottomOutsideStrip); btnInputCollapse = findViewById(R.id.btnInputCollapse); ivInputCollapseArrow = findViewById(R.id.ivInputCollapseArrow);
         TextView title = findViewById(R.id.tvTitle); View menu = findViewById(R.id.btnMenu); Button font = findViewById(R.id.btnFont), inputExpand = findViewById(R.id.btnInputExpand); View floatButton = findViewById(R.id.btnFloat);
+        setupThresholdCollapse();
         font.setOnClickListener(v -> showFontSizeDialog()); inputExpand.setOnClickListener(v -> openInputEditor()); updateFontSize(sp.getInt("font_offset_text", 0), sp.getInt("font_offset_sys", 0)); applySkin(sp.getString("ui_skin", "default"));
         setupScrollControls(); setupEditor(); setupInputEditor(); setupInputWatcher();
         currentIsFast = sp.getBoolean("is_fast_mode", false); rbFast.setChecked(currentIsFast); rbPro.setChecked(!currentIsFast); loadSettings(currentIsFast);
@@ -5655,6 +5701,10 @@ public class MainActivity extends AppCompatActivity {
         if (savedInstanceState == null) restoreScreenState(null); else restoreScreenState(savedInstanceState);
         if (savedInstanceState == null) handleIntent(getIntent());
         android.widget.ImageButton edition = findViewById(R.id.btnEdition);
+        int editionPadLeft = edition.getPaddingLeft(), editionPadTop = edition.getPaddingTop();
+        int editionPadRight = edition.getPaddingRight(), editionPadBottom = edition.getPaddingBottom();
+        edition.setBackground(new EditionRippleDrawable());
+        edition.setPadding(editionPadLeft, editionPadTop, editionPadRight, editionPadBottom);
         applyEdition(edition, sp.getBoolean("lanEdition", false));
         edition.setOnClickListener(v -> {
             boolean lan = !sp.getBoolean("lanEdition", false);
@@ -5668,6 +5718,122 @@ public class MainActivity extends AppCompatActivity {
         });
         setupMainButtons(); setupDrawerButtons(); btnSaveTxt.setEnabled(inputText.length() > 0 || hasDisplayedCorrectionResult());
         for (TextView editor : new TextView[]{inputText, outputText, expandedInputEditText, expandedEditText, editTemp, editThreshDe1, editThreshDe2, editThreshDe3, editThreshZuo, editThreshZuo4}) editor.setSaveEnabled(false);
+        if (firstActivityInProcess) android.os.Looper.myQueue().addIdleHandler(() -> {
+            AppExecutors.IO.execute(() -> {
+                try {
+                    ensureTypoMapLoaded(DededeApp.context());
+                    ensureRulesLoaded();
+                    TermMatcher.get();
+                } catch (Exception | LinkageError error) {
+                    android.util.Log.w("DededeWarmup", "纠错资源预加载失败，将在首次纠错时重试", error);
+                }
+            });
+            return false;
+        });
+    }
+
+    @SuppressLint("ClickableViewAccessibility")
+    private void setupThresholdCollapse() {
+        View header = findViewById(R.id.thresholdHeaderRow), card = findViewById(R.id.paramsCard);
+        android.widget.ImageView arrow = findViewById(R.id.ivThresholdCollapseArrow);
+        java.util.function.Consumer<Boolean> setCollapsed = collapse -> {
+            if (collapse && card.findFocus() != null) {
+                View focused = card.findFocus();
+                focused.clearFocus();
+                InputMethodManager keyboard = (InputMethodManager) getSystemService(INPUT_METHOD_SERVICE);
+                if (keyboard != null) keyboard.hideSoftInputFromWindow(focused.getWindowToken(), 0);
+            }
+            card.setVisibility(collapse ? View.GONE : View.VISIBLE);
+            arrow.setRotation(collapse ? 180f : 0f);
+            header.setContentDescription(collapse ? "展开修改阈值" : "收起修改阈值");
+        };
+        setCollapsed.accept(false);
+        header.setOnClickListener(v -> setCollapsed.accept(card.getVisibility() == View.VISIBLE));
+        final float slop = android.view.ViewConfiguration.get(this).getScaledTouchSlop();
+        header.setOnTouchListener(new View.OnTouchListener() {
+            private float downX, downY;
+            @Override public boolean onTouch(View v, MotionEvent event) {
+                switch (event.getActionMasked()) {
+                    case MotionEvent.ACTION_DOWN:
+                        downX = event.getRawX(); downY = event.getRawY();
+                        v.getParent().requestDisallowInterceptTouchEvent(true);
+                        v.setPressed(true);
+                        return true;
+                    case MotionEvent.ACTION_MOVE:
+                        if (Math.abs(event.getRawX() - downX) > slop || Math.abs(event.getRawY() - downY) > slop)
+                            v.setPressed(false);
+                        return true;
+                    case MotionEvent.ACTION_UP:
+                        v.setPressed(false);
+                        v.getParent().requestDisallowInterceptTouchEvent(false);
+                        float dx = event.getRawX() - downX, dy = event.getRawY() - downY;
+                        if (Math.abs(dy) > slop && Math.abs(dy) >= Math.abs(dx)) setCollapsed.accept(dy < 0f);
+                        else if (Math.abs(dx) <= slop && Math.abs(dy) <= slop) v.performClick();
+                        return true;
+                    case MotionEvent.ACTION_CANCEL:
+                        v.setPressed(false);
+                        v.getParent().requestDisallowInterceptTouchEvent(false);
+                        return true;
+                    default:
+                        return true;
+                }
+            }
+        });
+    }
+
+    // Public Android APIs cannot set the native ripple duration. Use a small stateful
+    // drawable: 90% nominal radius, 90% of the reference enter/exit animation durations.
+    private static final class EditionRippleDrawable extends android.graphics.drawable.Drawable {
+        private final android.graphics.Paint paint = new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG);
+        private android.animation.ValueAnimator animator;
+        private float radiusFraction, opacity;
+        private int drawableAlpha = 255;
+        private boolean pressed;
+        @Override public boolean isStateful() { return true; }
+        @Override protected boolean onStateChange(int[] state) {
+            boolean nextPressed = false, enabled = false;
+            for (int value : state) {
+                if (value == android.R.attr.state_pressed) nextPressed = true;
+                if (value == android.R.attr.state_enabled) enabled = true;
+            }
+            nextPressed &= enabled;
+            if (nextPressed == pressed) return false;
+            pressed = nextPressed;
+            if (animator != null) animator.cancel();
+            if (pressed) {
+                radiusFraction = 0.22f;
+                opacity = 1f;
+            }
+            final float fromRadius = radiusFraction, fromOpacity = opacity;
+            final boolean enter = pressed;
+            animator = android.animation.ValueAnimator.ofFloat(0f, 1f);
+            animator.setDuration(enter ? 203L : 135L);
+            animator.setInterpolator(new android.view.animation.DecelerateInterpolator());
+            animator.addUpdateListener(value -> {
+                float t = (float) value.getAnimatedValue();
+                radiusFraction = fromRadius + (1f - fromRadius) * t;
+                opacity = enter ? 1f : fromOpacity * (1f - t);
+                invalidateSelf();
+            });
+            animator.start();
+            invalidateSelf();
+            return true;
+        }
+        @Override public void draw(android.graphics.Canvas canvas) {
+            if (opacity <= 0f || getBounds().isEmpty()) return;
+            android.graphics.Rect bounds = getBounds();
+            paint.setColor(Color.BLACK);
+            paint.setAlpha(Math.round(32f * opacity * drawableAlpha / 255f));
+            float radius = (float) Math.hypot(bounds.width(), bounds.height()) * .45f * radiusFraction;
+            canvas.drawCircle(bounds.exactCenterX(), bounds.exactCenterY(), radius, paint);
+        }
+        @Override public void jumpToCurrentState() {
+            if (animator != null) animator.cancel();
+            radiusFraction = 1f; opacity = pressed ? 1f : 0f; invalidateSelf();
+        }
+        @Override public void setAlpha(int alpha) { drawableAlpha = alpha; invalidateSelf(); }
+        @Override public void setColorFilter(android.graphics.ColorFilter filter) { paint.setColorFilter(filter); invalidateSelf(); }
+        @Override public int getOpacity() { return android.graphics.PixelFormat.TRANSLUCENT; }
     }
 
     private void applyEdition(android.widget.ImageButton edition, boolean lan) {
@@ -8410,7 +8576,7 @@ cat > "app/src/main/res/layout/activity_main.xml" <<'DEDEDE_SOURCE_EOF'
         <LinearLayout android:id="@+id/mainBody" android:layout_width="match_parent" android:layout_height="match_parent" android:orientation="vertical" android:paddingStart="14dp" android:paddingEnd="14dp" android:paddingTop="7dp" android:paddingBottom="14dp" android:background="@color/bg_color">
             <RelativeLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginBottom="3dp">
                 <TextView android:id="@+id/tvTitle" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="纠错 Pro" android:textSize="20sp" android:textStyle="bold" android:textColor="@color/text_primary" android:layout_alignParentStart="true" android:layout_centerVertical="true" android:clickable="true" android:focusable="true"/>
-                <ImageButton android:id="@+id/btnEdition" android:layout_width="34dp" android:layout_height="36dp" android:layout_toEndOf="@id/tvTitle" android:layout_marginStart="3dp" android:layout_centerVertical="true" android:src="@drawable/ic_edition" android:background="?attr/selectableItemBackgroundBorderless" android:contentDescription="切换到特供版" android:padding="7dp"/>
+                <ImageButton android:id="@+id/btnEdition" android:layout_width="34dp" android:layout_height="36dp" android:layout_toEndOf="@id/tvTitle" android:layout_marginStart="3dp" android:layout_centerVertical="true" android:src="@drawable/ic_edition" android:background="@null" android:contentDescription="切换到特供版" android:padding="7dp"/>
                 <LinearLayout android:layout_width="wrap_content" android:layout_height="wrap_content" android:orientation="horizontal" android:layout_alignParentEnd="true" android:layout_centerVertical="true" android:gravity="center_vertical">
                     <androidx.appcompat.widget.AppCompatButton android:id="@+id/btnFloat" android:layout_width="24dp" android:layout_height="24dp" android:layout_marginEnd="8dp" android:text="✓" android:textSize="12sp" android:background="@drawable/circle_btn_bg" android:textColor="#FFFFFF" android:stateListAnimator="@null" android:padding="0dp"/>
                     <Button android:id="@+id/btnFont" android:layout_width="34dp" android:layout_height="34dp" android:text="A" android:textStyle="bold" android:textSize="19sp" android:background="@null" android:textColor="#2196F3" android:padding="0dp" android:insetTop="0dp" android:insetBottom="0dp"/>
@@ -8429,7 +8595,10 @@ cat > "app/src/main/res/layout/activity_main.xml" <<'DEDEDE_SOURCE_EOF'
                 </LinearLayout>
             </LinearLayout>
 
-            <TextView android:id="@+id/tvThresholdHint" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginStart="6dp" android:layout_marginBottom="1dp" android:text="修改阈值" android:textSize="10sp" android:textColor="@color/text_secondary"/>
+            <LinearLayout android:id="@+id/thresholdHeaderRow" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:gravity="center_vertical" android:paddingStart="6dp" android:layout_marginBottom="1dp" android:clickable="true" android:focusable="true">
+                <TextView android:id="@+id/tvThresholdHint" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="修改阈值" android:textSize="10sp" android:textColor="@color/text_secondary"/>
+                <ImageView android:id="@+id/ivThresholdCollapseArrow" android:layout_width="24dp" android:layout_height="8dp" android:layout_marginStart="5dp" android:alpha="0.82" android:src="@drawable/ic_input_collapse_handle" android:scaleType="fitCenter" android:importantForAccessibility="no"/>
+            </LinearLayout>
             <LinearLayout android:id="@+id/paramsCard" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:background="@color/card_bg" android:paddingStart="6dp" android:paddingEnd="6dp" android:paddingTop="3dp" android:paddingBottom="4dp" android:layout_marginBottom="7dp">
                 <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:gravity="center_vertical" android:baselineAligned="false">
                 <LinearLayout android:id="@+id/paramDe" android:layout_width="0dp" android:layout_height="42dp" android:layout_weight="1" android:orientation="horizontal" android:gravity="center_vertical">
@@ -8779,6 +8948,10 @@ print('正在使用 AES-256-GCM 加固 HCAM、词表和规则文件...')
 encrypt_asset('hcam_model.bin', 'sys_core_p.dat', 1, False)
 encrypt_asset('错别字.txt', 'sys_typo.dat', 9, False)
 encrypt_asset('hcam_tokenizer.json', 'sys_vocab_p.dat', 9, False)
+for required, output in [('pinyin.txt', 'sys_pinyin.dat'), ('词库.txt', 'sys_terms.dat')]:
+    if not Path(required).is_file() or Path(required).stat().st_size == 0:
+        raise RuntimeError(f'缺少必要词库资源: {required}')
+    encrypt_asset(required, output, 9, False)
 print('AES-256-GCM 加固完成；每次构建均使用全新主密钥、盐和 Nonce。')
 DEDEDE_SOURCE_EOF
 
@@ -8874,7 +9047,8 @@ python3 encrypt.py
 mkdir -p app/src/main/assets app/src/main/res/mipmap-xxxhdpi
 cp generated_security/GeneratedSecuritySeed.java app/src/main/java/com/app/dedede/
 cp generated_security/key-part-a.cpp generated_security/key-part-b.cpp app/src/main/cpp/
-cp pinyin.txt 词库.txt sys_core_p.dat sys_vocab_p.dat sys_typo.dat app/src/main/assets/
+cp sys_core_p.dat sys_vocab_p.dat sys_typo.dat sys_pinyin.dat sys_terms.dat app/src/main/assets/
+rm -f app/src/main/assets/pinyin.txt app/src/main/assets/词库.txt
 rm -f app/src/main/assets/sys_idioms.dat
 cp app_icon.png app/src/main/res/mipmap-xxxhdpi/ic_launcher.png
 python3 protect_rules.py
