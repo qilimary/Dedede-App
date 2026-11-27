@@ -7776,7 +7776,6 @@ public class MainActivity extends AppCompatActivity {
             String header = "未发现错误。" + (elapsedText.isEmpty() ? "" : " " + elapsedText) + "\n\n"; int start = main.length(); main.append(header); main.setSpan(new ForegroundColorSpan(0xFF4CAF50), start, main.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
         } else {
             String header = "共更正 " + (currentErrors - pendingTypos) + " 处错误。" + (pendingTypos > 0 ? " 另有 " + pendingTypos + " 处疑似错别字。" : "") + (elapsedText.isEmpty() ? "" : " " + elapsedText) + (showJumpHintForCurrentResult ? "\n（点击序号可快速跳转）" : "") + "\n\n"; int start = main.length(); main.append(header); main.setSpan(new ForegroundColorSpan(0xFF757575), start, main.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
-            appendSectionHeader(main, "【纠错清单：】\n"); appendSectionHeader(editor, "【纠错清单：】\n");
             lastRenderedErrorsStart = main.length();
             int errorIndex = 0;
             for (List<TextBlock> sentence : allSentencesBlocks) {
