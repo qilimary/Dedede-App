@@ -5732,10 +5732,11 @@ public class MainActivity extends AppCompatActivity {
         });
     }
 
-    @SuppressLint("ClickableViewAccessibility")
     private void setupThresholdCollapse() {
         View header = findViewById(R.id.thresholdHeaderRow), card = findViewById(R.id.paramsCard);
         android.widget.ImageView arrow = findViewById(R.id.ivThresholdCollapseArrow);
+        final int expandedMargin = ((LinearLayout.LayoutParams) header.getLayoutParams()).bottomMargin;
+        final int collapsedMargin = expandedMargin + dpPx(3f);
         java.util.function.Consumer<Boolean> setCollapsed = collapse -> {
             if (collapse && card.findFocus() != null) {
                 View focused = card.findFocus();
@@ -5744,45 +5745,21 @@ public class MainActivity extends AppCompatActivity {
                 if (keyboard != null) keyboard.hideSoftInputFromWindow(focused.getWindowToken(), 0);
             }
             card.setVisibility(collapse ? View.GONE : View.VISIBLE);
+            LinearLayout.LayoutParams headerParams = (LinearLayout.LayoutParams) header.getLayoutParams();
+            int bottomMargin = collapse ? collapsedMargin : expandedMargin;
+            if (headerParams.bottomMargin != bottomMargin) {
+                headerParams.bottomMargin = bottomMargin;
+                header.setLayoutParams(headerParams);
+            }
             arrow.setRotation(collapse ? 180f : 0f);
             header.setContentDescription(collapse ? "展开修改阈值" : "收起修改阈值");
         };
         setCollapsed.accept(false);
         header.setOnClickListener(v -> setCollapsed.accept(card.getVisibility() == View.VISIBLE));
-        final float slop = android.view.ViewConfiguration.get(this).getScaledTouchSlop();
-        header.setOnTouchListener(new View.OnTouchListener() {
-            private float downX, downY;
-            @Override public boolean onTouch(View v, MotionEvent event) {
-                switch (event.getActionMasked()) {
-                    case MotionEvent.ACTION_DOWN:
-                        downX = event.getRawX(); downY = event.getRawY();
-                        v.getParent().requestDisallowInterceptTouchEvent(true);
-                        v.setPressed(true);
-                        return true;
-                    case MotionEvent.ACTION_MOVE:
-                        if (Math.abs(event.getRawX() - downX) > slop || Math.abs(event.getRawY() - downY) > slop)
-                            v.setPressed(false);
-                        return true;
-                    case MotionEvent.ACTION_UP:
-                        v.setPressed(false);
-                        v.getParent().requestDisallowInterceptTouchEvent(false);
-                        float dx = event.getRawX() - downX, dy = event.getRawY() - downY;
-                        if (Math.abs(dy) > slop && Math.abs(dy) >= Math.abs(dx)) setCollapsed.accept(dy < 0f);
-                        else if (Math.abs(dx) <= slop && Math.abs(dy) <= slop) v.performClick();
-                        return true;
-                    case MotionEvent.ACTION_CANCEL:
-                        v.setPressed(false);
-                        v.getParent().requestDisallowInterceptTouchEvent(false);
-                        return true;
-                    default:
-                        return true;
-                }
-            }
-        });
     }
 
     // Public Android APIs cannot set the native ripple duration. Use a small stateful
-    // drawable: 90% nominal radius, 90% of the reference enter/exit animation durations.
+    // drawable: 90% nominal radius, approximately 95% of the reference animation durations.
     private static final class EditionRippleDrawable extends android.graphics.drawable.Drawable {
         private final android.graphics.Paint paint = new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG);
         private android.animation.ValueAnimator animator;
@@ -5807,7 +5784,7 @@ public class MainActivity extends AppCompatActivity {
             final float fromRadius = radiusFraction, fromOpacity = opacity;
             final boolean enter = pressed;
             animator = android.animation.ValueAnimator.ofFloat(0f, 1f);
-            animator.setDuration(enter ? 203L : 135L);
+            animator.setDuration(enter ? 214L : 143L);
             animator.setInterpolator(new android.view.animation.DecelerateInterpolator());
             animator.addUpdateListener(value -> {
                 float t = (float) value.getAnimatedValue();
@@ -5823,7 +5800,7 @@ public class MainActivity extends AppCompatActivity {
             if (opacity <= 0f || getBounds().isEmpty()) return;
             android.graphics.Rect bounds = getBounds();
             paint.setColor(Color.BLACK);
-            paint.setAlpha(Math.round(32f * opacity * drawableAlpha / 255f));
+            paint.setAlpha(Math.round(26f * opacity * drawableAlpha / 255f));
             float radius = (float) Math.hypot(bounds.width(), bounds.height()) * .45f * radiusFraction;
             canvas.drawCircle(bounds.exactCenterX(), bounds.exactCenterY(), radius, paint);
         }
