@@ -517,10 +517,35 @@ public final class Proofreader {
         int begin=start+prefix,end=start+source.length()-suffix;
         return any(mask,begin,end)||begin==end&&prefix<replacement.length()-suffix&&begin>0&&begin<mask.length&&mask[begin-1]&&mask[begin];
     }
+    private static final String[] LIST_ENDS={"的用法","的区别","的差别","的使用","这两个字","这些字","这种情况","两个字","等字","等五个字"};
+    private static final String[] LIST_INTROS={"区分","辨析","比较","例如","比如","涉及","关于","检查","包括","使用","识别","针对"};
+    static void markSingleCharacterList(String s,boolean[] ignored){
+        for(int p=0;p<s.length();p++){
+            if(s.charAt(p)!='、')continue;
+            int a=p-1,b=p+1;
+            while(a>=0&&" \t　".indexOf(s.charAt(a))>=0)a--;
+            while(b<s.length()&&" \t　".indexOf(s.charAt(b))>=0)b++;
+            if(b>=s.length()||"的地得做作".indexOf(s.charAt(b))<0)continue;
+            int end=b+1;while(end<s.length()&&" \t　".indexOf(s.charAt(end))>=0)end++;
+            if(end<s.length()&&"、，,。！？!?；;：:）)]】”’\"'」』\n\r".indexOf(s.charAt(end))<0&&
+                !prefix(s,end,LIST_ENDS))continue;
+            ignored[b]=true;
+            if(a>=0&&"的地得做作".indexOf(s.charAt(a))>=0&&
+                (a==0||!han(s.charAt(a-1))||suffix(s,a,LIST_INTROS)))ignored[a]=true;
+        }
+    }
+    private static final java.util.regex.Pattern DUP_SUBJECT=java.util.regex.Pattern.compile("(?:^|[。！？!?，,；;：:\\n\\r]|所以|因此|于是|然后|不过|但是|而且|其实|因为|如果|虽然|可是|后来|毕竟)(我(?:们)?|你(?:们)?|他(?:们)?|她(?:们)?|它(?:们)?|您(?:们)?|咱(?:们)?)(?:今年|去年|明年|前[天年]|后[天年]|今天|昨天|明天|最近|刚才|刚刚|现在|目前|当时|那时|这时|以前|从前|以后|将来|这几[天年月]|这段时间|那段时间|上个[月星期]|下个[月星期]|上周|下周|本周|上午|下午|晚上|早上|中午|平时|有时候|有时|一直|已经|原本|本来|之前|之后)(\\1)(?!(?:工作室|工作单位|工作地点|工作岗位|工作时间|计划书|计划表|学习资料|学习用品|学习计划|学习成绩|学习任务|学习时间|想法|看法|写法|说法|做法|读法|会长|会计|能量|能力|给养|回信|回执|走廊|开始时间|结束时间|完成情况|负责人员|参加人员))(?=想|打算|准备|计划|决定|希望|需要|应该|必须|可以|能够|可能|愿意|终于|正在|已经|曾经|还是|一直|也想|也要|还想|还要|不想|不要|不会|没有|没去|没来|没看|去|来|看|听|说|问|吃|喝|买|做|写|读|学|走|跑|回|到|要|会|能|在|被|把|对|向|给|喜欢|觉得|认为|知道|负责|参加|完成|开始|结束|提交|收到|发现|遇到|尝试|工作|学习|休息)");
     public Edit[] collect(String text,boolean[] custom,boolean[] exact,boolean[] literals,boolean repetition){return collect(text,custom,exact,literals,repetition,()->false);}
     public Edit[] collect(String text,boolean[] custom,boolean[] exact,boolean[] literals,boolean repetition,BooleanSupplier cancelled){
         if(!repetition)return new Edit[text.length()];
         ArrayList<Edit> pending=new ArrayList<>();
+        java.util.regex.Matcher repeatedSubject=DUP_SUBJECT.matcher(text);
+        while(repeatedSubject.find()){
+            if(cancelled.getAsBoolean())return null;
+            int start=repeatedSubject.start(2),end=repeatedSubject.end(2),begin=repeatedSubject.start(1);
+            if(!any(custom,begin,end)&&!any(exact,begin,end)&&!any(literals,begin,end))
+                pending.add(new Edit(start,text.substring(start,end),"",""));
+        }
         for(int p=0;p<text.length();p++){
             if((p&255)==0&&cancelled.getAsBoolean())return null;
             if(!han(text.charAt(p))||custom[p]||literals[p])continue;
@@ -620,8 +645,8 @@ final class TermMatcher {
     private static final String MEANINGFUL="不无非未有可仅单双多寡少高低超微大中小轻重急慢亚次副原假伪正反左右上下前后内外长短男女公母冷热阴阳抗防耐逆再新旧病性型期类属科目级率量法学术症炎癌毒";
     private static final String[] EMPTY=new String[0];
     private static final class Entry {
-        final String text; final String[] exclusions; final boolean protect;
-        Entry(String text,String[] exclusions,boolean protect){this.text=text;this.exclusions=exclusions;this.protect=protect;}
+        final String text; final String[] exclusions;
+        Entry(String text,String[] exclusions){this.text=text;this.exclusions=exclusions;}
     }
     static final class Hit {
         final int start,end,change; final String value,reason;
@@ -632,7 +657,6 @@ final class TermMatcher {
     // A bucket identifies two unchanged neighbours. All candidates are verified against the full word.
     private static final int LEADING=0, INTERNAL=1, TRAILING=2, LONG=3;
     private final int[][] bucketOffsets=new int[4][(1<<17)+1];
-    private final Set<Integer> protectedPairs=new HashSet<>();
     private Entry[] entries=new Entry[16384];
     private int[] anchorPairs=new int[entries.length];
     private byte[] positions=new byte[entries.length];
@@ -693,9 +717,7 @@ final class TermMatcher {
 
     private void index(Entry entry){
         String w=entry.text;int last=w.length()-1;
-        if(last==1){protectedPairs.add(pair(w.charAt(0),w.charAt(1)));return;}
         anchor(LEADING,w.charAt(1),w.charAt(2),entry,0);
-        if(entry.protect)return;
         if(w.length()==5){
             anchor(LONG,w.charAt(0),w.charAt(1),entry,0);
             anchor(LONG,w.charAt(1),w.charAt(2),entry,1);
@@ -721,7 +743,6 @@ final class TermMatcher {
     private void scanAt(Scan doc,String s,int at,boolean[] custom,boolean[] exact,boolean[] literal){
         char c=s.charAt(at);
         if(!han(c))return;
-        if(at+1<s.length()&&protectedPairs.contains(pair(c,s.charAt(at+1))))doc.occupied.set(at,at+2);
         if(at+2<s.length())probe(LEADING,s.charAt(at+1),s.charAt(at+2),0,doc,s,at,custom,exact,literal);
         if(at>=2)probe(TRAILING,s.charAt(at-2),s.charAt(at-1),0,doc,s,at,custom,exact,literal);
         if(at+1<s.length()&&han(s.charAt(at+1)))probeLong(doc,s,at,custom,exact,literal,false);
@@ -746,7 +767,7 @@ final class TermMatcher {
             if(!s.regionMatches(start,w,0,pos)||!s.regionMatches(at+1+delta,w,pos+1,n-pos-1))continue;
             if(delta==0&&source==target){
                 doc.occupied.set(start,end);
-                if(!entry.protect&&!guarded(custom,exact,literal,start,end)){
+                if(!guarded(custom,exact,literal,start,end)){
                     doc.exact.add(w);
                     if(start>0&&s.charAt(start-1)==target&&edge(s,start-2))
                         addEndRepeat(doc,s,start-1,end,0,entry,custom,exact,literal);
@@ -757,7 +778,7 @@ final class TermMatcher {
             }
             if ((delta >= 0 && FIXED_CHARACTERS.indexOf(source) >= 0)
                     || (delta <= 0 && FIXED_CHARACTERS.indexOf(target) >= 0)) continue;
-            if(entry.protect||guarded(custom,exact,literal,start,end)||Proofreader.touchesIdentifier(s,start,end)||excluded(s,at,entry.exclusions))continue;
+            if(guarded(custom,exact,literal,start,end)||Proofreader.touchesIdentifier(s,start,end)||excluded(s,at,entry.exclusions))continue;
             if(delta!=0){
                 if(target!=w.charAt(pos-1)&&target!=w.charAt(pos+1))doc.hits.add(new Hit(start,w,pos,n+delta,delta>0?EXTRA:MISSING));
             }else if(!isProtectedPair(source,target,"癌炎")&&!isProtectedPair(source,target,"黏粘")){
@@ -833,6 +854,35 @@ final class TermMatcher {
         return false;
     }
 
+    /** Preserve local spelling demonstrations, without protecting ordinary quoted speech. */
+    void markArrowExamples(String s,boolean[] mask){
+        for(int at=0;at<s.length();at++){
+            int width=s.charAt(at)=='→'?1:s.startsWith("->",at)?2:0;
+            if(width==0)continue;
+            int l=at-1,r=at+width;
+            while(l>=0&&arrowSpace(s.charAt(l)))l--;
+            while(r<s.length()&&arrowSpace(s.charAt(r)))r++;
+            boolean separate=l>=0&&r<s.length()&&"”’」』\"'".indexOf(s.charAt(l))>=0&&"“‘「『\"'".indexOf(s.charAt(r))>=0;
+            if(separate){l--;r++;while(l>=0&&arrowSpace(s.charAt(l)))l--;while(r<s.length()&&arrowSpace(s.charAt(r)))r++;}
+            int left=0,right=0;
+            while(left<32&&l-left>=0&&han(s.charAt(l-left)))left++;
+            while(right<32&&r+right<s.length()&&han(s.charAt(r+right)))right++;
+            int a=l-left,b=r+right;
+            boolean quoted=left==right&&left>1&&a>=0&&b<s.length()&&"“‘「『\"'".indexOf(s.charAt(a))>=0&&"”’」』\"'".indexOf(s.charAt(b))>=0;
+            for(int n=Math.min(left,right);n>=1;n--){
+                int start=l-n+1,changed=0,unrelated=0;
+                for(int i=0;i<n;i++){
+                    char x=s.charAt(start+i),y=s.charAt(r+i);
+                    if(x!=y){changed++;if(!share(syllables[x],syllables[y]))unrelated++;}
+                }
+                if(changed>0&&(unrelated==0||quoted&&n==left&&changed==1&&n>1)){
+                    Arrays.fill(mask,start,l+1,true);Arrays.fill(mask,r,r+n,true);break;
+                }
+            }
+        }
+    }
+    private static boolean arrowSpace(char c){return c==' '||c=='\t'||c=='　';}
+
     private static final class Mention {
         final int start; final String name,role; final boolean person,intro,joint;
         Mention(int start,String name,String role,boolean person,boolean intro,boolean joint){
@@ -858,12 +908,12 @@ final class TermMatcher {
             String line=raw.replace('\t',' ').replace('　',' ').trim();
             if(line.startsWith("\ufeff"))line=line.substring(1).trim();
             if(line.isEmpty()||line.startsWith("#"))continue;
-            int cut=line.indexOf(" n=");boolean protect=line.startsWith("!");
-            String term=line.substring(protect?1:0,cut<0?line.length():cut);
-            if(!validTerm(term,protect))
+            int cut=line.indexOf(" n=");
+            String term=line.substring(0,cut<0?line.length():cut);
+            if(!validTerm(term))
                 throw new IOException("术语格式错误："+line);
             indexPairs(term);
-            index(new Entry(term,cut<0?EMPTY:words(line.substring(cut+3).trim()),protect));
+            index(new Entry(term,cut<0?EMPTY:words(line.substring(cut+3).trim())));
         }
         packAnchors();
         Arrays.sort(observedPairs,0,pairCount);
@@ -872,8 +922,8 @@ final class TermMatcher {
             if(unique==0||observedPairs[i]!=observedPairs[unique-1])observedPairs[unique++]=observedPairs[i];
         observedPairs=Arrays.copyOf(observedPairs,unique);
     }
-    private static boolean validTerm(String term, boolean protect) {
-        if (term.length() < (protect ? 2 : 3) || term.length() > 32) return false;
+    private static boolean validTerm(String term) {
+        if (term.length() < 3 || term.length() > 32) return false;
         for (int i = 0; i < term.length(); i++) if (!han(term.charAt(i))) return false;
         return true;
     }
@@ -914,7 +964,9 @@ final class TermMatcher {
         int found=-1;for(int i=0;i<word.length();i++)if(s.charAt(at+i)!=word.charAt(i)){if(found>=0)return -2;found=i;}return found;
     }
     private static boolean excluded(String s,int changed,String[] choices){
-        for(String w:choices)for(int at=Math.max(0,changed+1-w.length());at<=changed;at++)if(s.startsWith(w,at))return true;
+        char c=s.charAt(changed);
+        for(String w:choices)for(int pos=w.indexOf(c);pos>=0;pos=w.indexOf(c,pos+1))
+            if(changed>=pos&&s.startsWith(w,changed-pos))return true;
         return false;
     }
     private static boolean guarded(boolean[] a,boolean[] b,boolean[] literals,int start,int end){
@@ -1319,6 +1371,7 @@ public final class CorrectionCore {
         final Proofreader proofreader = ProofreaderAssets.get();
         final boolean[] exactAll = proofreader.exactPositions(text, () -> listener != null && listener.isCancelled());
         if (exactAll == null) return null;
+        if(text.indexOf('→')>=0||text.contains("->"))TermMatcher.get().markArrowExamples(text,exactAll);
         final boolean[] customAll = dictionary.protectedPositions(text);
         final boolean[] literals = Proofreader.literalPositions(text,false);
         List<TermMatcher.Hit> termHits;
@@ -1487,6 +1540,7 @@ public final class CorrectionCore {
                 }
                 markIgnoreWords(inferText, ignored);
                 markProtectedTargets(inferText, ignored);
+                if(inferText.indexOf('、')>=0)Proofreader.markSingleCharacterList(inferText,ignored);
 
                 boolean hasTarget = false;
                 for (int i = 0; i < inferText.length(); i++) if (!ignored[i] && isTarget(inferText.charAt(i))) { hasTarget = true; break; }
@@ -3734,8 +3788,20 @@ public class MainActivity extends AppCompatActivity {
             addRule("(?<![\u4E00-\u9FFFA-Za-z0-9])(根据|依据|据)([^，,。；;！？!?：:\n]{0,28}?(?:" + evidenceSource + "))([ 　]*(?:显示|表明))(?=[，,。；;！？!?：:\n]|$)", new String[][]{{"", null, "句式杂糅"}});
             addRule("(?<![\u4E00-\u9FFFA-Za-z0-9])(通过)([^，,。；;！？!?：:\\n]{0,28}?(?:" + evidenceSource + "))([ 　]*(?:显示|表明))(?=[，,。；;！？!?：:\\n]|$)", new String[][]{{"", null, "句首句式杂糅"}});
             addRule("(的原因)([ \\u3000]*(?:主要|仅仅|完全)?[ \\u3000]*)(是为了)(?=让|使|保证|确保|提高|降低|减少|增加|帮助|保护|便于|方便|避免|防止|解决|节省)", new String[][]{{"", null, "原因与目的句式杂糅"}});
-            addRule("(原因是(?:由于|因为|由))([^，,。；;！？!?：:\\n]{1,28}?)(所?造成的|所?导致的|所?引起的)(?=[，,。；;！？!?：:\\n]|$)", new String[][]{{"原因是", "", "句式杂糅"}});
-            addRule("(原因是)((?!由)[^，,。；;！？!?：:\n]{1,28}?)(所?造成的|所?导致的|所?引起的|造成|导致|引起)(?=[，,。；;！？!?：:\n]|$)", new String[][]{{null, "", "句式杂糅"}});
+            // Round 5: bounded structural rules, never resolve semantic ambiguity.
+            addRule("((?:之间的[\\u4e00-\\u9fff]{0,8}?|(?:我|你|他|她|它|我们|你们|他们|她们)(?:与|和|跟|同)(?:我|你|他|她|它|我们|你们|他们|她们)的)(?:差距|差别|差异))([ 　]*)(相差悬殊)(?=$|[，,。；;！？!?：:\\n\\r])", new String[][]{{null, "悬殊", "语义重复"}});
+            addRule("(值得)([ 　]*(?:(?:每个|每位|每一位|所有|全体|广大|各位|各地的|在场的|相关的)?(?:同学|学生|老师|教师|员工|职工|读者|观众|研究人员|科研人员|专家|管理者|决策者|工作人员|成年人|公民|家长|干部|用户|人们|大家|我们|你们|他们|她们|每个人|所有人|每一个人|人)))(?:[ 　]*)(都应该|都应当|都需要|应该|应当)(?=[ 　]*(?:认真|深入|仔细|充分|进一步|反复|共同)?(?:深思|思考|考虑|反思|重视|关注|研究|讨论|探讨|学习|借鉴|警惕|总结)(?:的问题|的现象|的事情|的经验|的教训|的做法|的地方|的事|[，,。；;！？!?：:\\n\\r]|$))", new String[][]{{null, "", "句式杂糅"}});
+            addRule("(尽管)([ 　]*(?:(?:遇到|面临|遭遇|面对|碰到|承受|经历)多(?:大|少|么)|(?:有|付出)多(?:大|少)|多么)[^，,。；;！？!?：:\\n\\r“”‘’]{1,22}?)(?=[，,][ 　]*(?:(?:我|你|他|她|我们|你们|他们|她们|大家|团队|公司|企业|学校|项目)[ 　]*)?(?:也|都|仍然|还是|总要|总会|始终))()", new String[][]{{"不管", null, "关联词搭配不当"}});
+            addRule("(花(?:费)?(?:了|过)?[ 　]*)([ 　]*)(很大的|非常大的|相当大的)(?=[ 　]*心血(?:才|来|就|终于|去|在|用于|以|于|[，,。；;！？!?：:\\n]|$))", new String[][]{{null, "很多", "搭配不当"}});
+            addRule("(是由于|是因为)([^，,。；;！？!?：:\\n\\r“”‘’]{0,20}?(?:共同努力|不懈努力|精心管理|辛勤劳动|长期奋斗|密切配合))([ 　]*的结果)(?=$|[，,。；;！？!?：:\\n\\r])", new String[][]{{null, "", "句式杂糅"}});
+            addRule("(分为|分成)([^，,。；;！？!?：:\\n\\r“”‘’]{0,36}?(?:[0-9一二两三四五六七八九十百千万几数]+|若干|多个|数个)(?:个|项|类|种|大|小)?(?:模块|阶段|环节|类别|类型|层次|步骤|方面|单元|章节|板块|区域|组别))([ 　]*(?:所)?(?:组成|构成))(?=$|[，,。；;！？!?：:\\n\\r])", new String[][]{{null, "", "句式杂糅"}});
+            // High-confidence structural hybrids; leave semantic ambiguity to a contextual model.
+            addRule("(原因是(?:由于|因为|由)?)([^，,。；;！？!?：:、\\n\\r“”‘’]{1,28}?)(所致)(?=[，,。；;！？!?：:\\n\\r]|$)", new String[][]{{"原因是", "", "句式杂糅"}});
+            addRule("(是由于|是因为)([^，,。；;！？!?：:、\\n\\r“”‘’]{1,28}?)(所致)(?=[，,。；;！？!?：:\\n\\r]|$)", new String[][]{{"是由", null, "句式杂糅"}});
+            addRule("(?<![\\u4e00-\\u9fffA-Za-z0-9])((?:(?:多年来|长期以来|长期|曾经|曾|一直|一度|过去|此前)[ 　]*){0,2}被)((?:(?!在|处于|置于|认为|视为|看作|当作|要求|安排|让|使|将|把|被|的|下|所)[\\u4e00-\\u9fff]){1,16}?(?:所)?(?:束缚|约束|限制|控制|支配|压迫))(下)(?=的(?:人们|人群|人员|人|群众|民众|居民|员工|学生|地区|城市|国家|社会|企业|组织)(?:逐渐|开始|终于|已经|也|都|仍|重新|正在|得以|恢复|获得|摆脱|走出|变得|意识到|觉悟|迎来|陷入|无法|能够|不能))", new String[][]{{null, "", "句式杂糅"}});
+            addRule("(养活)([ 　]*(?:了|着)?[ 　]*(?:一家人|全家人?|自己|家人|父母|妻儿|儿女|孩子|子女|(?:[一二两三四五六七八九十几数0-9]+)(?:个|名|位)(?:孩子|子女|家人|老人|亲人)|(?:我|你|他|她|我们|你们|他们|她们)(?:自己|的(?:家人|父母|孩子|子女))?))(的生活)(?=$|[，,。；;！？!?：:\\n\\r])", new String[][]{{null, "", "搭配不当"}});
+            addRule("(原因是(?:由于|因为|由))([^，,。；;！？!?：:\\n]{1,28}?)(所?造成的|所?导致的|所?引起的|所?诱发的|所?引发的|所?触发的)(?=[，,。；;！？!?：:\\n]|$)", new String[][]{{"原因是", "", "句式杂糅"}});
+            addRule("(原因是)((?!由)[^，,。；;！？!?：:\n]{1,28}?)(所?造成的|所?导致的|所?引起的|所?诱发的|所?引发的|所?触发的|造成|导致|引起|诱发|引发|触发)(?=[，,。；;！？!?：:\n]|$)", new String[][]{{null, "", "句式杂糅"}});
             addRule("(是由于|是因为)([^，,。；;！？!?：:\n]{1,40}?)(所导致的|所造成的|所引起的|所决定的)(?=[，,。；;！？!?：:\n]|$)", new String[][]{{"是由", null, "句式杂糅"}});
             addRule("((?<!在)受)([^，,。；;！？!?：:\\n]{1,24}?影响)(下)(?=[，,。；;！？!?：:\\n]|$)", new String[][]{{null, "", "句式杂糅"}});
             addRule("(对于)([^，,。；;！？!?：:\\n]{1,16}?)(看来)(?=[，,。；;！？!?：:\\n]|$)", new String[][]{{"在", null, "“对于……看来”应改为“在……看来”或“对于……来说”"}});
