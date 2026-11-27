@@ -5580,6 +5580,10 @@ public class MainActivity extends AppCompatActivity {
             field.setEnabled(professional);
             field.setAlpha(professional ? 1f : 0.45f);
         }
+        for (int id : new int[]{R.id.labelDe, R.id.labelDi, R.id.labelDe3, R.id.labelZuo, R.id.labelZuo4}) {
+            TextView label = findViewById(id);
+            if (label != null) label.setAlpha(professional ? 1f : 0.45f);
+        }
     }
 
     private void saveSettings(boolean fast) {
