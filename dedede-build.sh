@@ -1290,6 +1290,12 @@ public final class CorrectionCore {
     private static final int INFERENCE_OVERLAP = 32;
     private CorrectionCore() {}
 
+    // Reject model-only edits that would create identical adjacent characters.
+    private static boolean createsAdjacentRepeat(char[] current, int index, char replacement) {
+        return (index > 0 && current[index - 1] == replacement)
+                || (index + 1 < current.length && current[index + 1] == replacement);
+    }
+
     public interface Listener {
         boolean isCancelled();
         void onProgress(int current, int total, List<List<MainActivity.TextBlock>> completed, int errorCount, long elapsedMs);
@@ -1559,6 +1565,7 @@ public final class CorrectionCore {
                     if (!MainActivity.isTemperatureValid(temperature)) {
                         throw new IllegalArgumentException("温度参数必须在 0.5～2.0 之间");
                     }
+                    char[] acceptedText = inferText.toCharArray();
                     int coreStart = 0;
                     List<String> inferenceSegments = inferText.length() <= MAX_SEQUENCE_LENGTH
                             ? java.util.Collections.singletonList(inferText) : splitText(inferText);
@@ -1583,7 +1590,11 @@ public final class CorrectionCore {
                             int label = prediction.labels[i]; if (label < 0) continue;
                             String replacement = LABELS[label]; float confidence = prediction.confidence[i]; char character = part.charAt(i);
                             if (!replacement.equals(String.valueOf(character)) && confidence >= thresholds[label]) {
-                                MainActivity.TextBlock block = map[winStart + i]; block.current = replacement; block.modelCorrected = replacement; block.isMutable = true; block.conf = confidence; block.type = 1; errorCount++;
+                                int absoluteIndex = winStart + i;
+                                char replacementChar = replacement.charAt(0);
+                                if (createsAdjacentRepeat(acceptedText, absoluteIndex, replacementChar)) continue;
+                                acceptedText[absoluteIndex] = replacementChar;
+                                MainActivity.TextBlock block = map[absoluteIndex]; block.current = replacement; block.modelCorrected = replacement; block.isMutable = true; block.conf = confidence; block.type = 1; errorCount++;
                                 if (reportErrors) listener.onError("发现错误：" + character + " → " + replacement + " (置信度:" + String.format(Locale.getDefault(), "%.2f", confidence) + ") | 共 " + errorCount + " 处", false);
                             }
                         }
@@ -8606,7 +8617,7 @@ cat > "app/src/main/res/layout/activity_main.xml" <<'DEDEDE_SOURCE_EOF'
 
             <FrameLayout android:id="@+id/inputOutputArea" android:layout_width="match_parent" android:layout_height="0dp" android:layout_weight="1" android:clipChildren="false" android:clipToPadding="false">
                 <RelativeLayout android:id="@+id/inputBoxContainer" android:layout_width="match_parent" android:layout_height="149dp" android:layout_gravity="top" android:clipChildren="false" android:clipToPadding="false">
-                    <EditText android:id="@+id/inputText" android:layout_width="match_parent" android:layout_height="match_parent" android:hint="输入或粘贴文本..." android:textColorHint="@color/text_secondary" android:textColor="@color/text_primary" android:gravity="top|start" android:background="@color/card_bg" android:padding="12dp" android:textSize="15sp" android:scrollbars="vertical"/>
+                    <EditText android:id="@+id/inputText" android:layout_width="match_parent" android:layout_height="match_parent" android:hint="输入或粘贴文本..." android:textColorHint="@color/input_hint" android:textColor="@color/text_primary" android:gravity="top|start" android:background="@color/card_bg" android:padding="12dp" android:textSize="15sp" android:scrollbars="vertical"/>
                     <Button android:id="@+id/btnInputExpand" android:layout_width="32dp" android:layout_height="32dp" android:layout_alignParentTop="true" android:layout_alignParentEnd="true" android:layout_marginTop="0dp" android:layout_marginEnd="0dp" android:translationX="2dp" android:translationY="-2dp" android:text="⛶" android:textSize="16sp" android:textColor="#7B8CA4" android:background="?android:attr/selectableItemBackgroundBorderless" android:padding="0dp" android:insetTop="0dp" android:insetBottom="0dp" android:contentDescription="展开输入框"/>
                     <TextView android:id="@+id/tvWordCount" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_alignParentBottom="true" android:layout_alignParentEnd="true" android:layout_marginEnd="8dp" android:layout_marginBottom="3dp" android:text="0 字" android:textColor="#9E9E9E" android:textSize="11sp"/>
                 </RelativeLayout>
@@ -8652,7 +8663,7 @@ cat > "app/src/main/res/layout/activity_main.xml" <<'DEDEDE_SOURCE_EOF'
                     <Button android:id="@+id/btnInputEditorDone" android:layout_width="wrap_content" android:layout_height="wrap_content" android:minWidth="50dp" android:minHeight="38dp" android:paddingHorizontal="8dp" android:layout_marginEnd="6dp" android:text="完成" android:textColor="#FFFFFF" android:textSize="13sp" android:backgroundTint="#4CAF50"/>
                 </LinearLayout>
                 <FrameLayout android:layout_width="match_parent" android:layout_height="match_parent">
-                    <EditText android:id="@+id/expandedInputEditText" android:layout_width="match_parent" android:layout_height="match_parent" android:hint="输入或粘贴文本..." android:textColorHint="@color/text_secondary" android:textColor="@color/text_primary" android:gravity="top|start" android:background="@null" android:padding="16dp" android:paddingEnd="36dp" android:paddingBottom="30dp" android:textSize="15sp" android:lineSpacingExtra="4dp" android:scrollbars="vertical"/>
+                    <EditText android:id="@+id/expandedInputEditText" android:layout_width="match_parent" android:layout_height="match_parent" android:hint="输入或粘贴文本..." android:textColorHint="@color/input_hint" android:textColor="@color/text_primary" android:gravity="top|start" android:background="@null" android:padding="16dp" android:paddingEnd="36dp" android:paddingBottom="30dp" android:textSize="15sp" android:lineSpacingExtra="4dp" android:scrollbars="vertical"/>
                     <View android:id="@+id/inputEditorScrollTouchArea" android:layout_width="40dp" android:layout_height="match_parent" android:layout_gravity="end" android:layout_marginTop="52dp"/>
                 </FrameLayout>
             </LinearLayout>
@@ -8747,6 +8758,7 @@ cat > "app/src/main/res/values-night/colors.xml" <<'DEDEDE_SOURCE_EOF'
     <color name="card_bg">#1E1E1E</color>
     <color name="text_primary">#E0E0E0</color>
     <color name="text_secondary">#9E9E9E</color>
+    <color name="input_hint">#E69E9E9E</color>
     <color name="btn_light_green_bg">#1B5E20</color>
     <color name="btn_light_green_text">#A5D6A7</color>
 </resources>
@@ -8777,6 +8789,7 @@ cat > "app/src/main/res/values/colors.xml" <<'DEDEDE_SOURCE_EOF'
     <color name="card_bg">#FFFFFF</color>
     <color name="text_primary">#1A1A1A</color>
     <color name="text_secondary">#666666</color>
+    <color name="input_hint">#E6666666</color>
     <color name="btn_light_green_bg">#E8F5E9</color>
     <color name="btn_light_green_text">#2E7D32</color>
 </resources>
