@@ -1275,6 +1275,189 @@ final class TermMatcher {
 }
 DEDEDE_SOURCE_EOF
 
+cat > "app/src/main/java/com/app/dedede/PunctuationNormalizer.java" <<'DEDEDE_SOURCE_EOF'
+package com.app.dedede;
+
+import java.util.Arrays;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+import java.util.function.BooleanSupplier;
+
+/** Conservative, length-preserving punctuation edits; no whitespace or content changes. */
+final class PunctuationNormalizer {
+    private static final String ASCII = ",.?!:;", CHINESE = "，。？！：；";
+    // Protect technical tokens, including Unicode URL paths, emails, domains, file names and paths.
+    private static final Pattern TECH = Pattern.compile(
+        "(?i)(?<![a-z0-9_])(?:(?:[a-z][a-z0-9+.-]{1,20}://|www\\.)[^\\s，。！？；：、（）“”‘’《》<>]+"
+        + "|[a-z0-9._%+\\-]+@[a-z0-9.\\-]+\\.[a-z]{2,63}"
+        + "|[a-z0-9_\\-]+\\.[a-z0-9_.\\-]+"
+        + "|[a-z0-9_\\-]+[。．](?:com|org|net|edu|gov|cn|io|jp|html|txt|pdf|json|py|js|exe)(?![a-z0-9_])"
+        + "|(?:[a-z]:[\\\\/]|(?:\\.{1,2}|~)?/)[a-z0-9_./\\\\%+~:@?&=\\-]+"
+        + "|[a-z_][a-z0-9_]*[（(][^\\r\\n()（）]{0,256}[）)]"
+        + "|[a-z0-9_]+(?:[:：][a-z0-9_]+){2,}"
+        + "|[0-9]+[.,:，。：/／\\-－][0-9][0-9.,:，。：/／\\-－]*)");
+    private static final Pattern CODE = Pattern.compile(
+        "(?i)(?:^\\s*(?:#(?:include|define)\\b|(?:def|class|import|from|function|return|const|let|var|SELECT|INSERT|UPDATE)\\s+[a-z_]|[-+*]\\s|\\d+[.)]\\s|>\\s|\\|)|[{}<>]|==|!=|=>|->|:=|&&|\\|\\||[a-z0-9_]\\s*=\\s*[^=]|\\[[^\\]\\r\\n]{0,512}\\]\\s*\\(|\\\\[a-zA-Z])");
+    private PunctuationNormalizer() {}
+
+    static char[] collect(String text, boolean[] custom, boolean[] exact, boolean[] literal, BooleanSupplier cancelled) {
+        char[] edits = null;
+        int n = text.length();
+        boolean fenced = false;
+        char fenceChar = 0;
+        for (int start = 0; start < n;) {
+            if (cancelled.getAsBoolean()) return null;
+            int end = start;
+            boolean hasHan = false, hasLatin = false, hasOtherScript = false, hasAscii = false, hasChinese = false, technicalHint = false;
+            while (end < n && text.charAt(end) != '\n' && text.charAt(end) != '\r') {
+                char c = text.charAt(end++);
+                if (han(c)) hasHan = true;
+                else if (c < 128) {
+                    if (latin(c)) { hasLatin = true; technicalHint = true; }
+                    else if (ASCII.indexOf(c) >= 0 || "()\"'".indexOf(c) >= 0) hasAscii = true;
+                    else if (!Character.isWhitespace(c)) technicalHint = true;
+                } else if (CHINESE.indexOf(c) >= 0 || "（）".indexOf(c) >= 0) hasChinese = true;
+                else if (Character.isLetter(c)) hasOtherScript = true;
+                if ((end & 4095) == 0 && cancelled.getAsBoolean()) return null;
+            }
+            int first = start;
+            while (first < end && Character.isWhitespace(text.charAt(first))) first++;
+            if (first + 2 < end && (text.startsWith("```", first) || text.startsWith("~~~", first))) {
+                char marker = text.charAt(first);
+                if (!fenced) { fenced = true; fenceChar = marker; }
+                else if (marker == fenceChar) fenced = false;
+            } else if (!fenced && !hasOtherScript && ((hasHan && hasAscii) || (hasLatin && hasChinese))) {
+                // Never modify indented code, tables, markup, formulas or recognisable code lines.
+                if ((first == start || text.charAt(start) != '\t') && first - start < 4 && (!technicalHint || !CODE.matcher(text).region(start, end).find())) {
+                    boolean[] technical = null;
+                    if (technicalHint) {
+                        Matcher m = TECH.matcher(text).region(start, end);
+                        while (m.find()) {
+                            if (technical == null) technical = new boolean[end - start];
+                            Arrays.fill(technical, m.start() - start, m.end() - start, true);
+                        }
+                    }
+                    int paren = -1, parenDepth = 0, quote = -1, single = -1;
+                    boolean nested = false;
+                    for (int i = start; i < end; i++) {
+                        if ((i & 4095) == 0 && cancelled.getAsBoolean()) return null;
+                        char c = text.charAt(i);
+                        int a = ASCII.indexOf(c), b = CHINESE.indexOf(c);
+                        if (a >= 0 || b >= 0) {
+                            if (locked(i, start, technical, custom, exact, literal)) continue;
+                            int l = neighbor(text, i - 1, start, end, -1), r = neighbor(text, i + 1, start, end, 1);
+                            char left = l < 0 ? 0 : text.charAt(l), right = r < 0 ? 0 : text.charAt(r);
+                            // Numbers, repeated punctuation, emoticons and operators are intentionally untouched.
+                            if (Character.isDigit(left) || Character.isDigit(right) || ambiguousNeighbor(left, c) || ambiguousNeighbor(right, c)) continue;
+                            if (c == ':' && i + 1 < end && "DPOpdxXoO3".indexOf(text.charAt(i + 1)) >= 0
+                                    && (i + 2 == end || Character.isWhitespace(text.charAt(i + 2)))) continue;
+                            char replacement = 0;
+                            if (a >= 0 && hasHan && chineseContext(text, l, r, start, end, c)) replacement = CHINESE.charAt(a);
+                            else if (b >= 0 && hasLatin && englishContext(text, l, r, start, end, c, hasHan)) replacement = ASCII.charAt(b);
+                            if (replacement != 0) { if (edits == null) edits = new char[n]; edits[i] = replacement; }
+                            continue;
+                        }
+                        if (c == '(' || c == '（') { if (parenDepth++ == 0) { paren = i; nested = false; } else nested = true; }
+                        else if (c == ')' || c == '）') {
+                            if (parenDepth > 0 && --parenDepth == 0) {
+                                if (!nested) edits = pair(text, edits, paren, i, start, end, technical, custom, exact, literal, hasHan, false);
+                                paren = -1;
+                            }
+                        } else if (c == '"' || c == '\'') {
+                            // English apostrophes and escaped or unmatched quotes are not punctuation errors.
+                            if (c == '\'' && ((i > start && latin(text.charAt(i - 1))) || (i + 1 < end && latin(text.charAt(i + 1))))) continue;
+                            if (i > start && text.charAt(i - 1) == '\\') continue;
+                            int open = c == '"' ? quote : single;
+                            if (open < 0) { if (c == '"') quote = i; else single = i; }
+                            else {
+                                edits = pair(text, edits, open, i, start, end, technical, custom, exact, literal, hasHan, true);
+                                if (c == '"') quote = -1; else single = -1;
+                            }
+                        }
+                    }
+                }
+            }
+            start = end + 1;
+        }
+        return edits;
+    }
+
+    private static boolean locked(int i, int start, boolean[] technical, boolean[] custom, boolean[] exact, boolean[] literal) {
+        return custom[i] || exact[i] || literal[i] || technical != null && technical[i - start];
+    }
+    private static boolean han(char c) { return c >= '\u3400' && c <= '\u9fff' || c >= '\uf900' && c <= '\ufaff'; }
+    private static boolean latin(char c) { return c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z'; }
+    private static int neighbor(String s, int i, int start, int end, int dir) {
+        for (int k = 0; i >= start && i < end && k < 8; k++, i += dir) if (!Character.isWhitespace(s.charAt(i))) return i;
+        return -1;
+    }
+    private static boolean ambiguousNeighbor(char x, char c) {
+        if (x == 0) return false;
+        if (x == '"' || x == '\'' || x == '“' || x == '”' || x == '‘' || x == '’') return false;
+        if (x == '(' || x == ')' || x == '（' || x == '）') return c == ':' || c == '：' || x == '(' || x == '（';
+        return ASCII.indexOf(x) >= 0 || CHINESE.indexOf(x) >= 0 || "…、·/\\@#%+-=*&|_^~`<>[]{}".indexOf(x) >= 0;
+    }
+    private static boolean hanBeyondWord(String s, int i, int start, int end, int dir) {
+        if (i < 0) return false;
+        int count = 0;
+        while (i >= start && i < end && latin(s.charAt(i)) && count++ < 32) i += dir;
+        if (i < start || i >= end || latin(s.charAt(i))) return false;
+        int j = neighbor(s, i, start, end, dir);
+        return j >= 0 && han(s.charAt(j));
+    }
+    private static boolean chineseContext(String s, int l, int r, int start, int end, char c) {
+        char left = l < 0 ? 0 : s.charAt(l), right = r < 0 ? 0 : s.charAt(r);
+        // A period directly before an ASCII word can be a file extension or domain.
+        if (c == '.' && latin(right) && r >= 0 && r == l + 2) return false;
+        if (han(left) || han(right)) return true;
+        // Closing a Chinese clause ending in one English name: 我喜欢Python!
+        if (latin(left) && (r < 0 || right == '"' || right == '”' || han(right)) && hanBeyondWord(s, l, start, end, -1)) return true;
+        return false;
+    }
+    private static boolean englishContext(String s, int l, int r, int start, int end, char c, boolean hasHan) {
+        char left = l < 0 ? 0 : s.charAt(l), right = r < 0 ? 0 : s.charAt(r);
+        if (han(left) || han(right)) return false;
+        if (!latin(left) && !latin(right)) return false;
+        if (!hasHan) return true;
+        // In mixed paragraphs, require a clearly separate English run on both sides.
+        if (!latin(left) || !latin(right)) return false;
+        return !hanBeyondWord(s, l, start, end, -1) && !hanBeyondWord(s, r, start, end, 1)
+                && englishWords(s, l, start, end, -1) >= 2 && englishWords(s, r, start, end, 1) >= 2;
+    }
+    private static int englishWords(String s, int i, int start, int end, int dir) {
+        int words = 0; boolean inside = false;
+        for (int k = 0; i >= start && i < end && k < 96; k++, i += dir) {
+            char c = s.charAt(i);
+            if (latin(c)) { if (!inside) words++; inside = true; }
+            else if (Character.isWhitespace(c)) inside = false;
+            else if (han(c)) return 0;
+            else break;
+        }
+        return words;
+    }
+    private static char[] pair(String s, char[] edits, int open, int close, int start, int end,
+            boolean[] tech, boolean[] custom, boolean[] exact, boolean[] literal, boolean hasHan, boolean quotes) {
+        if (open < 0 || close - open < 2 || close - open > 512 || locked(open, start, tech, custom, exact, literal) || locked(close, start, tech, custom, exact, literal)) return edits;
+        boolean h = false, e = false;
+        for (int k = open + 1; k < close; k++) {
+            if (locked(k, start, tech, custom, exact, literal)) return edits;
+            char c = s.charAt(k); h |= han(c); e |= latin(c);
+        }
+        char a = s.charAt(open), b = s.charAt(close), x = a, y = b;
+        if (h && !e) {
+            if (quotes) { x = a == '"' ? '“' : '‘'; y = a == '"' ? '”' : '’'; }
+            else { x = '（'; y = '）'; }
+        } else if (!hasHan && e && !quotes) { x = '('; y = ')'; }
+        if (x != a || y != b) {
+            if (edits == null) edits = new char[s.length()];
+            if (x != a) edits[open] = x;
+            if (y != b) edits[close] = y;
+        }
+        return edits;
+    }
+}
+DEDEDE_SOURCE_EOF
+
 cat > "app/src/main/java/com/app/dedede/CorrectionCore.java" <<'DEDEDE_SOURCE_EOF'
 package com.app.dedede;
 import java.util.ArrayList;
@@ -1397,6 +1580,9 @@ public final class CorrectionCore {
         if (proofEdits == null) return null;
         final boolean[] blockedAll = customAll.clone();
         for (Proofreader.Edit edit : proofEdits) if (edit != null) Arrays.fill(blockedAll, edit.start, edit.end, true);
+        final char[] punctuationEdits = PunctuationNormalizer.collect(text, customAll, exactAll, literals,
+                () -> listener != null && listener.isCancelled());
+        if (listener != null && listener.isCancelled()) return null;
         int sentenceOffset = 0, skipUntil = 0;
         List<String> sentences = splitText(text, text.length());
         List<List<MainActivity.TextBlock>> stage = new ArrayList<>(sentences.size());
@@ -1448,6 +1634,15 @@ public final class CorrectionCore {
                     continue;
                 }
 
+                char punctuation = punctuationEdits == null ? 0 : punctuationEdits[sentenceStart + cursor];
+                if (punctuation != 0 && !protectedPositions[cursor]) {
+                    appendPlainSpan(intermediate, sentence, plainStart, cursor);
+                    appendGrammarChange(intermediate, sentence.substring(cursor, cursor + 1),
+                            String.valueOf(punctuation), "中英文标点混用");
+                    cursor++;
+                    plainStart = cursor;
+                    continue;
+                }
                 cursor++;
             }
             appendPlainSpan(intermediate, sentence, plainStart, sentence.length());
@@ -7857,7 +8052,8 @@ public class MainActivity extends AppCompatActivity {
     private static boolean showCorrectionNote(TextBlock block) {
         if (block.type != 6 || block.exp == null || block.exp.isEmpty()) return false;
         if (TermMatcher.SUSPECTED_TYPO.equals(block.exp)) return block.current.equals(block.original);
-        return !block.exp.startsWith("术语") && !block.exp.equals("正文实体一致性");
+        return !block.exp.startsWith("术语") && !block.exp.equals("正文实体一致性")
+                && !block.exp.equals("中英文标点混用") && !block.exp.equals("标点多余");
     }
 
     private void appendCorrection(SpannableStringBuilder builder, TextBlock block, boolean clickable) {
