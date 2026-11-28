@@ -453,6 +453,10 @@ public final class Proofreader {
     /** Protect quotations, titles and inline code before sentence splitting. */
     public static boolean[] literalPositions(String text){return literalPositions(text,true);}
     public static boolean[] literalPositions(String text,boolean includeSpeech){
+        return literalPositions(text,includeSpeech,false);
+    }
+    // The optional exception applies only to the adjacent single-pronoun rule.
+    private static boolean[] literalPositions(String text,boolean includeSpeech,boolean allowDoubleSpeech){
         boolean[] mask=new boolean[text.length()];
         String opens="《〈“‘「『\"'`",ends="》〉”’」』\"'`";
         ArrayList<Integer> starts=new ArrayList<>();
@@ -462,7 +466,9 @@ public final class Proofreader {
             if(!starts.isEmpty()){
                 int start=starts.get(starts.size()-1);
                 if(c==ends.charAt(opens.indexOf(text.charAt(start)))){
-                    starts.remove(starts.size()-1);depth[start]++;depth[i+1]--;continue;
+                    starts.remove(starts.size()-1);
+                    if(!allowDoubleSpeech||!editableDoubleSpeech(text,start,i)){depth[start]++;depth[i+1]--;}
+                    continue;
                 }
             }
             int key=opens.indexOf(c);
@@ -480,6 +486,19 @@ public final class Proofreader {
         int active=0;
         for(int i=0;i<mask.length;i++){active+=depth[i];mask[i]=active>0;}
         return mask;
+    }
+    private static final String[] DIALOGUE_DUP_RIGHT={"到底","究竟","怎么","为什么","凭什么","难道","什么","谁","哪","竟然","居然","是否","当然","肯定"};
+    private static boolean editableDoubleSpeech(String text,int start,int end){
+        char opener=text.charAt(start);
+        if((opener!='“'&&opener!='"')||quotedLabel(text,start,text.charAt(end)))return false;
+        // Keep ASCII quoted strings in common assignment/call/container contexts intact.
+        if(opener=='"'){
+            int a=start-1,b=end+1;
+            while(a>=0&&(text.charAt(a)==' '||text.charAt(a)=='\t'))a--;
+            while(b<text.length()&&(text.charAt(b)==' '||text.charAt(b)=='\t'))b++;
+            if((a>=0&&"=([{".indexOf(text.charAt(a))>=0)||(b<text.length()&&")]}".indexOf(text.charAt(b))>=0))return false;
+        }
+        return true;
     }
     private static boolean quotedLabel(String s,int at,char closer){
         if(suffix(s,at,LABEL_INTROS))return true;
@@ -553,13 +572,25 @@ public final class Proofreader {
             if(!any(custom,begin,end)&&!any(exact,begin,end)&&!any(literals,begin,end))
                 pending.add(new Edit(start,text.substring(start,end),"",""));
         }
+        boolean[] pronounLiterals=null;
         for(int p=0;p<text.length();p++){
             if((p&255)==0&&cancelled.getAsBoolean())return null;
-            if(!han(text.charAt(p))||custom[p]||literals[p])continue;
+            if(!han(text.charAt(p))||custom[p])continue;
             char c=text.charAt(p);int end=p+1;
-            if(PRONOUNS.indexOf(c)>=0&&(p==0||text.charAt(p-1)!=c))while(end<text.length()&&text.charAt(end)==c)end++;
-            // Three/four consecutive pronouns may be intentional stuttering in unquoted dialogue.
-            if(PRONOUNS.indexOf(c)>=0&&(end-p==2||end-p>=5)&&(p==0||text.charAt(p-1)!=c)&&left(text,p,DUP_LEFT_WORDS)&&prefix(text,end,DUP_RIGHT_WORDS)&&!namedUse(text,end)&&!any(custom,p,end)&&!any(exact,p,end)&&!any(literals,p,end))pending.add(new Edit(p,text.substring(p,end),String.valueOf(c),""));
+            // Correct pairs and runs of five or more; preserve three/four for stuttering.
+            if(PRONOUNS.indexOf(c)>=0&&(p==0||text.charAt(p-1)!=c)&&end<text.length()&&text.charAt(end)==c){
+                do{end++;}while(end<text.length()&&text.charAt(end)==c);
+                if((end-p==2||end-p>=5)&&left(text,p,DUP_LEFT_WORDS)&&(prefix(text,end,DUP_RIGHT_WORDS)||literals[p]&&prefix(text,end,DIALOGUE_DUP_RIGHT))&&!namedUse(text,end)&&!any(custom,p,end)&&!any(exact,p,end)){
+                    boolean allowed=!any(literals,p,end);
+                    if(!allowed&&"我你他她它".indexOf(c)>=0){
+                        // Compute the narrower mask only when a protected pronoun run actually needs it.
+                        if(pronounLiterals==null)pronounLiterals=literalPositions(text,true,true);
+                        allowed=!any(pronounLiterals,p,end);
+                    }
+                    if(allowed)pending.add(new Edit(p,text.substring(p,end),String.valueOf(c),""));
+                }
+            }
+            if(literals[p])continue;
             for(String word:REPEATS){
                 if(c!=word.charAt(0)||p>=word.length()&&text.regionMatches(p-word.length(),word,0,word.length()))continue;int stop=p+word.length()*2;
                 if(stop>text.length()||!text.startsWith(word+word,p)||!left(text,p,DUP_LEFT_WORDS)&&!suffix(text,p,LEFT_WORDS))continue;
@@ -1395,11 +1426,12 @@ public final class CorrectionCore {
         final boolean[] literals = Proofreader.literalPositions(text,false);
         List<TermMatcher.Hit> termHits;
         int nextTerm = 0;
-        final Proofreader.Edit[] proofEdits = proofreader.collect(text, customAll, exactAll, Proofreader.literalPositions(text), true, () -> listener != null && listener.isCancelled());
+        final boolean[] quotedAll = Proofreader.literalPositions(text);
+        final Proofreader.Edit[] proofEdits = proofreader.collect(text, customAll, exactAll, quotedAll, true, () -> listener != null && listener.isCancelled());
         if (proofEdits == null) return null;
         final boolean[] blockedAll = customAll.clone();
         for (Proofreader.Edit edit : proofEdits) if (edit != null) Arrays.fill(blockedAll, edit.start, edit.end, true);
-        final char[] punctuationEdits = PunctuationNormalizer.collect(text, customAll, exactAll, literals,
+        final char[] punctuationEdits = PunctuationNormalizer.collect(text, customAll, exactAll, literals, quotedAll,
                 () -> listener != null && listener.isCancelled());
         if (listener != null && listener.isCancelled()) return null;
         int sentenceOffset = 0, skipUntil = 0;
@@ -1959,7 +1991,7 @@ public final class CorrectionCore {
             "(?i)(?:^\\s*(?:#(?:include|define)\\b|(?:def|class|import|from|function|return|const|let|var|SELECT|INSERT|UPDATE)\\s+[a-z_]|[-+*]\\s|\\d+[.)]\\s|>\\s|\\|)|[{}<>]|==|!=|=>|->|:=|&&|\\|\\||[a-z0-9_]\\s*=\\s*[^=]|\\[[^\\]\\r\\n]{0,512}\\]\\s*\\(|\\\\[a-zA-Z])");
         private PunctuationNormalizer() {}
 
-        static char[] collect(String text, boolean[] custom, boolean[] exact, boolean[] literal, BooleanSupplier cancelled) {
+        static char[] collect(String text, boolean[] custom, boolean[] exact, boolean[] literal, boolean[] quoted, BooleanSupplier cancelled) {
             char[] edits = null;
             int n = text.length();
             boolean fenced = false;
@@ -2003,7 +2035,7 @@ public final class CorrectionCore {
                             char c = text.charAt(i);
                             int a = ASCII.indexOf(c), b = CHINESE.indexOf(c);
                             if (a >= 0 || b >= 0) {
-                                if (locked(i, start, technical, custom, exact, literal)) continue;
+                                if (quoted[i] || locked(i, start, technical, custom, exact, literal)) continue;
                                 int l = neighbor(text, i - 1, start, end, -1), r = neighbor(text, i + 1, start, end, 1);
                                 char left = l < 0 ? 0 : text.charAt(l), right = r < 0 ? 0 : text.charAt(r);
                                 // Numbers, repeated punctuation, emoticons and operators are intentionally untouched.
@@ -2019,7 +2051,7 @@ public final class CorrectionCore {
                             if (c == '(' || c == '（') { if (parenDepth++ == 0) { paren = i; nested = false; } else nested = true; }
                             else if (c == ')' || c == '）') {
                                 if (parenDepth > 0 && --parenDepth == 0) {
-                                    if (!nested) edits = pair(text, edits, paren, i, start, end, technical, custom, exact, literal, hasHan, false);
+                                    if (!nested) edits = pair(text, edits, paren, i, start, end, technical, custom, exact, quoted, hasHan, false);
                                     paren = -1;
                                 }
                             } else if (c == '"' || c == '\'') {
@@ -2029,7 +2061,8 @@ public final class CorrectionCore {
                                 int open = c == '"' ? quote : single;
                                 if (open < 0) { if (c == '"') quote = i; else single = i; }
                                 else {
-                                    edits = pair(text, edits, open, i, start, end, technical, custom, exact, literal, hasHan, true);
+                                    // Normalize paired Chinese quote delimiters separately from the protected content.
+                                    edits = chineseQuote(text, edits, open, i, start, end, technical, custom, exact, literal, quoted);
                                     if (c == '"') quote = -1; else single = -1;
                                 }
                             }
@@ -2037,6 +2070,42 @@ public final class CorrectionCore {
                     }
                 }
                 start = end + 1;
+            }
+            return edits;
+        }
+
+        private static char[] chineseQuote(String s, char[] edits, int open, int close, int start, int end,
+                boolean[] tech, boolean[] custom, boolean[] exact, boolean[] literal, boolean[] quoted) {
+            if (close - open < 2 || close - open > 512 || !quoted[open] || !quoted[close]
+                    || locked(open, start, tech, custom, exact, literal) || locked(close, start, tech, custom, exact, literal)) return edits;
+            // Do not touch nested quotations, code strings, escaped delimiters or ambiguous mixed-language pairs.
+            if (open > start && quoted[open - 1] || close + 1 < end && quoted[close + 1]) return edits;
+            int l = neighbor(s, open - 1, start, end, -1), r = neighbor(s, close + 1, start, end, 1);
+            if (l >= 0 && (latin(s.charAt(l)) || "=([{\\".indexOf(s.charAt(l)) >= 0)
+                    || r >= 0 && (latin(s.charAt(r)) || ")]}".indexOf(s.charAt(r)) >= 0)) return edits;
+            boolean h = false;
+            for (int k = open + 1; k < close; k++) {
+                char c = s.charAt(k);
+                if (!quoted[k] || literal[k] || tech != null && tech[k - start]
+                        || "\"'“”‘’「」『』`\\".indexOf(c) >= 0
+                        || Character.isLetter(c) && !han(c)) return edits;
+                h |= han(c);
+            }
+            if (!h) return edits;
+            if (edits == null) edits = new char[s.length()];
+            boolean doubleQuote = s.charAt(open) == '"';
+            edits[open] = doubleQuote ? '“' : '‘';
+            edits[close] = doubleQuote ? '”' : '’';
+            // Single quotes protect their entire body. For clear Chinese double-quoted speech,
+            // normalize ordinary punctuation as well, respecting each original protection mask.
+            if (doubleQuote) for (int k = open + 1; k < close; k++) {
+                char c = s.charAt(k);
+                int a = ASCII.indexOf(c);
+                if (a < 0 || locked(k, start, tech, custom, exact, literal)) continue;
+                int prev = neighbor(s, k - 1, open + 1, close, -1), next = neighbor(s, k + 1, open + 1, close, 1);
+                char left = prev < 0 ? 0 : s.charAt(prev), right = next < 0 ? 0 : s.charAt(next);
+                if (Character.isDigit(left) || Character.isDigit(right) || ambiguousNeighbor(left, c) || ambiguousNeighbor(right, c)) continue;
+                if (chineseContext(s, prev, next, open + 1, close, c)) edits[k] = CHINESE.charAt(a);
             }
             return edits;
         }
